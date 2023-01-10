@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,7 +29,15 @@
 #include "utilities/debug.hpp"
 #include "utilities/macros.hpp"
 
+// Get constants like JVM_T_CHAR and JVM_SIGNATURE_INT, before pulling in <jvm.h>.
+#include "classfile_constants.h"
+
 #include COMPILER_HEADER(utilities/globalDefinitions)
+
+#include <cstddef>
+#include <type_traits>
+
+class oopDesc;
 
 // Defaults for macros that might be defined per compiler.
 #ifndef NOINLINE
@@ -41,6 +49,10 @@
 
 #ifndef ATTRIBUTE_ALIGNED
 #define ATTRIBUTE_ALIGNED(x)
+#endif
+
+#ifndef ATTRIBUTE_FLATTEN
+#define ATTRIBUTE_FLATTEN
 #endif
 
 // These are #defines to selectively turn on/off the Print(Opto)Assembly
@@ -66,72 +78,134 @@
 // This file holds all globally used constants & types, class (forward)
 // declarations and a few frequently used utility functions.
 
+// Declare the named class to be noncopyable.  This macro must be followed by
+// a semi-colon.  The macro provides deleted declarations for the class's copy
+// constructor and assignment operator.  Because these operations are deleted,
+// they cannot be defined and potential callers will fail to compile.
+#define NONCOPYABLE(C) C(C const&) = delete; C& operator=(C const&) = delete /* next token must be ; */
+
+
 //----------------------------------------------------------------------------------------------------
 // Printf-style formatters for fixed- and variable-width types as pointers and
 // integers.  These are derived from the definitions in inttypes.h.  If the platform
 // doesn't provide appropriate definitions, they should be provided in
 // the compiler-specific definitions file (e.g., globalDefinitions_gcc.hpp)
 
-#define BOOL_TO_STR(_b_) ((_b_) ? "true" : "false")
+// Guide to the suffixes used in the format specifiers for integers:
+//        - print the decimal value:                   745565
+//  _X    - print as hexadecimal, without leading 0s: 0x12345
+//  _X_0  - print as hexadecimal, with leading 0s: 0x00012345
+//  _W(w) - prints w sized string with the given value right
+//          adjusted. Use -w to print left adjusted.
+//
+// Note that the PTR format specifiers print using 0x with leading zeros,
+// just like the _X_0 version for integers.
+
+// Format 8-bit quantities.
+#define INT8_FORMAT_X_0          "0x%02"      PRIx8
+#define UINT8_FORMAT_X_0         "0x%02"      PRIx8
+
+// Format 16-bit quantities.
+#define INT16_FORMAT_X_0         "0x%04"      PRIx16
+#define UINT16_FORMAT_X_0        "0x%04"      PRIx16
 
 // Format 32-bit quantities.
-#define INT32_FORMAT           "%" PRId32
-#define UINT32_FORMAT          "%" PRIu32
-#define INT32_FORMAT_W(width)  "%" #width PRId32
-#define UINT32_FORMAT_W(width) "%" #width PRIu32
-
-#define PTR32_FORMAT           "0x%08" PRIx32
-#define PTR32_FORMAT_W(width)  "0x%" #width PRIx32
+#define INT32_FORMAT             "%"          PRId32
+#define INT32_FORMAT_X           "0x%"        PRIx32
+#define INT32_FORMAT_X_0         "0x%08"      PRIx32
+#define INT32_FORMAT_W(width)    "%"   #width PRId32
+#define UINT32_FORMAT            "%"          PRIu32
+#define UINT32_FORMAT_X          "0x%"        PRIx32
+#define UINT32_FORMAT_X_0        "0x%08"      PRIx32
+#define UINT32_FORMAT_W(width)   "%"   #width PRIu32
 
 // Format 64-bit quantities.
-#define INT64_FORMAT           "%" PRId64
-#define UINT64_FORMAT          "%" PRIu64
-#define UINT64_FORMAT_X        "%" PRIx64
-#define INT64_FORMAT_W(width)  "%" #width PRId64
-#define UINT64_FORMAT_W(width) "%" #width PRIu64
-#define UINT64_FORMAT_X_W(width) "%" #width PRIx64
+#define INT64_FORMAT             "%"          PRId64
+#define INT64_FORMAT_X           "0x%"        PRIx64
+#define INT64_FORMAT_X_0         "0x%016"     PRIx64
+#define INT64_FORMAT_W(width)    "%"   #width PRId64
+#define UINT64_FORMAT            "%"          PRIu64
+#define UINT64_FORMAT_X          "0x%"        PRIx64
+#define UINT64_FORMAT_X_0        "0x%016"     PRIx64
+#define UINT64_FORMAT_W(width)   "%"   #width PRIu64
 
-#define PTR64_FORMAT           "0x%016" PRIx64
+// Format integers which change size between 32- and 64-bit.
+#define SSIZE_FORMAT             "%"          PRIdPTR
+#define SSIZE_PLUS_FORMAT        "%+"         PRIdPTR
+#define SSIZE_FORMAT_W(width)    "%"   #width PRIdPTR
+#define SIZE_FORMAT              "%"          PRIuPTR
+#define SIZE_FORMAT_X            "0x%"        PRIxPTR
+#ifdef _LP64
+#define SIZE_FORMAT_X_0          "0x%016"     PRIxPTR
+#else
+#define SIZE_FORMAT_X_0          "0x%08"      PRIxPTR
+#endif
+#define SIZE_FORMAT_W(width)     "%"   #width PRIuPTR
+
+#define INTX_FORMAT              "%"          PRIdPTR
+#define INTX_FORMAT_X            "0x%"        PRIxPTR
+#define INTX_FORMAT_W(width)     "%"   #width PRIdPTR
+#define UINTX_FORMAT             "%"          PRIuPTR
+#define UINTX_FORMAT_X           "0x%"        PRIxPTR
+#define UINTX_FORMAT_W(width)    "%"   #width PRIuPTR
 
 // Format jlong, if necessary
 #ifndef JLONG_FORMAT
-#define JLONG_FORMAT           INT64_FORMAT
+#define JLONG_FORMAT             INT64_FORMAT
 #endif
 #ifndef JLONG_FORMAT_W
-#define JLONG_FORMAT_W(width)  INT64_FORMAT_W(width)
+#define JLONG_FORMAT_W(width)    INT64_FORMAT_W(width)
 #endif
 #ifndef JULONG_FORMAT
-#define JULONG_FORMAT          UINT64_FORMAT
+#define JULONG_FORMAT            UINT64_FORMAT
 #endif
 #ifndef JULONG_FORMAT_X
-#define JULONG_FORMAT_X        UINT64_FORMAT_X
+#define JULONG_FORMAT_X          UINT64_FORMAT_X
 #endif
 
 // Format pointers which change size between 32- and 64-bit.
 #ifdef  _LP64
-#define INTPTR_FORMAT "0x%016" PRIxPTR
-#define PTR_FORMAT    "0x%016" PRIxPTR
+#define INTPTR_FORMAT            "0x%016"     PRIxPTR
+#define PTR_FORMAT               "0x%016"     PRIxPTR
 #else   // !_LP64
-#define INTPTR_FORMAT "0x%08"  PRIxPTR
-#define PTR_FORMAT    "0x%08"  PRIxPTR
+#define INTPTR_FORMAT            "0x%08"      PRIxPTR
+#define PTR_FORMAT               "0x%08"      PRIxPTR
 #endif  // _LP64
 
-// Format pointers without leading zeros
-#define INTPTRNZ_FORMAT "0x%"  PRIxPTR
+// Convert pointer to intptr_t, for use in printing pointers.
+inline intptr_t p2i(const volatile void* p) {
+  return (intptr_t) p;
+}
 
-#define INTPTR_FORMAT_W(width)   "%" #width PRIxPTR
+#define BOOL_TO_STR(_b_) ((_b_) ? "true" : "false")
 
-#define SSIZE_FORMAT             "%"   PRIdPTR
-#define SIZE_FORMAT              "%"   PRIuPTR
-#define SIZE_FORMAT_HEX          "0x%" PRIxPTR
-#define SSIZE_FORMAT_W(width)    "%"   #width PRIdPTR
-#define SIZE_FORMAT_W(width)     "%"   #width PRIuPTR
-#define SIZE_FORMAT_HEX_W(width) "0x%" #width PRIxPTR
+//----------------------------------------------------------------------------------------------------
+// Forbid the use of various C library functions.
+// Some of these have os:: replacements that should normally be used instead.
+// Others are considered security concerns, with preferred alternatives.
 
-#define INTX_FORMAT           "%" PRIdPTR
-#define UINTX_FORMAT          "%" PRIuPTR
-#define INTX_FORMAT_W(width)  "%" #width PRIdPTR
-#define UINTX_FORMAT_W(width) "%" #width PRIuPTR
+FORBID_C_FUNCTION(void exit(int), "use os::exit");
+FORBID_C_FUNCTION(void _exit(int), "use os::exit");
+FORBID_C_FUNCTION(char* strerror(int), "use os::strerror");
+FORBID_C_FUNCTION(char* strtok(char*, const char*), "use strtok_r");
+FORBID_C_FUNCTION(int vsprintf(char*, const char*, va_list), "use os::vsnprintf");
+FORBID_C_FUNCTION(int vsnprintf(char*, size_t, const char*, va_list), "use os::vsnprintf");
+
+// All of the following functions return raw C-heap pointers (sometimes as an option, e.g. realpath or getwd)
+// or, in case of free(), take raw C-heap pointers. Don't use them unless you are really sure you must.
+FORBID_C_FUNCTION(void* malloc(size_t size), "use os::malloc");
+FORBID_C_FUNCTION(void* calloc(size_t nmemb, size_t size), "use os::malloc and zero out manually");
+FORBID_C_FUNCTION(void free(void *ptr), "use os::free");
+FORBID_C_FUNCTION(void* realloc(void *ptr, size_t size), "use os::realloc");
+FORBID_C_FUNCTION(char* strdup(const char *s), "use os::strdup");
+FORBID_C_FUNCTION(char* strndup(const char *s, size_t n), "don't use");
+FORBID_C_FUNCTION(int posix_memalign(void **memptr, size_t alignment, size_t size), "don't use");
+FORBID_C_FUNCTION(void* aligned_alloc(size_t alignment, size_t size), "don't use");
+FORBID_C_FUNCTION(char* realpath(const char* path, char* resolved_path), "use os::Posix::realpath");
+FORBID_C_FUNCTION(char* get_current_dir_name(void), "use os::get_current_directory()");
+FORBID_C_FUNCTION(char* getwd(char *buf), "use os::get_current_directory()");
+FORBID_C_FUNCTION(wchar_t* wcsdup(const wchar_t *s), "don't use");
+FORBID_C_FUNCTION(void* reallocf(void *ptr, size_t size), "don't use");
 
 //----------------------------------------------------------------------------------------------------
 // Constants
@@ -217,6 +291,9 @@ inline size_t heap_word_size(size_t byte_size) {
   return (byte_size + (HeapWordSize-1)) >> LogHeapWordSize;
 }
 
+inline jfloat jfloat_cast(jint x);
+inline jdouble jdouble_cast(jlong x);
+
 //-------------------------------------------
 // Constant for jlong (standardized by C++11)
 
@@ -226,6 +303,13 @@ inline size_t heap_word_size(size_t byte_size) {
 
 const jlong min_jlong = CONST64(0x8000000000000000);
 const jlong max_jlong = CONST64(0x7fffffffffffffff);
+
+//-------------------------------------------
+// Constant for jdouble
+const jlong min_jlongDouble = CONST64(0x0000000000000001);
+const jdouble min_jdouble = jdouble_cast(min_jlongDouble);
+const jlong max_jlongDouble = CONST64(0x7fefffffffffffff);
+const jdouble max_jdouble = jdouble_cast(max_jlongDouble);
 
 const size_t K                  = 1024;
 const size_t M                  = K*K;
@@ -238,9 +322,21 @@ const size_t HWperKB            = K / sizeof(HeapWord);
 const int MILLIUNITS    = 1000;         // milli units per base unit
 const int MICROUNITS    = 1000000;      // micro units per base unit
 const int NANOUNITS     = 1000000000;   // nano units per base unit
+const int NANOUNITS_PER_MILLIUNIT = NANOUNITS / MILLIUNITS;
 
 const jlong NANOSECS_PER_SEC      = CONST64(1000000000);
 const jint  NANOSECS_PER_MILLISEC = 1000000;
+
+
+// Unit conversion functions
+// The caller is responsible for considering overflow.
+
+inline int64_t nanos_to_millis(int64_t nanos) {
+  return nanos / NANOUNITS_PER_MILLIUNIT;
+}
+inline int64_t millis_to_nanos(int64_t millis) {
+  return millis * NANOUNITS_PER_MILLIUNIT;
+}
 
 // Proper units routines try to maintain at least three significant digits.
 // In worst case, it would print five significant digits with lower prefix.
@@ -277,6 +373,9 @@ inline T byte_size_in_proper_unit(T s) {
     return s;
   }
 }
+
+#define PROPERFMT             SIZE_FORMAT "%s"
+#define PROPERFMTARGS(s)      byte_size_in_proper_unit(s), proper_unit_for_byte_size(s)
 
 inline const char* exact_unit_for_byte_size(size_t s) {
 #ifdef _LP64
@@ -376,6 +475,7 @@ inline address_word  castable_address(void* x)                { return address_w
 inline size_t pointer_delta(const volatile void* left,
                             const volatile void* right,
                             size_t element_size) {
+  assert(left >= right, "avoid underflow - left: " PTR_FORMAT " right: " PTR_FORMAT, p2i(left), p2i(right));
   return (((uintptr_t) left) - ((uintptr_t) right)) / element_size;
 }
 
@@ -404,9 +504,29 @@ inline size_t pointer_delta(const MetaWord* left, const MetaWord* right) {
 #define CAST_TO_FN_PTR(func_type, value) (reinterpret_cast<func_type>(value))
 #define CAST_FROM_FN_PTR(new_type, func_ptr) ((new_type)((address_word)(func_ptr)))
 
+// In many places we've added C-style casts to silence compiler
+// warnings, for example when truncating a size_t to an int when we
+// know the size_t is a small struct. Such casts are risky because
+// they effectively disable useful compiler warnings. We can make our
+// lives safer with this function, which ensures that any cast is
+// reversible without loss of information. It doesn't check
+// everything: it isn't intended to make sure that pointer types are
+// compatible, for example.
+template <typename T2, typename T1>
+T2 checked_cast(T1 thing) {
+  T2 result = static_cast<T2>(thing);
+  assert(static_cast<T1>(result) == thing, "must be");
+  return result;
+}
+
+// Need the correct linkage to call qsort without warnings
+extern "C" {
+  typedef int (*_sort_Fn)(const void *, const void *);
+}
+
 // Unsigned byte types for os and stream.hpp
 
-// Unsigned one, two, four and eigth byte quantities used for describing
+// Unsigned one, two, four and eight byte quantities used for describing
 // the .class file format. See JVM book chapter 4.
 
 typedef jubyte  u1;
@@ -432,10 +552,25 @@ const jshort max_jshort = (1 << 15) - 1; // largest jshort
 const jint min_jint = (jint)1 << (sizeof(jint)*BitsPerByte-1); // 0x80000000 == smallest jint
 const jint max_jint = (juint)min_jint - 1;                     // 0x7FFFFFFF == largest jint
 
+const jint min_jintFloat = (jint)(0x00000001);
+const jfloat min_jfloat = jfloat_cast(min_jintFloat);
+const jint max_jintFloat = (jint)(0x7f7fffff);
+const jfloat max_jfloat = jfloat_cast(max_jintFloat);
+
 //----------------------------------------------------------------------------------------------------
 // JVM spec restrictions
 
 const int max_method_code_size = 64*K - 1;  // JVM spec, 2nd ed. section 4.8.1 (p.134)
+
+//----------------------------------------------------------------------------------------------------
+// old CDS options
+extern bool DumpSharedSpaces;
+extern bool DynamicDumpSharedSpaces;
+extern bool RequireSharedSpaces;
+extern "C" {
+// Make sure UseSharedSpaces is accessible to the serviceability agent.
+extern JNIEXPORT jboolean UseSharedSpaces;
+}
 
 //----------------------------------------------------------------------------------------------------
 // Object alignment, in units of HeapWords.
@@ -570,14 +705,22 @@ void basic_types_init(); // cannot define here; uses assert
 
 // NOTE: replicated in SA in vm/agent/sun/jvm/hotspot/runtime/BasicType.java
 enum BasicType {
-  T_BOOLEAN     =  4,
-  T_CHAR        =  5,
-  T_FLOAT       =  6,
-  T_DOUBLE      =  7,
-  T_BYTE        =  8,
-  T_SHORT       =  9,
-  T_INT         = 10,
-  T_LONG        = 11,
+// The values T_BOOLEAN..T_LONG (4..11) are derived from the JVMS.
+  T_BOOLEAN     = JVM_T_BOOLEAN,
+  T_CHAR        = JVM_T_CHAR,
+  T_FLOAT       = JVM_T_FLOAT,
+  T_DOUBLE      = JVM_T_DOUBLE,
+  T_BYTE        = JVM_T_BYTE,
+  T_SHORT       = JVM_T_SHORT,
+  T_INT         = JVM_T_INT,
+  T_LONG        = JVM_T_LONG,
+  // The remaining values are not part of any standard.
+  // T_OBJECT and T_VOID denote two more semantic choices
+  // for method return values.
+  // T_OBJECT and T_ARRAY describe signature syntax.
+  // T_ADDRESS, T_METADATA, T_NARROWOOP, T_NARROWKLASS describe
+  // internal references within the JVM as if they were Java
+  // types in their own right.
   T_OBJECT      = 12,
   T_ARRAY       = 13,
   T_VOID        = 14,
@@ -588,6 +731,24 @@ enum BasicType {
   T_CONFLICT    = 19, // for stack value type with conflicting contents
   T_ILLEGAL     = 99
 };
+
+#define SIGNATURE_TYPES_DO(F, N)                \
+    F(JVM_SIGNATURE_BOOLEAN, T_BOOLEAN, N)      \
+    F(JVM_SIGNATURE_CHAR,    T_CHAR,    N)      \
+    F(JVM_SIGNATURE_FLOAT,   T_FLOAT,   N)      \
+    F(JVM_SIGNATURE_DOUBLE,  T_DOUBLE,  N)      \
+    F(JVM_SIGNATURE_BYTE,    T_BYTE,    N)      \
+    F(JVM_SIGNATURE_SHORT,   T_SHORT,   N)      \
+    F(JVM_SIGNATURE_INT,     T_INT,     N)      \
+    F(JVM_SIGNATURE_LONG,    T_LONG,    N)      \
+    F(JVM_SIGNATURE_CLASS,   T_OBJECT,  N)      \
+    F(JVM_SIGNATURE_ARRAY,   T_ARRAY,   N)      \
+    F(JVM_SIGNATURE_VOID,    T_VOID,    N)      \
+    /*end*/
+
+inline bool is_java_type(BasicType t) {
+  return T_BOOLEAN <= t && t <= T_VOID;
+}
 
 inline bool is_java_primitive(BasicType t) {
   return T_BOOLEAN <= t && t <= T_LONG;
@@ -602,34 +763,53 @@ inline bool is_signed_subword_type(BasicType t) {
   return (t == T_BYTE || t == T_SHORT);
 }
 
-inline bool is_reference_type(BasicType t) {
-  return (t == T_OBJECT || t == T_ARRAY);
+inline bool is_unsigned_subword_type(BasicType t) {
+  return (t == T_BOOLEAN || t == T_CHAR);
 }
 
-// Convert a char from a classfile signature to a BasicType
-inline BasicType char2type(char c) {
-  switch( c ) {
-  case 'B': return T_BYTE;
-  case 'C': return T_CHAR;
-  case 'D': return T_DOUBLE;
-  case 'F': return T_FLOAT;
-  case 'I': return T_INT;
-  case 'J': return T_LONG;
-  case 'S': return T_SHORT;
-  case 'Z': return T_BOOLEAN;
-  case 'V': return T_VOID;
-  case 'L': return T_OBJECT;
-  case '[': return T_ARRAY;
-  }
-  return T_ILLEGAL;
+inline bool is_double_word_type(BasicType t) {
+  return (t == T_DOUBLE || t == T_LONG);
+}
+
+inline bool is_reference_type(BasicType t, bool include_narrow_oop = false) {
+  return (t == T_OBJECT || t == T_ARRAY || (include_narrow_oop && t == T_NARROWOOP));
+}
+
+inline bool is_integral_type(BasicType t) {
+  return is_subword_type(t) || t == T_INT || t == T_LONG;
+}
+
+inline bool is_non_subword_integral_type(BasicType t) {
+  return t == T_INT || t == T_LONG;
+}
+
+inline bool is_floating_point_type(BasicType t) {
+  return (t == T_FLOAT || t == T_DOUBLE);
 }
 
 extern char type2char_tab[T_CONFLICT+1];     // Map a BasicType to a jchar
 inline char type2char(BasicType t) { return (uint)t < T_CONFLICT+1 ? type2char_tab[t] : 0; }
 extern int type2size[T_CONFLICT+1];         // Map BasicType to result stack elements
-extern const char* type2name_tab[T_CONFLICT+1];     // Map a BasicType to a jchar
-inline const char* type2name(BasicType t) { return (uint)t < T_CONFLICT+1 ? type2name_tab[t] : NULL; }
+extern const char* type2name_tab[T_CONFLICT+1];     // Map a BasicType to a char*
 extern BasicType name2type(const char* name);
+
+const char* type2name(BasicType t);
+
+inline jlong max_signed_integer(BasicType bt) {
+  if (bt == T_INT) {
+    return max_jint;
+  }
+  assert(bt == T_LONG, "unsupported");
+  return max_jlong;
+}
+
+inline jlong min_signed_integer(BasicType bt) {
+  if (bt == T_INT) {
+    return min_jint;
+  }
+  assert(bt == T_LONG, "unsupported");
+  return min_jlong;
+}
 
 // Auxiliary math routines
 // least common multiple
@@ -653,6 +833,13 @@ enum BasicTypeSize {
   T_VOID_size        = 0
 };
 
+// this works on valid parameter types but not T_VOID, T_CONFLICT, etc.
+inline int parameter_type_word_count(BasicType t) {
+  if (is_double_word_type(t))  return 2;
+  assert(is_java_primitive(t) || is_reference_type(t), "no goofy types here please");
+  assert(type2size[t] == 1, "must be");
+  return 1;
+}
 
 // maps a BasicType to its instance field storage type:
 // all sub-word integral types are widened to T_INT
@@ -689,6 +876,9 @@ extern int type2aelembytes(BasicType t, bool allow_address = false); // asserts
 inline int type2aelembytes(BasicType t, bool allow_address = false) { return _type2aelembytes[t]; }
 #endif
 
+inline bool same_type_or_subword_size(BasicType t1, BasicType t2) {
+  return (t1 == t2) || (is_subword_type(t1) && type2aelembytes(t1) == type2aelembytes(t2));
+}
 
 // JavaValue serves as a container for arbitrary Java values.
 
@@ -701,6 +891,7 @@ class JavaValue {
     jint     i;
     jlong    l;
     jobject  h;
+    oopDesc* o;
   } JavaCallValue;
 
  private:
@@ -725,6 +916,7 @@ class JavaValue {
  jint get_jint() const { return _value.i; }
  jlong get_jlong() const { return _value.l; }
  jobject get_jobject() const { return _value.h; }
+ oopDesc* get_oop() const { return _value.o; }
  JavaCallValue* get_value_addr() { return &_value; }
  BasicType get_type() const { return _type; }
 
@@ -733,6 +925,7 @@ class JavaValue {
  void set_jint(jint i) { _value.i = i;}
  void set_jlong(jlong l) { _value.l = l;}
  void set_jobject(jobject h) { _value.h = h;}
+ void set_oop(oopDesc* o) { _value.o = o;}
  void set_type(BasicType t) { _type = t; }
 
  jboolean get_jboolean() const { return (jboolean) (_value.i);}
@@ -741,15 +934,6 @@ class JavaValue {
  jshort get_jshort() const { return (jshort) (_value.i);}
 
 };
-
-
-#define STACK_BIAS      0
-// V9 Sparc CPU's running in 64 Bit mode use a stack bias of 7ff
-// in order to extend the reach of the stack pointer.
-#if defined(SPARC) && defined(_LP64)
-#undef STACK_BIAS
-#define STACK_BIAS      0x7ff
-#endif
 
 
 // TosState describes the top-of-stack state before and after the execution of
@@ -835,13 +1019,13 @@ TosState as_TosState(BasicType type);
 enum JavaThreadState {
   _thread_uninitialized     =  0, // should never happen (missing initialization)
   _thread_new               =  2, // just starting up, i.e., in process of being initialized
-  _thread_new_trans         =  3, // corresponding transition state (not used, included for completness)
+  _thread_new_trans         =  3, // corresponding transition state (not used, included for completeness)
   _thread_in_native         =  4, // running in native code
   _thread_in_native_trans   =  5, // corresponding transition state
   _thread_in_vm             =  6, // running in VM
   _thread_in_vm_trans       =  7, // corresponding transition state
   _thread_in_Java           =  8, // running in Java or in stub code
-  _thread_in_Java_trans     =  9, // corresponding transition state (not used, included for completness)
+  _thread_in_Java_trans     =  9, // corresponding transition state (not used, included for completeness)
   _thread_blocked           = 10, // blocked in vm
   _thread_blocked_trans     = 11, // corresponding transition state
   _thread_max_state         = 12  // maximum thread state+1 - used for statistics allocation
@@ -887,7 +1071,6 @@ const intptr_t OneBit     =  1; // only right_most bit set in a word
 // (note: #define used only so that they can be used in enum constant definitions)
 #define nth_bit(n)        (((n) >= BitsPerWord) ? 0 : (OneBit << (n)))
 #define right_n_bits(n)   (nth_bit(n) - 1)
-#define left_n_bits(n)    (right_n_bits(n) << (((n) >= BitsPerWord) ? 0 : (BitsPerWord - (n))))
 
 // bit-operations using a mask m
 inline void   set_bits    (intptr_t& x, intptr_t m) { x |= m; }
@@ -925,88 +1108,20 @@ inline intptr_t bitfield(intptr_t x, int start_bit_no, int field_length) {
 // and 64-bit overloaded functions, which does not work, and having
 // explicitly-typed versions of these routines (i.e., MAX2I, MAX2L)
 // will be even more error-prone than macros.
-template<class T> inline T MAX2(T a, T b)           { return (a > b) ? a : b; }
-template<class T> inline T MIN2(T a, T b)           { return (a < b) ? a : b; }
-template<class T> inline T MAX3(T a, T b, T c)      { return MAX2(MAX2(a, b), c); }
-template<class T> inline T MIN3(T a, T b, T c)      { return MIN2(MIN2(a, b), c); }
-template<class T> inline T MAX4(T a, T b, T c, T d) { return MAX2(MAX3(a, b, c), d); }
-template<class T> inline T MIN4(T a, T b, T c, T d) { return MIN2(MIN3(a, b, c), d); }
+template<class T> constexpr T MAX2(T a, T b)           { return (a > b) ? a : b; }
+template<class T> constexpr T MIN2(T a, T b)           { return (a < b) ? a : b; }
+template<class T> constexpr T MAX3(T a, T b, T c)      { return MAX2(MAX2(a, b), c); }
+template<class T> constexpr T MIN3(T a, T b, T c)      { return MIN2(MIN2(a, b), c); }
+template<class T> constexpr T MAX4(T a, T b, T c, T d) { return MAX2(MAX3(a, b, c), d); }
+template<class T> constexpr T MIN4(T a, T b, T c, T d) { return MIN2(MIN3(a, b, c), d); }
 
 template<class T> inline T ABS(T x)                 { return (x > 0) ? x : -x; }
 
-// true if x is a power of 2, false otherwise
-inline bool is_power_of_2(intptr_t x) {
-  return ((x != NoBits) && (mask_bits(x, x - 1) == NoBits));
-}
-
-// long version of is_power_of_2
-inline bool is_power_of_2_long(jlong x) {
-  return ((x != NoLongBits) && (mask_long_bits(x, x - 1) == NoLongBits));
-}
-
-// Returns largest i such that 2^i <= x.
-// If x == 0, the function returns -1.
-inline int log2_intptr(uintptr_t x) {
-  int i = -1;
-  uintptr_t p = 1;
-  while (p != 0 && p <= x) {
-    // p = 2^(i+1) && p <= x (i.e., 2^(i+1) <= x)
-    i++; p *= 2;
-  }
-  // p = 2^(i+1) && x < p (i.e., 2^i <= x < 2^(i+1))
-  // If p = 0, overflow has occurred and i = 31 or i = 63 (depending on the machine word size).
-  return i;
-}
-
-//* largest i such that 2^i <= x
-inline int log2_long(julong x) {
-  int i = -1;
-  julong p =  1;
-  while (p != 0 && p <= x) {
-    // p = 2^(i+1) && p <= x (i.e., 2^(i+1) <= x)
-    i++; p *= 2;
-  }
-  // p = 2^(i+1) && x < p (i.e., 2^i <= x < 2^(i+1))
-  // (if p = 0 then overflow occurred and i = 63)
-  return i;
-}
-
-// If x < 0, the function returns 31 on a 32-bit machine and 63 on a 64-bit machine.
-inline int log2_intptr(intptr_t x) {
-  return log2_intptr((uintptr_t)x);
-}
-
-inline int log2_int(int x) {
-  STATIC_ASSERT(sizeof(int) <= sizeof(uintptr_t));
-  return log2_intptr((uintptr_t)x);
-}
-
-inline int log2_jint(jint x) {
-  STATIC_ASSERT(sizeof(jint) <= sizeof(uintptr_t));
-  return log2_intptr((uintptr_t)x);
-}
-
-inline int log2_uint(uint x) {
-  STATIC_ASSERT(sizeof(uint) <= sizeof(uintptr_t));
-  return log2_intptr((uintptr_t)x);
-}
-
-//  A negative value of 'x' will return '63'
-inline int log2_jlong(jlong x) {
-  STATIC_ASSERT(sizeof(jlong) <= sizeof(julong));
-  return log2_long((julong)x);
-}
-
-//* the argument must be exactly a power of 2
-inline int exact_log2(intptr_t x) {
-  assert(is_power_of_2(x), "x must be a power of 2: " INTPTR_FORMAT, x);
-  return log2_intptr(x);
-}
-
-//* the argument must be exactly a power of 2
-inline int exact_log2_long(jlong x) {
-  assert(is_power_of_2_long(x), "x must be a power of 2: " JLONG_FORMAT, x);
-  return log2_long(x);
+// Return the given value clamped to the range [min ... max]
+template<typename T>
+inline T clamp(T value, T min, T max) {
+  assert(min <= max, "must be");
+  return MIN2(MAX2(value, min), max);
 }
 
 inline bool is_odd (intx x) { return x & 1;      }
@@ -1040,7 +1155,6 @@ inline intx byte_size(void* from, void* to) {
   return (address)to - (address)from;
 }
 
-
 // Pack and extract shorts to/from ints:
 
 inline int extract_low_short_from_int(jint x) {
@@ -1055,11 +1169,6 @@ inline int build_int_from_shorts( jushort low, jushort high ) {
   return ((int)((unsigned int)high << 16) | (unsigned int)low);
 }
 
-// Convert pointer to intptr_t, for use in printing pointers.
-inline intptr_t p2i(const void * p) {
-  return (intptr_t) p;
-}
-
 // swap a & b
 template<class T> static void swap(T& a, T& b) {
   T tmp = a;
@@ -1067,7 +1176,11 @@ template<class T> static void swap(T& a, T& b) {
   b = tmp;
 }
 
-#define ARRAY_SIZE(array) (sizeof(array)/sizeof((array)[0]))
+// array_size_impl is a function that takes a reference to T[N] and
+// returns a reference to char[N].  It is not ODR-used, so not defined.
+template<typename T, size_t N> char (&array_size_impl(T (&)[N]))[N];
+
+#define ARRAY_SIZE(array) sizeof(array_size_impl(array))
 
 //----------------------------------------------------------------------------------------------------
 // Sum and product which can never overflow: they wrap, just like the
@@ -1094,6 +1207,33 @@ JAVA_INTEGER_OP(-, java_subtract, jlong, julong)
 JAVA_INTEGER_OP(*, java_multiply, jlong, julong)
 
 #undef JAVA_INTEGER_OP
+
+// Provide integer shift operations with Java semantics.  No overflow
+// issues - left shifts simply discard shifted out bits.  No undefined
+// behavior for large or negative shift quantities; instead the actual
+// shift distance is the argument modulo the lhs value's size in bits.
+// No undefined or implementation defined behavior for shifting negative
+// values; left shift discards bits, right shift sign extends.  We use
+// the same safe conversion technique as above for java_add and friends.
+#define JAVA_INTEGER_SHIFT_OP(OP, NAME, TYPE, XTYPE)    \
+inline TYPE NAME (TYPE lhs, jint rhs) {                 \
+  const uint rhs_mask = (sizeof(TYPE) * 8) - 1;         \
+  STATIC_ASSERT(rhs_mask == 31 || rhs_mask == 63);      \
+  XTYPE xres = static_cast<XTYPE>(lhs);                 \
+  xres OP ## = (rhs & rhs_mask);                        \
+  return reinterpret_cast<TYPE&>(xres);                 \
+}
+
+JAVA_INTEGER_SHIFT_OP(<<, java_shift_left, jint, juint)
+JAVA_INTEGER_SHIFT_OP(<<, java_shift_left, jlong, julong)
+// For signed shift right, assume C++ implementation >> sign extends.
+JAVA_INTEGER_SHIFT_OP(>>, java_shift_right, jint, jint)
+JAVA_INTEGER_SHIFT_OP(>>, java_shift_right, jlong, jlong)
+// For >>> use C++ unsigned >>.
+JAVA_INTEGER_SHIFT_OP(>>, java_shift_right_unsigned, jint, juint)
+JAVA_INTEGER_SHIFT_OP(>>, java_shift_right_unsigned, jlong, julong)
+
+#undef JAVA_INTEGER_SHIFT_OP
 
 //----------------------------------------------------------------------------------------------------
 // The goal of this code is to provide saturating operations for int/uint.
@@ -1133,7 +1273,7 @@ typedef const char* ccstr;
 typedef const char* ccstrlist;   // represents string arguments which accumulate
 
 //----------------------------------------------------------------------------------------------------
-// Default hash/equals functions used by ResourceHashtable and KVHashtable
+// Default hash/equals functions used by ResourceHashtable
 
 template<typename K> unsigned primitive_hash(const K& k) {
   unsigned hash = (unsigned)((uintptr_t)k);
@@ -1144,5 +1284,13 @@ template<typename K> bool primitive_equals(const K& k0, const K& k1) {
   return k0 == k1;
 }
 
+//----------------------------------------------------------------------------------------------------
+
+// Allow use of C++ thread_local when approved - see JDK-8282469.
+#define APPROVED_CPP_THREAD_LOCAL thread_local
+
+// Converts any type T to a reference type.
+template<typename T>
+std::add_rvalue_reference_t<T> declval() noexcept;
 
 #endif // SHARE_UTILITIES_GLOBALDEFINITIONS_HPP

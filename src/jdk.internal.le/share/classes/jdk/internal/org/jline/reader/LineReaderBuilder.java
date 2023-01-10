@@ -1,10 +1,10 @@
 /*
- * Copyright (c) 2002-2018, the original author or authors.
+ * Copyright (c) 2002-2020, the original author or authors.
  *
  * This software is distributable under the BSD license. See the terms of the
  * BSD license in the documentation provided with this software.
  *
- * http://www.opensource.org/licenses/bsd-license.php
+ * https://opensource.org/licenses/BSD-3-Clause
  */
 package jdk.internal.org.jline.reader;
 
@@ -36,6 +36,7 @@ public final class LineReaderBuilder {
     Highlighter highlighter;
     Parser parser;
     Expander expander;
+    CompletionMatcher completionMatcher;
 
     private LineReaderBuilder() {
     }
@@ -85,7 +86,7 @@ public final class LineReaderBuilder {
     public LineReaderBuilder parser(Parser parser) {
         if (parser != null) {
             try {
-                if (!Boolean.parseBoolean(LineReader.PROP_SUPPORT_PARSEDLINE)
+                if (!Boolean.getBoolean(LineReader.PROP_SUPPORT_PARSEDLINE)
                         && !(parser.parse("", 0) instanceof CompletingParsedLine)) {
                     Log.warn("The Parser of class " + parser.getClass().getName() + " does not support the CompletingParsedLine interface. " +
                             "Completion with escaped or quoted words won't work correctly.");
@@ -100,6 +101,11 @@ public final class LineReaderBuilder {
 
     public LineReaderBuilder expander(Expander expander) {
         this.expander = expander;
+        return this;
+    }
+
+    public LineReaderBuilder completionMatcher(CompletionMatcher completionMatcher) {
+        this.completionMatcher = completionMatcher;
         return this;
     }
 
@@ -132,6 +138,9 @@ public final class LineReaderBuilder {
         }
         if (expander != null) {
             reader.setExpander(expander);
+        }
+        if (completionMatcher != null) {
+            reader.setCompletionMatcher(completionMatcher);
         }
         for (Map.Entry<LineReader.Option, Boolean> e : options.entrySet()) {
             reader.option(e.getKey(), e.getValue());

@@ -30,15 +30,13 @@
 #include "runtime/atomic.hpp"
 
 G1HotCardCache::G1HotCardCache(G1CollectedHeap *g1h):
-  _g1h(g1h), _use_cache(false), _card_counts(g1h),
+  _g1h(g1h), _card_counts(g1h),
   _hot_cache(NULL), _hot_cache_size(0), _hot_cache_par_chunk_size(0),
-  _hot_cache_idx(0), _hot_cache_par_claimed_idx(0)
+  _hot_cache_idx(0), _hot_cache_par_claimed_idx(0), _cache_wrapped_around(false)
 {}
 
 void G1HotCardCache::initialize(G1RegionToSpaceMapper* card_counts_storage) {
-  if (default_use_cache()) {
-    _use_cache = true;
-
+  if (use_cache()) {
     _hot_cache_size = (size_t)1 << G1ConcRSLogCacheSize;
     _hot_cache = ArrayAllocator<CardValue*>::allocate(_hot_cache_size, mtGC);
 
@@ -48,12 +46,14 @@ void G1HotCardCache::initialize(G1RegionToSpaceMapper* card_counts_storage) {
     _hot_cache_par_chunk_size = ClaimChunkSize;
     _hot_cache_par_claimed_idx = 0;
 
+    _cache_wrapped_around = false;
+
     _card_counts.initialize(card_counts_storage);
   }
 }
 
 G1HotCardCache::~G1HotCardCache() {
-  if (default_use_cache()) {
+  if (use_cache()) {
     assert(_hot_cache != NULL, "Logic");
     ArrayAllocator<CardValue*>::free(_hot_cache, _hot_cache_size);
     _hot_cache = NULL;
@@ -68,7 +68,12 @@ CardTable::CardValue* G1HotCardCache::insert(CardValue* card_ptr) {
     return card_ptr;
   }
   // Otherwise, the card is hot.
-  size_t index = Atomic::add(1u, &_hot_cache_idx) - 1;
+  size_t index = Atomic::fetch_and_add(&_hot_cache_idx, 1u);
+  if (index == _hot_cache_size) {
+    // Can use relaxed store because all racing threads are writing the same
+    // value and there aren't any concurrent readers.
+    Atomic::store(&_cache_wrapped_around, true);
+  }
   size_t masked_index = index & (_hot_cache_size - 1);
   CardValue* current_ptr = _hot_cache[masked_index];
 
@@ -78,21 +83,20 @@ CardTable::CardValue* G1HotCardCache::insert(CardValue* card_ptr) {
   // card_ptr in favor of the other option, which would be starting over. This
   // should be OK since card_ptr will likely be the older card already when/if
   // this ever happens.
-  CardValue* previous_ptr = Atomic::cmpxchg(card_ptr,
-                                            &_hot_cache[masked_index],
-                                            current_ptr);
+  CardValue* previous_ptr = Atomic::cmpxchg(&_hot_cache[masked_index],
+                                            current_ptr,
+                                            card_ptr);
   return (previous_ptr == current_ptr) ? previous_ptr : card_ptr;
 }
 
 void G1HotCardCache::drain(G1CardTableEntryClosure* cl, uint worker_id) {
-  assert(default_use_cache(), "Drain only necessary if we use the hot card cache.");
+  assert(use_cache(), "Drain only necessary if we use the hot card cache.");
 
   assert(_hot_cache != NULL, "Logic");
-  assert(!use_cache(), "cache should be disabled");
 
   while (_hot_cache_par_claimed_idx < _hot_cache_size) {
-    size_t end_idx = Atomic::add(_hot_cache_par_chunk_size,
-                                 &_hot_cache_par_claimed_idx);
+    size_t end_idx = Atomic::add(&_hot_cache_par_claimed_idx,
+                                 _hot_cache_par_chunk_size);
     size_t start_idx = end_idx - _hot_cache_par_chunk_size;
     // The current worker has successfully claimed the chunk [start_idx..end_idx)
     end_idx = MIN2(end_idx, _hot_cache_size);

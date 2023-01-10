@@ -28,7 +28,6 @@ import java.util.function.Predicate;
 
 import jdk.internal.org.objectweb.asm.ClassReader;
 import jdk.internal.org.objectweb.asm.ClassWriter;
-import jdk.tools.jlink.plugin.Plugin;
 import jdk.tools.jlink.plugin.ResourcePool;
 import jdk.tools.jlink.plugin.ResourcePoolBuilder;
 import jdk.tools.jlink.plugin.ResourcePoolEntry;
@@ -37,8 +36,7 @@ import jdk.tools.jlink.plugin.ResourcePoolEntry;
  *
  * Strip java debug attributes plugin
  */
-public final class StripJavaDebugAttributesPlugin implements Plugin {
-    public static final String NAME = "strip-java-debug-attributes";
+public final class StripJavaDebugAttributesPlugin extends AbstractPlugin {
     private final Predicate<String> predicate;
 
     public StripJavaDebugAttributesPlugin() {
@@ -46,17 +44,8 @@ public final class StripJavaDebugAttributesPlugin implements Plugin {
     }
 
     StripJavaDebugAttributesPlugin(Predicate<String> predicate) {
+        super("strip-java-debug-attributes");
         this.predicate = predicate;
-    }
-
-    @Override
-    public String getName() {
-        return NAME;
-    }
-
-    @Override
-    public String getDescription() {
-        return PluginsResourceBundle.getDescription(NAME);
     }
 
     @Override
@@ -70,7 +59,7 @@ public final class StripJavaDebugAttributesPlugin implements Plugin {
                     if (path.endsWith("module-info.class")) {
                         // XXX. Do we have debug info? Is Asm ready for module-info?
                     } else {
-                        ClassReader reader = new ClassReader(resource.contentBytes());
+                        ClassReader reader = newClassReader(path, resource);
                         ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
                         reader.accept(writer, ClassReader.SKIP_DEBUG);
                         byte[] content = writer.toByteArray();

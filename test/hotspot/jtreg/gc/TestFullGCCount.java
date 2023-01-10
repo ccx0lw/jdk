@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,10 +26,12 @@ package gc;
 /**
  * @test TestFullGCCount.java
  * @bug 7072527
- * @summary CMS: JMM GC counters overcount in some cases
- * @requires !(vm.gc == "ConcMarkSweep" & vm.opt.ExplicitGCInvokesConcurrent == true)
+ * @summary JMM GC counters overcount in some cases
  * @comment Shenandoah has "ExplicitGCInvokesConcurrent" on by default
- * @requires !(vm.gc == "Shenandoah"    & vm.opt.ExplicitGCInvokesConcurrent != false)
+ * @requires !(vm.gc == "Shenandoah" & vm.opt.ExplicitGCInvokesConcurrent != false)
+ * @comment G1 has separate counters for STW Full GC and concurrent GC.
+ * @requires !(vm.gc.G1 & vm.opt.ExplicitGCInvokesConcurrent == true)
+ * @requires vm.gc != "Z"
  * @modules java.management
  * @run main/othervm -Xlog:gc gc.TestFullGCCount
  */
@@ -41,7 +43,7 @@ import java.util.HashMap;
 import java.util.List;
 
 /*
- * Originally for a specific failure in CMS, this test now monitors all
+ * Originally for a specific failure in CMS[[keep]], this test now monitors all
  * collectors for double-counting of collections.
  */
 public class TestFullGCCount {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -30,10 +30,15 @@
 #include "gc/g1/g1HeapVerifier.hpp"
 #include "gc/g1/g1RegionMarkStatsCache.hpp"
 #include "gc/g1/heapRegionSet.hpp"
+#include "gc/shared/gcCause.hpp"
+#include "gc/shared/taskTerminator.hpp"
 #include "gc/shared/taskqueue.hpp"
 #include "gc/shared/verifyOption.hpp"
+#include "gc/shared/workerThread.hpp"
+#include "gc/shared/workerUtils.hpp"
 #include "memory/allocation.hpp"
 #include "utilities/compilerWarnings.hpp"
+#include "utilities/numberSeq.hpp"
 
 class ConcurrentGCTimer;
 class G1ConcurrentMarkThread;
@@ -44,10 +49,7 @@ class G1ConcurrentMark;
 class G1OldTracer;
 class G1RegionToSpaceMapper;
 class G1SurvivorRegions;
-
-PRAGMA_DIAG_PUSH
-// warning C4522: multiple assignment operators specified
-PRAGMA_DISABLE_MSVC_WARNING(4522)
+class ThreadClosure;
 
 // This is a container class for either an oop or a continuation address for
 // mark stack entries. Both are pushed onto the mark stack.
@@ -62,25 +64,16 @@ private:
   }
   G1TaskQueueEntry(HeapWord* addr) : _holder((void*)((uintptr_t)addr | ArraySliceBit)) { }
 public:
-  G1TaskQueueEntry(const G1TaskQueueEntry& other) { _holder = other._holder; }
+
   G1TaskQueueEntry() : _holder(NULL) { }
+  // Trivially copyable, for use in GenericTaskQueue.
 
   static G1TaskQueueEntry from_slice(HeapWord* what) { return G1TaskQueueEntry(what); }
   static G1TaskQueueEntry from_oop(oop obj) { return G1TaskQueueEntry(obj); }
 
-  G1TaskQueueEntry& operator=(const G1TaskQueueEntry& t) {
-    _holder = t._holder;
-    return *this;
-  }
-
-  volatile G1TaskQueueEntry& operator=(const volatile G1TaskQueueEntry& t) volatile {
-    _holder = t._holder;
-    return *this;
-  }
-
   oop obj() const {
     assert(!is_array_slice(), "Trying to read array slice " PTR_FORMAT " as oop", p2i(_holder));
-    return (oop)_holder;
+    return cast_to_oop(_holder);
   }
 
   HeapWord* slice() const {
@@ -92,8 +85,6 @@ public:
   bool is_array_slice() const { return ((uintptr_t)_holder & ArraySliceBit) != 0; }
   bool is_null() const { return _holder == NULL; }
 };
-
-PRAGMA_DIAG_POP
 
 typedef GenericTaskQueue<G1TaskQueueEntry, mtGC> G1CMTaskQueue;
 typedef GenericTaskQueueSet<G1CMTaskQueue, mtGC> G1CMTaskQueueSet;
@@ -225,9 +216,9 @@ private:
 // Root MemRegions are memory areas that contain objects which references are
 // roots wrt to the marking. They must be scanned before marking to maintain the
 // SATB invariant.
-// Typically they contain the areas from nTAMS to top of the regions.
-// We could scan and mark through these objects during the initial-mark pause, but for
-// pause time reasons we move this work to the concurrent phase.
+// Typically they contain the areas from TAMS to top of the regions.
+// We could scan and mark through these objects during the concurrent start pause,
+// but for pause time reasons we move this work to the concurrent phase.
 // We need to complete this procedure before the next GC because it might determine
 // that some of these "root objects" are dead, potentially dropping some required
 // references.
@@ -288,31 +279,27 @@ public:
 // This class manages data structures and methods for doing liveness analysis in
 // G1's concurrent cycle.
 class G1ConcurrentMark : public CHeapObj<mtGC> {
-  friend class G1ConcurrentMarkThread;
-  friend class G1CMRefProcTaskProxy;
-  friend class G1CMRefProcTaskExecutor;
-  friend class G1CMKeepAliveAndDrainClosure;
-  friend class G1CMDrainMarkingStackClosure;
   friend class G1CMBitMapClosure;
   friend class G1CMConcurrentMarkingTask;
+  friend class G1CMDrainMarkingStackClosure;
+  friend class G1CMKeepAliveAndDrainClosure;
+  friend class G1CMRefProcProxyTask;
   friend class G1CMRemarkTask;
+  friend class G1CMRootRegionScanTask;
   friend class G1CMTask;
+  friend class G1ConcurrentMarkThread;
 
   G1ConcurrentMarkThread* _cm_thread;     // The thread doing the work
   G1CollectedHeap*        _g1h;           // The heap
-  bool                    _completed_initialization; // Set to true when initialization is complete
 
   // Concurrent marking support structures
-  G1CMBitMap              _mark_bitmap_1;
-  G1CMBitMap              _mark_bitmap_2;
-  G1CMBitMap*             _prev_mark_bitmap; // Completed mark bitmap
-  G1CMBitMap*             _next_mark_bitmap; // Under-construction mark bitmap
+  G1CMBitMap              _mark_bitmap;
 
   // Heap bounds
   MemRegion const         _heap;
 
   // Root region tracking and claiming
-  G1CMRootMemRegions         _root_regions;
+  G1CMRootMemRegions      _root_regions;
 
   // For grey objects
   G1CMMarkStack           _global_mark_stack; // Grey objects behind global finger
@@ -337,8 +324,11 @@ class G1ConcurrentMark : public CHeapObj<mtGC> {
   // ensure, that no task starts doing work before all data
   // structures (local and global) have been re-initialized. When they
   // exit it, they are free to start working again.
-  WorkGangBarrierSync     _first_overflow_barrier_sync;
-  WorkGangBarrierSync     _second_overflow_barrier_sync;
+  WorkerThreadsBarrierSync     _first_overflow_barrier_sync;
+  WorkerThreadsBarrierSync     _second_overflow_barrier_sync;
+
+  // Number of completed mark cycles.
+  volatile uint           _completed_mark_cycles;
 
   // This is set by any task, when an overflow on the global data
   // structures is detected
@@ -366,20 +356,26 @@ class G1ConcurrentMark : public CHeapObj<mtGC> {
 
   double*   _accum_task_vtime;   // Accumulated task vtime
 
-  WorkGang* _concurrent_workers;
+  WorkerThreads* _concurrent_workers;
   uint      _num_concurrent_workers; // The number of marking worker threads we're using
   uint      _max_concurrent_workers; // Maximum number of marking worker threads
 
-  void verify_during_pause(G1HeapVerifier::G1VerifyType type, VerifyOption vo, const char* caller);
+  enum class VerifyLocation {
+    RemarkBefore,
+    RemarkAfter,
+    RemarkOverflow,
+    CleanupBefore,
+    CleanupAfter
+  };
+  static const char* verify_location_string(VerifyLocation location);
+  void verify_during_pause(G1HeapVerifier::G1VerifyType type,
+                           VerifyLocation location);
 
   void finalize_marking();
 
-  void weak_refs_work_parallel_part(BoolObjectClosure* is_alive, bool purged_classes);
-  void weak_refs_work(bool clear_all_soft_refs);
+  void weak_refs_work();
 
   void report_object_count(bool mark_completed);
-
-  void swap_mark_bitmaps();
 
   void reclaim_empty_regions();
 
@@ -389,10 +385,6 @@ class G1ConcurrentMark : public CHeapObj<mtGC> {
   // Clear statistics gathered during the concurrent cycle for the given region after
   // it has been reclaimed.
   void clear_statistics(HeapRegion* r);
-
-  // Resets the global marking data structures, as well as the
-  // task local ones; should be called during initial mark.
-  void reset();
 
   // Resets all the marking data structures. Called when we have to restart
   // marking or when marking completes (via set_non_marking_state below).
@@ -412,10 +404,10 @@ class G1ConcurrentMark : public CHeapObj<mtGC> {
   // Prints all gathered CM-related statistics
   void print_stats();
 
-  HeapWord*               finger()           { return _finger;   }
-  bool                    concurrent()       { return _concurrent; }
-  uint                    active_tasks()     { return _num_active_tasks; }
-  ParallelTaskTerminator* terminator() const { return _terminator.terminator(); }
+  HeapWord*           finger()       { return _finger;   }
+  bool                concurrent()   { return _concurrent; }
+  uint                active_tasks() { return _num_active_tasks; }
+  TaskTerminator*     terminator()   { return &_terminator; }
 
   // Claims the next available region to be scanned by a marking
   // task/thread. It might return NULL if the next region is empty or
@@ -442,7 +434,7 @@ class G1ConcurrentMark : public CHeapObj<mtGC> {
 
   // Returns the task with the given id
   G1CMTask* task(uint id) {
-    // During initial mark we use the parallel gc threads to do some work, so
+    // During concurrent start we use the parallel gc threads to do some work, so
     // we can only compare against _max_num_tasks.
     assert(id < _max_num_tasks, "Task id %u not within bounds up to %u", id, _max_num_tasks);
     return _tasks[id];
@@ -459,9 +451,9 @@ class G1ConcurrentMark : public CHeapObj<mtGC> {
   void enter_first_sync_barrier(uint worker_id);
   void enter_second_sync_barrier(uint worker_id);
 
-  // Clear the given bitmap in parallel using the given WorkGang. If may_yield is
+  // Clear the next marking bitmap in parallel using the given WorkerThreads. If may_yield is
   // true, periodically insert checks to see if this method should exit prematurely.
-  void clear_bitmap(G1CMBitMap* bitmap, WorkGang* workers, bool may_yield);
+  void clear_bitmap(WorkerThreads* workers, bool may_yield);
 
   // Region statistics gathered during marking.
   G1RegionMarkStats* _region_mark_stats;
@@ -470,11 +462,17 @@ class G1ConcurrentMark : public CHeapObj<mtGC> {
   // means that this region does not be scanned during the rebuilding remembered
   // set phase at all.
   HeapWord* volatile* _top_at_rebuild_starts;
+  // True when Remark pause selected regions for rebuilding.
+  bool _needs_remembered_set_rebuild;
 public:
+  // To be called when an object is marked the first time, e.g. after a successful
+  // mark_in_bitmap call. Updates various statistics data.
   void add_to_liveness(uint worker_id, oop const obj, size_t size);
-  // Liveness of the given region as determined by concurrent marking, i.e. the amount of
-  // live words between bottom and nTAMS.
-  size_t liveness(uint region) const { return _region_mark_stats[region]._live_words; }
+  // Live words in the given region as determined by concurrent marking, i.e. the amount of
+  // live words between bottom and TAMS.
+  size_t live_words(uint region) const { return _region_mark_stats[region]._live_words; }
+  // Returns the liveness value in bytes.
+  size_t live_bytes(uint region) const { return live_words(region) * HeapWordSize; }
 
   // Sets the internal top_at_region_start for the given region to current top of the region.
   inline void update_top_at_rebuild_start(HeapRegion* r);
@@ -503,12 +501,15 @@ public:
   size_t partial_mark_stack_size_target() const { return _global_mark_stack.capacity() / 3; }
   bool mark_stack_empty() const                 { return _global_mark_stack.is_empty(); }
 
-  G1CMRootMemRegions* root_regions() { return &_root_regions; }
-
   void concurrent_cycle_start();
   // Abandon current marking iteration due to a Full GC.
-  void concurrent_cycle_abort();
-  void concurrent_cycle_end();
+  bool concurrent_cycle_abort();
+  void concurrent_cycle_end(bool mark_cycle_completed);
+
+  // Notifies marking threads to abort. This is a best-effort notification. Does not
+  // guarantee or update any state after the call. Root region scan must not be
+  // running.
+  void abort_marking_threads();
 
   void update_accum_task_vtime(int i, double vtime) {
     _accum_task_vtime[i] += vtime;
@@ -525,17 +526,19 @@ public:
   bool try_stealing(uint worker_id, G1TaskQueueEntry& task_entry);
 
   G1ConcurrentMark(G1CollectedHeap* g1h,
-                   G1RegionToSpaceMapper* prev_bitmap_storage,
-                   G1RegionToSpaceMapper* next_bitmap_storage);
+                   G1RegionToSpaceMapper* bitmap_storage);
   ~G1ConcurrentMark();
 
   G1ConcurrentMarkThread* cm_thread() { return _cm_thread; }
 
-  const G1CMBitMap* const prev_mark_bitmap() const { return _prev_mark_bitmap; }
-  G1CMBitMap* next_mark_bitmap() const { return _next_mark_bitmap; }
+  G1CMBitMap* mark_bitmap() const { return (G1CMBitMap*)&_mark_bitmap; }
 
   // Calculates the number of concurrent GC threads to be used in the marking phase.
   uint calc_active_marking_workers();
+
+  // Resets the global marking data structures, as well as the
+  // task local ones; should be called during concurrent start.
+  void reset();
 
   // Moves all per-task cached data into global state.
   void flush_all_task_caches();
@@ -544,20 +547,28 @@ public:
   // to be called concurrently to the mutator. It will yield to safepoint requests.
   void cleanup_for_next_mark();
 
-  // Clear the previous marking bitmap during safepoint.
-  void clear_prev_bitmap(WorkGang* workers);
+  // Clear the next marking bitmap during safepoint.
+  void clear_bitmap(WorkerThreads* workers);
 
   // These two methods do the work that needs to be done at the start and end of the
-  // initial mark pause.
-  void pre_initial_mark();
-  void post_initial_mark();
+  // concurrent start pause.
+  void pre_concurrent_start(GCCause::Cause cause);
+  void post_concurrent_mark_start();
+  void post_concurrent_undo_start();
 
   // Scan all the root regions and mark everything reachable from
   // them.
   void scan_root_regions();
+  bool wait_until_root_region_scan_finished();
+  void add_root_region(HeapRegion* r);
+
+private:
+  G1CMRootMemRegions* root_regions() { return &_root_regions; }
 
   // Scan a single root MemRegion to mark everything reachable from it.
   void scan_root_region(const MemRegion* region, uint worker_id);
+
+public:
 
   // Do concurrent phase of marking, to a tentative transitive closure.
   void mark_from_roots();
@@ -568,16 +579,15 @@ public:
   void remark();
 
   void cleanup();
-  // Mark in the previous bitmap. Caution: the prev bitmap is usually read-only, so use
-  // this carefully.
-  inline void mark_in_prev_bitmap(oop p);
 
-  // Clears marks for all objects in the given range, for the prev or
-  // next bitmaps.  Caution: the previous bitmap is usually
-  // read-only, so use this carefully!
-  void clear_range_in_prev_bitmap(MemRegion mr);
+  // Mark in the marking bitmap. Used during evacuation failure to
+  // remember what objects need handling. Not for use during marking.
+  inline void raw_mark_in_bitmap(oop obj);
 
-  inline bool is_marked_in_prev_bitmap(oop p) const;
+  // Clears marks for all objects in the given region in the marking
+  // bitmap. This should only be used to clean the bitmap during a
+  // safepoint.
+  void clear_bitmap_for_region(HeapRegion* hr);
 
   // Verify that there are no collection set oops on the stacks (taskqueues /
   // global mark stack) and fingers (global / per-task).
@@ -586,32 +596,31 @@ public:
 
   inline bool do_yield_check();
 
+  uint completed_mark_cycles() const;
+
   bool has_aborted()      { return _has_aborted; }
 
   void print_summary_info();
 
-  void print_worker_threads_on(outputStream* st) const;
   void threads_do(ThreadClosure* tc) const;
 
   void print_on_error(outputStream* st) const;
 
-  // Mark the given object on the next bitmap if it is below nTAMS.
-  inline bool mark_in_next_bitmap(uint worker_id, HeapRegion* const hr, oop const obj);
-  inline bool mark_in_next_bitmap(uint worker_id, oop const obj);
+  // Mark the given object on the marking bitmap if it is below TAMS.
+  inline bool mark_in_bitmap(uint worker_id, oop const obj);
 
-  inline bool is_marked_in_next_bitmap(oop p) const;
-
-  // Returns true if initialization was successfully completed.
-  bool completed_initialization() const {
-    return _completed_initialization;
-  }
+  inline bool is_marked_in_bitmap(oop p) const;
 
   ConcurrentGCTimer* gc_timer_cm() const { return _gc_timer_cm; }
+
   G1OldTracer* gc_tracer_cm() const { return _gc_tracer_cm; }
 
 private:
-  // Rebuilds the remembered sets for chosen regions in parallel and concurrently to the application.
-  void rebuild_rem_set_concurrently();
+  // Rebuilds the remembered sets for chosen regions in parallel and concurrently
+  // to the application. Also scrubs dead objects to ensure region is parsable.
+  void rebuild_and_scrub();
+
+  uint needs_remembered_set_rebuild() const { return _needs_remembered_set_rebuild; }
 };
 
 // A class representing a marking task.
@@ -628,16 +637,12 @@ private:
     init_hash_seed                = 17
   };
 
-  // Number of entries in the per-task stats entry. This seems enough to have a very
-  // low cache miss rate.
-  static const uint RegionMarkStatsCacheSize = 1024;
-
   G1CMObjArrayProcessor       _objArray_processor;
 
   uint                        _worker_id;
   G1CollectedHeap*            _g1h;
   G1ConcurrentMark*           _cm;
-  G1CMBitMap*                 _next_mark_bitmap;
+  G1CMBitMap*                 _mark_bitmap;
   // the task queue of this task
   G1CMTaskQueue*              _task_queue;
 
@@ -743,7 +748,7 @@ public:
   // scanned.
   inline size_t scan_objArray(objArrayOop obj, MemRegion mr);
   // Resets the task; should be called right at the beginning of a marking phase.
-  void reset(G1CMBitMap* next_mark_bitmap);
+  void reset(G1CMBitMap* mark_bitmap);
   // Clears all the fields that correspond to a claimed region.
   void clear_region_fields();
 
@@ -787,14 +792,14 @@ public:
   void increment_refs_reached() { ++_refs_reached; }
 
   // Grey the object by marking it.  If not already marked, push it on
-  // the local queue if below the finger. obj is required to be below its region's NTAMS.
+  // the local queue if below the finger. obj is required to be below its region's TAMS.
   // Returns whether there has been a mark to the bitmap.
   inline bool make_reference_grey(oop obj);
 
   // Grey the object (by calling make_grey_reference) if required,
-  // e.g. obj is below its containing region's NTAMS.
+  // e.g. obj is below its containing region's TAMS.
   // Precondition: obj is a valid heap object.
-  // Returns true if the reference caused a mark to be set in the next bitmap.
+  // Returns true if the reference caused a mark to be set in the marking bitmap.
   template <class T>
   inline bool deal_with_reference(T* p);
 
@@ -831,8 +836,7 @@ public:
   G1CMTask(uint worker_id,
            G1ConcurrentMark *cm,
            G1CMTaskQueue* task_queue,
-           G1RegionMarkStats* mark_stats,
-           uint max_regions);
+           G1RegionMarkStats* mark_stats);
 
   inline void update_liveness(oop const obj, size_t const obj_size);
 
@@ -852,14 +856,13 @@ class G1PrintRegionLivenessInfoClosure : public HeapRegionClosure {
   // Accumulators for these values.
   size_t _total_used_bytes;
   size_t _total_capacity_bytes;
-  size_t _total_prev_live_bytes;
-  size_t _total_next_live_bytes;
+  size_t _total_live_bytes;
 
   // Accumulator for the remembered set size
   size_t _total_remset_bytes;
 
-  // Accumulator for strong code roots memory size
-  size_t _total_strong_code_roots_bytes;
+  // Accumulator for code roots memory size
+  size_t _total_code_roots_bytes;
 
   static double bytes_to_mb(size_t val) {
     return (double) val / (double) M;
@@ -872,5 +875,4 @@ public:
   virtual bool do_heap_region(HeapRegion* r);
   ~G1PrintRegionLivenessInfoClosure();
 };
-
 #endif // SHARE_GC_G1_G1CONCURRENTMARK_HPP

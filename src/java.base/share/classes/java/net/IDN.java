@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005, 2013, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,9 +29,9 @@ import java.io.IOException;
 import java.security.AccessController;
 import java.security.PrivilegedAction;
 
-import sun.net.idn.StringPrep;
-import sun.net.idn.Punycode;
-import sun.text.normalizer.UCharacterIterator;
+import jdk.internal.icu.impl.Punycode;
+import jdk.internal.icu.text.StringPrep;
+import jdk.internal.icu.text.UCharacterIterator;
 
 /**
  * Provides methods to convert internationalized domain names (IDNs) between
@@ -223,19 +223,15 @@ public final class IDN {
     private static StringPrep namePrep = null;
 
     static {
-        InputStream stream = null;
-
         try {
-            final String IDN_PROFILE = "uidna.spp";
-            if (System.getSecurityManager() != null) {
-                stream = AccessController.doPrivileged(new PrivilegedAction<>() {
-                    public InputStream run() {
-                        return StringPrep.class.getResourceAsStream(IDN_PROFILE);
-                    }
-                });
-            } else {
-                stream = StringPrep.class.getResourceAsStream(IDN_PROFILE);
-            }
+            final String IDN_PROFILE = "/sun/net/idn/uidna.spp";
+            @SuppressWarnings("removal")
+            InputStream stream = System.getSecurityManager() != null
+                    ? AccessController.doPrivileged(new PrivilegedAction<>() {
+                            public InputStream run() {
+                                return StringPrep.class.getResourceAsStream(IDN_PROFILE);
+                            }})
+                    : StringPrep.class.getResourceAsStream(IDN_PROFILE);
 
             namePrep = new StringPrep(stream);
             stream.close();

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2022, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2016 SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -85,8 +85,8 @@ class NativeInstruction {
   // Bcrl is currently the only accepted instruction here.
   bool is_jump();
 
-  // We use an illtrap for marking a method as not_entrant or zombie.
-  bool is_sigill_zombie_not_entrant();
+  // We use an illtrap for marking a method as not_entrant.
+  bool is_sigill_not_entrant();
 
   bool is_safepoint_poll() {
     // Is the current instruction a POTENTIAL read access to the polling page?
@@ -136,9 +136,6 @@ class NativeInstruction {
  public:
 
   void verify();
-
-  // unit test stuff
-  static void test() {}                        // Override for testing.
 
   friend NativeInstruction* nativeInstruction_at(address address) {
     NativeInstruction* inst = (NativeInstruction*)address;
@@ -273,9 +270,6 @@ class NativeCall: public NativeInstruction {
 
   void verify_alignment() {} // Yet another real do nothing guy :)
   void verify();
-
-  // unit test stuff
-  static void test();
 
   // Creation.
   friend NativeCall* nativeCall_at(address instr) {
@@ -443,9 +437,6 @@ class NativeFarCall: public NativeInstruction {
 
   void verify();
 
-  // Unit tests
-  static void test();
-
   // Instantiates a NativeFarCall object starting at the given instruction
   // address and returns the NativeFarCall object.
   inline friend NativeFarCall* nativeFarCall_at(address instr) {
@@ -500,9 +491,6 @@ class NativeMovConstReg: public NativeInstruction {
 
   void verify();
 
-  // unit test stuff
-  static void test();
-
   // Creation.
   friend NativeMovConstReg* nativeMovConstReg_at(address address) {
     NativeMovConstReg* test = (NativeMovConstReg*)address;
@@ -528,13 +516,19 @@ class NativeMovConstReg: public NativeInstruction {
 // The instruction sequence looks like this:
 //   iihf        %r1,$bits1              ; load offset for mem access
 //   iilf        %r1,$bits2
-//   [compress oop]                      ; optional, load only
+//   [compress oop]                      ; optional, store only
 //   load/store  %r2,0(%r1,%r2)          ; memory access
 
 class NativeMovRegMem;
 inline NativeMovRegMem* nativeMovRegMem_at (address address);
 class NativeMovRegMem: public NativeInstruction {
  public:
+  enum z_specific_constants {
+    instruction_size = 12 // load_const used with access_field_id
+  };
+
+  int num_bytes_to_end_of_patch() const { return instruction_size; }
+
   intptr_t offset() const {
     return nativeMovConstReg_at(addr_at(0))->data();
   }
@@ -612,9 +606,6 @@ class NativeJump: public NativeInstruction {
 
   void verify();
 
-  // Unit testing stuff
-  static void test();
-
   // Insertion of native jump instruction.
   static void insert(address code_pos, address entry);
 
@@ -661,6 +652,37 @@ class NativeGeneralJump: public NativeInstruction {
   static void replace_mt_safe(address instr_addr, address code_buffer);
 
   void verify() PRODUCT_RETURN;
+};
+
+class NativePostCallNop: public NativeInstruction {
+public:
+  bool check() const { Unimplemented(); return false; }
+  int displacement() const { return 0; }
+  void patch(jint diff) { Unimplemented(); }
+  void make_deopt() { Unimplemented(); }
+};
+
+inline NativePostCallNop* nativePostCallNop_at(address address) {
+  // Unimplemented();
+  return NULL;
+}
+
+class NativeDeoptInstruction: public NativeInstruction {
+public:
+  address instruction_address() const       { Unimplemented(); return NULL; }
+  address next_instruction_address() const  { Unimplemented(); return NULL; }
+
+  void  verify() { Unimplemented(); }
+
+  static bool is_deopt_at(address instr) {
+    // Unimplemented();
+    return false;
+  }
+
+  // MT-safe patching
+  static void insert(address code_pos) {
+    Unimplemented();
+  }
 };
 
 #endif // CPU_S390_NATIVEINST_S390_HPP

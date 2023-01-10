@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,14 +29,23 @@
 #include "code/dependencyContext.hpp"
 #include "gc/shared/gcBehaviours.hpp"
 #include "gc/shared/suspendibleThreadSet.hpp"
+#include "gc/z/zBarrier.inline.hpp"
 #include "gc/z/zLock.inline.hpp"
 #include "gc/z/zNMethod.hpp"
-#include "gc/z/zOopClosures.hpp"
 #include "gc/z/zStat.hpp"
 #include "gc/z/zUnload.hpp"
+#include "memory/metaspaceUtils.hpp"
 #include "oops/access.inline.hpp"
 
-static const ZStatSubPhase ZSubPhaseConcurrentClassesUnload("Concurrent Classes Unload");
+static const ZStatSubPhase ZSubPhaseConcurrentClassesUnlink("Concurrent Classes Unlink");
+static const ZStatSubPhase ZSubPhaseConcurrentClassesPurge("Concurrent Classes Purge");
+
+class ZPhantomIsAliveObjectClosure : public BoolObjectClosure {
+public:
+  virtual bool do_object_b(oop o) {
+    return ZBarrier::is_alive_barrier_on_phantom_oop(o);
+  }
+};
 
 class ZIsUnloadingOopClosure : public OopClosure {
 private:
@@ -66,12 +75,12 @@ public:
 
 class ZIsUnloadingBehaviour : public IsUnloadingBehaviour {
 public:
-  virtual bool is_unloading(CompiledMethod* method) const {
+  virtual bool has_dead_oop(CompiledMethod* method) const {
     nmethod* const nm = method->as_nmethod();
     ZReentrantLock* const lock = ZNMethod::lock_for_nmethod(nm);
     ZLocker<ZReentrantLock> locker(lock);
     ZIsUnloadingOopClosure cl;
-    ZNMethod::nmethod_oops_do(nm, &cl);
+    ZNMethod::nmethod_oops_do_inner(nm, &cl);
     return cl.is_unloading();
   }
 };
@@ -126,6 +135,11 @@ void ZUnload::prepare() {
 }
 
 void ZUnload::unlink() {
+  if (!ClassUnloading) {
+    return;
+  }
+
+  ZStatTimer timer(ZSubPhaseConcurrentClassesUnlink);
   SuspendibleThreadSetJoiner sts;
   bool unloading_occurred;
 
@@ -135,47 +149,28 @@ void ZUnload::unlink() {
   }
 
   Klass::clean_weak_klass_links(unloading_occurred);
-
   ZNMethod::unlink(_workers, unloading_occurred);
-
   DependencyContext::cleaning_end();
 }
 
 void ZUnload::purge() {
-  {
-    SuspendibleThreadSetJoiner sts;
-    ZNMethod::purge(_workers);
-  }
-
-  ClassLoaderDataGraph::purge();
-  CodeCache::purge_exception_caches();
-}
-
-class ZUnloadRendezvousClosure : public ThreadClosure {
-public:
-  void do_thread(Thread* thread) {}
-};
-
-void ZUnload::unload() {
   if (!ClassUnloading) {
     return;
   }
 
-  ZStatTimer timer(ZSubPhaseConcurrentClassesUnload);
+  ZStatTimer timer(ZSubPhaseConcurrentClassesPurge);
 
-  // Unlink stale metadata and nmethods
-  unlink();
+  {
+    SuspendibleThreadSetJoiner sts;
+    ZNMethod::purge();
+  }
 
-  // Make sure stale metadata and nmethods are no longer observable
-  ZUnloadRendezvousClosure cl;
-  Handshake::execute(&cl);
-
-  // Purge stale metadata and nmethods that were unlinked
-  purge();
+  ClassLoaderDataGraph::purge(/*at_safepoint*/false);
+  CodeCache::purge_exception_caches();
 }
 
 void ZUnload::finish() {
   // Resize and verify metaspace
   MetaspaceGC::compute_new_size();
-  MetaspaceUtils::verify_metrics();
+  DEBUG_ONLY(MetaspaceUtils::verify();)
 }

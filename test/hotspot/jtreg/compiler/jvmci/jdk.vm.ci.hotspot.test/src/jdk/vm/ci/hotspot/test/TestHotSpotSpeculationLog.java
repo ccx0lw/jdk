@@ -20,17 +20,34 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+/*
+ * @test
+ * @requires vm.jvmci
+ * @modules jdk.internal.vm.ci/jdk.vm.ci.hotspot
+ *          jdk.internal.vm.ci/jdk.vm.ci.runtime
+ *          jdk.internal.vm.ci/jdk.vm.ci.meta
+ * @library /compiler/jvmci/jdk.vm.ci.hotspot.test/src
+ * @run testng/othervm
+ *      -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCI -XX:-UseJVMCICompiler
+ *      jdk.vm.ci.hotspot.test.TestHotSpotSpeculationLog
+ */
+
 package jdk.vm.ci.hotspot.test;
 
 import java.util.function.Supplier;
 
-import org.junit.Assert;
-import org.junit.Assume;
-import org.junit.Test;
+import org.testng.Assert;
+import org.testng.SkipException;
+import org.testng.annotations.Test;
 
 import jdk.vm.ci.hotspot.HotSpotSpeculationLog;
+import jdk.vm.ci.meta.JavaConstant;
+import jdk.vm.ci.meta.JavaKind;
+import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.SpeculationLog;
 import jdk.vm.ci.meta.SpeculationLog.SpeculationReasonEncoding;
+import jdk.vm.ci.runtime.JVMCI;
 
 public class TestHotSpotSpeculationLog {
 
@@ -76,26 +93,37 @@ public class TestHotSpotSpeculationLog {
 
     @Test
     public synchronized void testFailedSpeculations() {
+        MetaAccessProvider metaAccess = JVMCI.getRuntime().getHostJVMCIBackend().getMetaAccess();
         HotSpotSpeculationLog log = new HotSpotSpeculationLog();
         DummyReason reason1 = new DummyReason("dummy1");
-        DummyReason reason2 = new DummyReason("dummy2");
+        String longName = new String(new char[2000]).replace('\0', 'X');
+        DummyReason reason2 = new DummyReason(longName);
         Assert.assertTrue(log.maySpeculate(reason1));
         Assert.assertTrue(log.maySpeculate(reason2));
 
         SpeculationLog.Speculation s1 = log.speculate(reason1);
         SpeculationLog.Speculation s2 = log.speculate(reason2);
 
+        JavaConstant encodedS1 = metaAccess.encodeSpeculation(s1);
+        JavaConstant encodedS2 = metaAccess.encodeSpeculation(s2);
+        Assert.assertEquals(JavaKind.Long, encodedS1.getJavaKind());
+        Assert.assertEquals(JavaKind.Long, encodedS2.getJavaKind());
+
         boolean added = log.addFailedSpeculation(s1);
-        Assume.assumeTrue(added);
+        if (!added) {
+            throw new SkipException("log.addFailedSpeculation(s1) is false");
+        }
+
         log.collectFailedSpeculations();
         Assert.assertFalse(log.maySpeculate(reason1));
         Assert.assertTrue(log.maySpeculate(reason2));
 
         added = log.addFailedSpeculation(s2);
-        Assume.assumeTrue(added);
+        if (!added) {
+            throw new SkipException("log.addFailedSpeculation(s2) is false");
+        }
         log.collectFailedSpeculations();
-        Assume.assumeTrue(added);
         Assert.assertFalse(log.maySpeculate(reason1));
-        Assert.assertFalse(log.toString(), log.maySpeculate(reason2));
+        Assert.assertFalse(log.maySpeculate(reason2), log.toString());
     }
 }

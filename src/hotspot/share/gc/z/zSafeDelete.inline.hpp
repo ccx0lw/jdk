@@ -24,10 +24,12 @@
 #ifndef SHARE_GC_Z_ZSAFEDELETE_INLINE_HPP
 #define SHARE_GC_Z_ZSAFEDELETE_INLINE_HPP
 
-#include "gc/z/zArray.inline.hpp"
 #include "gc/z/zSafeDelete.hpp"
-#include "metaprogramming/isArray.hpp"
+
+#include "gc/z/zArray.inline.hpp"
 #include "utilities/debug.hpp"
+
+#include <type_traits>
 
 template <typename T>
 ZSafeDeleteImpl<T>::ZSafeDeleteImpl(ZLock* lock) :
@@ -39,7 +41,7 @@ template <typename T>
 bool ZSafeDeleteImpl<T>::deferred_delete(ItemT* item) {
   ZLocker<ZLock> locker(_lock);
   if (_enabled > 0) {
-    _deferred.add(item);
+    _deferred.append(item);
     return true;
   }
 
@@ -48,7 +50,7 @@ bool ZSafeDeleteImpl<T>::deferred_delete(ItemT* item) {
 
 template <typename T>
 void ZSafeDeleteImpl<T>::immediate_delete(ItemT* item) {
-  if (IsArray<T>::value) {
+  if (std::is_array<T>::value) {
     delete [] item;
   } else {
     delete item;
@@ -69,7 +71,7 @@ void ZSafeDeleteImpl<T>::disable_deferred_delete() {
     ZLocker<ZLock> locker(_lock);
     assert(_enabled > 0, "Invalid state");
     if (--_enabled == 0) {
-      deferred.transfer(&_deferred);
+      deferred.swap(&_deferred);
     }
   }
 

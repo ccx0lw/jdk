@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1996, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1996, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -98,7 +98,7 @@ import sun.util.locale.provider.TimeZoneNameUtility;
  * <p>
  * New {@code DateFormatSymbols} subclasses may be added to support
  * {@code SimpleDateFormat} for date-time formatting for additional locales.
-
+ *
  * @see          DateFormat
  * @see          SimpleDateFormat
  * @see          java.util.SimpleTimeZone
@@ -176,7 +176,6 @@ public class DateFormatSymbols implements Serializable, Cloneable {
      * Short month strings. For example: "Jan", "Feb", etc.  An array of
      * 13 strings (some calendars have 13 months), indexed by
      * {@code Calendar.JANUARY}, {@code Calendar.FEBRUARY}, etc.
-
      * @serial
      */
     String shortMonths[] = null;
@@ -300,8 +299,9 @@ public class DateFormatSymbols implements Serializable, Cloneable {
      * The returned array represents the union of locales supported by the
      * Java runtime and by installed
      * {@link java.text.spi.DateFormatSymbolsProvider DateFormatSymbolsProvider}
-     * implementations.  It must contain at least a {@code Locale}
-     * instance equal to {@link java.util.Locale#US Locale.US}.
+     * implementations. At a minimum, the returned array must contain a
+     * {@code Locale} instance equal to {@link Locale#ROOT Locale.ROOT} and
+     * a {@code Locale} instance equal to {@link Locale#US Locale.US}.
      *
      * @return An array of locales for which localized
      *         {@code DateFormatSymbols} instances are available.
@@ -698,11 +698,6 @@ public class DateFormatSymbols implements Serializable, Cloneable {
     // =======================privates===============================
 
     /**
-     * Useful constant for defining time zone offsets.
-     */
-    static final int millisPerHour = 60*60*1000;
-
-    /**
      * Cache to hold DateFormatSymbols instances per Locale.
      */
     private static final ConcurrentMap<Locale, SoftReference<DateFormatSymbols>> cachedInstances
@@ -759,6 +754,11 @@ public class DateFormatSymbols implements Serializable, Cloneable {
             dfs.months = resource.getStringArray("MonthNames");
             dfs.shortMonths = resource.getStringArray("MonthAbbreviations");
             dfs.ampms = resource.getStringArray("AmPmMarkers");
+            // the array in the resource bundle may contain more elements for day periods.
+            // Extract only am/pm.
+            if (dfs.ampms.length > 2) {
+                dfs.ampms = Arrays.copyOf(dfs.ampms, 2);
+            }
             dfs.localPatternChars = resource.getString("DateTimePatternChars");
 
             // Day of week names are stored in a 1-based array.

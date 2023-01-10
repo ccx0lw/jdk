@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -52,7 +52,23 @@ public class NamedParameterSpec implements AlgorithmParameterSpec {
     public static final NamedParameterSpec X448
         = new NamedParameterSpec("X448");
 
-    private String name;
+    /**
+     * The Ed25519 parameters
+     *
+     * @since 15
+     */
+    public static final NamedParameterSpec ED25519
+        = new NamedParameterSpec("Ed25519");
+
+    /**
+     * The Ed448 parameters
+     *
+     * @since 15
+     */
+    public static final NamedParameterSpec ED448
+        = new NamedParameterSpec("Ed448");
+
+    private final String name;
 
     /**
      * Creates a parameter specification using a standard (or predefined)

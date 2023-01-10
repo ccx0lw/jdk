@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2006, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,7 +26,6 @@
 package com.sun.tools.javac.tree;
 
 import com.sun.source.tree.*;
-import com.sun.source.tree.Tree.Kind;
 import com.sun.tools.javac.tree.JCTree.*;
 import com.sun.tools.javac.util.DefinedBy;
 import com.sun.tools.javac.util.DefinedBy.Api;
@@ -66,8 +65,8 @@ public class TreeCopier<P> implements TreeVisitor<JCTree,P> {
     }
 
     public <T extends JCTree> List<T> copy(List<T> trees, P p) {
-        if (trees == null)
-            return null;
+        if (trees == null || trees.isEmpty())
+            return trees;
         ListBuffer<T> lb = new ListBuffer<>();
         for (T tree: trees)
             lb.append(copy(tree, p));
@@ -144,7 +143,6 @@ public class TreeCopier<P> implements TreeVisitor<JCTree,P> {
     }
 
     @DefinedBy(Api.COMPILER_TREE)
-    @SuppressWarnings("removal")
     public JCTree visitYield(YieldTree node, P p) {
         JCYield t = (JCYield) node;
         JCExpression value = copy(t.value, p);
@@ -154,10 +152,16 @@ public class TreeCopier<P> implements TreeVisitor<JCTree,P> {
     @DefinedBy(Api.COMPILER_TREE)
     public JCTree visitCase(CaseTree node, P p) {
         JCCase t = (JCCase) node;
-        List<JCExpression> pats = copy(t.pats, p);
+        List<JCCaseLabel> labels = copy(t.labels, p);
         List<JCStatement> stats = copy(t.stats, p);
-        JCTree body = copy(t.body, p);
-        return M.at(t.pos).Case(t.caseKind, pats, stats, body);
+        JCTree body;
+        if (node.getCaseKind() == CaseTree.CaseKind.RULE) {
+            body = t.body instanceof JCExpression && t.stats.head.hasTag(Tag.YIELD)
+                    ? ((JCYield) t.stats.head).value : t.stats.head;
+        } else {
+            body = null;
+        }
+        return M.at(t.pos).Case(t.caseKind, labels, stats, body);
     }
 
     @DefinedBy(Api.COMPILER_TREE)
@@ -219,10 +223,10 @@ public class TreeCopier<P> implements TreeVisitor<JCTree,P> {
     @DefinedBy(Api.COMPILER_TREE)
     public JCTree visitEnhancedForLoop(EnhancedForLoopTree node, P p) {
         JCEnhancedForLoop t = (JCEnhancedForLoop) node;
-        JCVariableDecl var = copy(t.var, p);
+        JCTree varOrRecordPattern = copy(t.varOrRecordPattern, p);
         JCExpression expr = copy(t.expr, p);
         JCStatement body = copy(t.body, p);
-        return M.at(t.pos).ForeachLoop(var, expr, body);
+        return M.at(t.pos).ForeachLoop(varOrRecordPattern, expr, body);
     }
 
     @DefinedBy(Api.COMPILER_TREE)
@@ -380,7 +384,6 @@ public class TreeCopier<P> implements TreeVisitor<JCTree,P> {
     }
 
     @DefinedBy(Api.COMPILER_TREE)
-    @SuppressWarnings("removal")
     public JCTree visitSwitchExpression(SwitchExpressionTree node, P p) {
         JCSwitchExpression t = (JCSwitchExpression) node;
         JCExpression selector = copy(t.selector, p);
@@ -483,8 +486,51 @@ public class TreeCopier<P> implements TreeVisitor<JCTree,P> {
     public JCTree visitInstanceOf(InstanceOfTree node, P p) {
         JCInstanceOf t = (JCInstanceOf) node;
         JCExpression expr = copy(t.expr, p);
-        JCTree clazz = copy(t.clazz, p);
-        return M.at(t.pos).TypeTest(expr, clazz);
+        JCTree pattern = copy(t.pattern, p);
+        return M.at(t.pos).TypeTest(expr, pattern);
+    }
+
+    @DefinedBy(Api.COMPILER_TREE)
+    public JCTree visitBindingPattern(BindingPatternTree node, P p) {
+        JCBindingPattern t = (JCBindingPattern) node;
+        JCVariableDecl var = copy(t.var, p);
+        return M.at(t.pos).BindingPattern(var);
+    }
+
+    @DefinedBy(Api.COMPILER_TREE)
+    public JCTree visitParenthesizedPattern(ParenthesizedPatternTree node, P p) {
+        JCParenthesizedPattern t = (JCParenthesizedPattern) node;
+        JCPattern pattern = copy(t.pattern, p);
+        return M.at(t.pos).ParenthesizedPattern(pattern);
+    }
+
+    @DefinedBy(Api.COMPILER_TREE)
+    public JCTree visitDefaultCaseLabel(DefaultCaseLabelTree node, P p) {
+        JCDefaultCaseLabel t = (JCDefaultCaseLabel) node;
+        return M.at(t.pos).DefaultCaseLabel();
+    }
+
+    @Override @DefinedBy(Api.COMPILER_TREE)
+    public JCTree visitConstantCaseLabel(ConstantCaseLabelTree node, P p) {
+        JCConstantCaseLabel t = (JCConstantCaseLabel) node;
+        JCExpression expr = copy(t.expr, p);
+        return M.at(t.pos).ConstantCaseLabel(expr);
+    }
+
+    @Override
+    public JCTree visitPatternCaseLabel(PatternCaseLabelTree node, P p) {
+        JCPatternCaseLabel t = (JCPatternCaseLabel) node;
+        JCPattern pat = copy(t.pat, p);
+        JCExpression guard = copy(t.guard, p);
+        return M.at(t.pos).PatternCaseLabel(pat, guard);
+    }
+
+    @DefinedBy(Api.COMPILER_TREE)
+    public JCTree visitDeconstructionPattern(DeconstructionPatternTree node, P p) {
+        JCRecordPattern t = (JCRecordPattern) node;
+        JCExpression deconstructor = copy(t.deconstructor, p);
+        List<JCPattern> nested = copy(t.nested, p);
+        return M.at(t.pos).RecordPattern(deconstructor, nested);
     }
 
     @DefinedBy(Api.COMPILER_TREE)

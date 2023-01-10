@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -30,6 +30,8 @@ import sun.jvm.hotspot.debugger.*;
 import sun.jvm.hotspot.classfile.*;
 import sun.jvm.hotspot.runtime.*;
 import sun.jvm.hotspot.types.*;
+import sun.jvm.hotspot.utilities.Observable;
+import sun.jvm.hotspot.utilities.Observer;
 
 public class Klass extends Metadata implements ClassConstants {
   static {
@@ -113,7 +115,7 @@ public class Klass extends Metadata implements ClassConstants {
   }
   public Klass    getSuper()            { return (Klass)    superField.getValue(this);   }
   public Klass    getJavaSuper()        { return null;  }
-  public int      getLayoutHelper()     { return (int)           layoutHelper.getValue(this); }
+  public int      getLayoutHelper()     { return            layoutHelper.getValue(this); }
   public Symbol   getName()             { return            getSymbol(name); }
   public long     getAccessFlags()      { return            accessFlags.getValue(this);  }
   // Convenience routine
@@ -170,7 +172,7 @@ public class Klass extends Metadata implements ClassConstants {
     return isSubclassOf(k);
   }
 
-  // Find LCA (Least Common Ancester) in class heirarchy
+  // Find LCA (Least Common Ancester) in class hierarchy
   public Klass lca( Klass k2 ) {
     Klass k1 = this;
     while ( true ) {

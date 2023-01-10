@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -30,11 +30,12 @@ import java.util.jar.Attributes;
 import java.util.jar.Manifest;
 import jdk.test.lib.util.JarUtils;
 import jdk.test.lib.compiler.InMemoryJavaCompiler;
+import jdk.test.lib.helpers.ClassFileInstaller;
 
 /*
  * @test
- * @bug 8216401
- * @summary Test loading of JAR Class-Path entry with file: scheme
+ * @bug 8216401 8235361
+ * @summary Test classloading via JAR Class-Path entries
  * @library /test/lib
  *
  * @run main/othervm JarClassPathFileEntry
@@ -52,6 +53,19 @@ public class JarClassPathFileEntry {
     private final static Path CONTEXT_JAR_PATH = Paths.get(TEST_CLASSES, "Context.jar");
 
     public static void main(String[] args) throws Throwable {
+        String fileScheme = "file:" + (IS_WINDOWS ? toUnixPath(OTHER_JAR_PATH.toString())
+                                                      :        OTHER_JAR_PATH.toString());
+        doTest(fileScheme);
+
+        if (IS_WINDOWS) {
+            // Relative URL encoding of absolute path, e.g. /C:\\path\\to\\file.jar
+            String driveLetter = "/" + OTHER_JAR_PATH;
+            doTest(driveLetter);
+        }
+    }
+
+    /* Load a class from Other.jar via the given Class-Path entry */
+    private static void doTest(String classPathEntry) throws Throwable {
         // Create Other.class in OTHER_DIR, off the default classpath
         byte klassbuf[] = InMemoryJavaCompiler.compile("Other",
                                                        "public class Other {}");
@@ -72,8 +86,6 @@ public class JarClassPathFileEntry {
         Attributes attrs = mf.getMainAttributes();
         attrs.put(Attributes.Name.MANIFEST_VERSION, "1.0");
 
-        String classPathEntry = "file:" + (IS_WINDOWS ? toUnixPath(OTHER_JAR_PATH.toString())
-                                                      :            OTHER_JAR_PATH.toString());
         attrs.put(Attributes.Name.CLASS_PATH, classPathEntry);
 
         System.out.println("Creating Context.jar with Class-Path: " + classPathEntry);

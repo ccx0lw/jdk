@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,8 +25,10 @@
 #ifndef SHARE_CLASSFILE_COMPACTHASHTABLE_HPP
 #define SHARE_CLASSFILE_COMPACTHASHTABLE_HPP
 
+#include "cds/cds_globals.hpp"
 #include "oops/array.hpp"
 #include "oops/symbol.hpp"
+#include "runtime/globals.hpp"
 #include "utilities/growableArray.hpp"
 
 
@@ -48,6 +50,10 @@ public:
   int hashentry_bytes;
   int bucket_count;
   int bucket_bytes;
+
+  CompactHashtableStats() :
+    hashentry_count(0), hashentry_bytes(0),
+    bucket_count(0), bucket_bytes(0) {}
 };
 
 #if INCLUDE_CDS
@@ -217,8 +223,12 @@ public:
   // Read/Write the table's header from/to the CDS archive
   void serialize_header(SerializeClosure* soc) NOT_CDS_RETURN;
 
-  inline bool empty() {
+  inline bool empty() const {
     return (_entry_count == 0);
+  }
+
+  inline size_t entry_count() const {
+    return _entry_count;
   }
 
   static size_t calculate_header_size();

@@ -56,6 +56,7 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 package jdk.internal.org.objectweb.asm.commons;
 
 import java.util.HashMap;
@@ -81,7 +82,7 @@ public class Method {
     private static final Map<String, String> PRIMITIVE_TYPE_DESCRIPTORS;
 
     static {
-        HashMap<String, String> descriptors = new HashMap<String, String>();
+        HashMap<String, String> descriptors = new HashMap<>();
         descriptors.put("void", "V");
         descriptors.put("byte", "B");
         descriptors.put("char", "C");
@@ -291,3 +292,4 @@ public class Method {
         return name.hashCode() ^ descriptor.hashCode();
     }
 }
+

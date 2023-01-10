@@ -4,7 +4,7 @@
  * This software is distributable under the BSD license. See the terms of the
  * BSD license in the documentation provided with this software.
  *
- * http://www.opensource.org/licenses/bsd-license.php
+ * https://opensource.org/licenses/BSD-3-Clause
  */
 package jdk.internal.org.jline.terminal;
 
@@ -18,6 +18,7 @@ import java.util.function.IntConsumer;
 import java.util.function.IntSupplier;
 
 import jdk.internal.org.jline.terminal.impl.NativeSignalHandler;
+import jdk.internal.org.jline.utils.ColorPalette;
 import jdk.internal.org.jline.utils.InfoCmp.Capability;
 import jdk.internal.org.jline.utils.NonBlockingReader;
 
@@ -111,7 +112,7 @@ public interface Terminal extends Closeable, Flushable {
      *
      * @return The output stream
      *
-     * @see #writer();
+     * @see #writer()
      */
     OutputStream output();
 
@@ -183,6 +184,11 @@ public interface Terminal extends Closeable, Flushable {
 
     void setAttributes(Attributes attr);
 
+    /**
+     * Retrieve the size of the visible window
+     * @return the visible terminal size
+     * @see #getBufferSize()
+     */
     Size getSize();
 
     void setSize(Size size);
@@ -193,6 +199,22 @@ public interface Terminal extends Closeable, Flushable {
 
     default int getHeight() {
         return getSize().getRows();
+    }
+
+    /**
+     * Retrieve the size of the window buffer.
+     * Some terminals can be configured to have a buffer size
+     * larger than the visible window size and provide scroll bars.
+     * In such cases, this method should attempt to return the size
+     * of the whole buffer.  The <code>getBufferSize()</code> method
+     * can be used to avoid wrapping when using the terminal in a line
+     * editing mode, while the {@link #getSize()} method should be
+     * used when using full screen mode.
+     * @return the terminal buffer size
+     * @see #getSize()
+     */
+    default Size getBufferSize() {
+        return getSize();
     }
 
     void flush();
@@ -307,4 +329,10 @@ public interface Terminal extends Closeable, Flushable {
      * @return <code>true</code> if focus tracking is supported
      */
     boolean trackFocus(boolean tracking);
+
+    /**
+     * Color support
+     */
+    ColorPalette getPalette();
+
 }

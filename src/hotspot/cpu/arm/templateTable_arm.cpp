@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2008, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,29 +25,27 @@
 #include "precompiled.hpp"
 #include "asm/macroAssembler.inline.hpp"
 #include "gc/shared/barrierSetAssembler.hpp"
+#include "gc/shared/collectedHeap.hpp"
+#include "gc/shared/tlab_globals.hpp"
 #include "interpreter/interp_masm.hpp"
 #include "interpreter/interpreter.hpp"
 #include "interpreter/interpreterRuntime.hpp"
 #include "interpreter/templateTable.hpp"
 #include "memory/universe.hpp"
 #include "oops/cpCache.hpp"
+#include "oops/klass.inline.hpp"
 #include "oops/methodData.hpp"
 #include "oops/objArrayKlass.hpp"
 #include "oops/oop.inline.hpp"
+#include "prims/jvmtiExport.hpp"
 #include "prims/methodHandles.hpp"
 #include "runtime/frame.inline.hpp"
 #include "runtime/sharedRuntime.hpp"
 #include "runtime/stubRoutines.hpp"
 #include "runtime/synchronizer.hpp"
+#include "utilities/powerOfTwo.hpp"
 
 #define __ _masm->
-
-//----------------------------------------------------------------------------------------------------
-// Platform-dependent initialization
-
-void TemplateTable::pd_initialize() {
-  // No arm specific initialization
-}
 
 //----------------------------------------------------------------------------------------------------
 // Address computation
@@ -166,7 +164,7 @@ AsmCondition convNegCond(TemplateTable::Condition cc) {
 }
 
 //----------------------------------------------------------------------------------------------------
-// Miscelaneous helper routines
+// Miscellaneous helper routines
 
 // Store an oop (or NULL) at the address described by obj.
 // Blows all volatile registers R0-R3, Rtemp, LR).
@@ -366,7 +364,7 @@ void TemplateTable::sipush() {
 }
 
 
-void TemplateTable::ldc(bool wide) {
+void TemplateTable::ldc(LdcType type) {
   transition(vtos, vtos);
   Label fastCase, Condy, Done;
 
@@ -375,7 +373,7 @@ void TemplateTable::ldc(bool wide) {
   const Register Rtags  = R3_tmp;
   const Register RtagType = R3_tmp;
 
-  if (wide) {
+  if (is_ldc_wide(type)) {
     __ get_unsigned_2_byte_index_at_bcp(Rindex, 1);
   } else {
     __ ldrb(Rindex, at_bcp(1));
@@ -403,7 +401,7 @@ void TemplateTable::ldc(bool wide) {
   __ b(fastCase, ne);
 
   // slow case - call runtime
-  __ mov(R1, wide);
+  __ mov(R1, is_ldc_wide(type) ? 1 : 0);
   call_VM(R0_tos, CAST_FROM_FN_PTR(address, InterpreterRuntime::ldc), R1);
   __ push(atos);
   __ b(Done);
@@ -431,9 +429,9 @@ void TemplateTable::ldc(bool wide) {
 }
 
 // Fast path for caching oop constants.
-void TemplateTable::fast_aldc(bool wide) {
+void TemplateTable::fast_aldc(LdcType type) {
   transition(vtos, atos);
-  int index_size = wide ? sizeof(u2) : sizeof(u1);
+  int index_size = is_ldc_wide(type) ? sizeof(u2) : sizeof(u1);
   Label resolved;
 
   // We are resolved if the resolved reference cache entry contains a
@@ -461,6 +459,7 @@ void TemplateTable::fast_aldc(bool wide) {
     // Stash null_sentinel address to get its value later
     __ mov_slow(rarg, (uintptr_t)Universe::the_null_sentinel_addr());
     __ ldr(tmp, Address(rarg));
+    __ resolve_oop_handle(tmp);
     __ cmp(result, tmp);
     __ b(notNull, ne);
     __ mov(result, 0);  // NULL object reference
@@ -491,29 +490,30 @@ void TemplateTable::ldc2_w() {
   __ add(Rtemp, Rtags, tags_offset);
   __ ldrb(Rtemp, Address(Rtemp, Rindex));
 
-  Label Condy, exit;
-#ifdef __ABI_HARD__
-  Label NotDouble;
+  Label Done, NotLong, NotDouble;
   __ cmp(Rtemp, JVM_CONSTANT_Double);
   __ b(NotDouble, ne);
+#ifdef __SOFTFP__
+  __ ldr(R0_tos_lo, Address(Rbase, base_offset + 0 * wordSize));
+  __ ldr(R1_tos_hi, Address(Rbase, base_offset + 1 * wordSize));
+#else // !__SOFTFP__
   __ ldr_double(D0_tos, Address(Rbase, base_offset));
-
+#endif // __SOFTFP__
   __ push(dtos);
-  __ b(exit);
+  __ b(Done);
   __ bind(NotDouble);
-#endif
 
   __ cmp(Rtemp, JVM_CONSTANT_Long);
-  __ b(Condy, ne);
+  __ b(NotLong, ne);
   __ ldr(R0_tos_lo, Address(Rbase, base_offset + 0 * wordSize));
   __ ldr(R1_tos_hi, Address(Rbase, base_offset + 1 * wordSize));
   __ push(ltos);
-  __ b(exit);
+  __ b(Done);
+  __ bind(NotLong);
 
-  __ bind(Condy);
-  condy_helper(exit);
+  condy_helper(Done);
 
-  __ bind(exit);
+  __ bind(Done);
 }
 
 
@@ -2041,7 +2041,7 @@ void TemplateTable::branch(bool is_jsr, bool is_wide) {
 
   // Handle all the JSR stuff here, then exit.
   // It's much shorter and cleaner than intermingling with the
-  // non-JSR normal-branch stuff occuring below.
+  // non-JSR normal-branch stuff occurring below.
   if (is_jsr) {
     // compute return address as bci in R1
     const Register Rret_addr = R1_tmp;
@@ -2068,7 +2068,6 @@ void TemplateTable::branch(bool is_jsr, bool is_wide) {
 
   assert(UseLoopCounter || !UseOnStackReplacement, "on-stack-replacement requires loop counters");
   Label backedge_counter_overflow;
-  Label profile_method;
   Label dispatch;
 
   if (UseLoopCounter) {
@@ -2082,84 +2081,29 @@ void TemplateTable::branch(bool is_jsr, bool is_wide) {
     __ tst(Rdisp, Rdisp);
     __ b(dispatch, pl);
 
-    if (TieredCompilation) {
-      Label no_mdo;
-      int increment = InvocationCounter::count_increment;
-      if (ProfileInterpreter) {
-        // Are we profiling?
-        __ ldr(Rtemp, Address(Rmethod, Method::method_data_offset()));
-        __ cbz(Rtemp, no_mdo);
-        // Increment the MDO backedge counter
-        const Address mdo_backedge_counter(Rtemp, in_bytes(MethodData::backedge_counter_offset()) +
-                                                  in_bytes(InvocationCounter::counter_offset()));
-        const Address mask(Rtemp, in_bytes(MethodData::backedge_mask_offset()));
-        __ increment_mask_and_jump(mdo_backedge_counter, increment, mask,
-                                   Rcnt, R4_tmp, eq, &backedge_counter_overflow);
-        __ b(dispatch);
-      }
-      __ bind(no_mdo);
-      // Increment backedge counter in MethodCounters*
-      // Note Rbumped_taken_count is a callee saved registers for ARM32
-      __ get_method_counters(Rmethod, Rcounters, dispatch, true /*saveRegs*/,
-                             Rdisp, R3_bytecode,
-                             noreg);
-      const Address mask(Rcounters, in_bytes(MethodCounters::backedge_mask_offset()));
-      __ increment_mask_and_jump(Address(Rcounters, be_offset), increment, mask,
+    Label no_mdo;
+    int increment = InvocationCounter::count_increment;
+    if (ProfileInterpreter) {
+      // Are we profiling?
+      __ ldr(Rtemp, Address(Rmethod, Method::method_data_offset()));
+      __ cbz(Rtemp, no_mdo);
+      // Increment the MDO backedge counter
+      const Address mdo_backedge_counter(Rtemp, in_bytes(MethodData::backedge_counter_offset()) +
+                                                in_bytes(InvocationCounter::counter_offset()));
+      const Address mask(Rtemp, in_bytes(MethodData::backedge_mask_offset()));
+      __ increment_mask_and_jump(mdo_backedge_counter, increment, mask,
                                  Rcnt, R4_tmp, eq, &backedge_counter_overflow);
-    } else {
-      // Increment backedge counter in MethodCounters*
-      __ get_method_counters(Rmethod, Rcounters, dispatch, true /*saveRegs*/,
-                             Rdisp, R3_bytecode,
-                             noreg);
-      __ ldr_u32(Rtemp, Address(Rcounters, be_offset));           // load backedge counter
-      __ add(Rtemp, Rtemp, InvocationCounter::count_increment);   // increment counter
-      __ str_32(Rtemp, Address(Rcounters, be_offset));            // store counter
-
-      __ ldr_u32(Rcnt, Address(Rcounters, inv_offset));           // load invocation counter
-      __ bic(Rcnt, Rcnt, ~InvocationCounter::count_mask_value);  // and the status bits
-      __ add(Rcnt, Rcnt, Rtemp);                                 // add both counters
-
-      if (ProfileInterpreter) {
-        // Test to see if we should create a method data oop
-        const Address profile_limit(Rcounters, in_bytes(MethodCounters::interpreter_profile_limit_offset()));
-        __ ldr_s32(Rtemp, profile_limit);
-        __ cmp_32(Rcnt, Rtemp);
-        __ b(dispatch, lt);
-
-        // if no method data exists, go to profile method
-        __ test_method_data_pointer(R4_tmp, profile_method);
-
-        if (UseOnStackReplacement) {
-          // check for overflow against Rbumped_taken_count, which is the MDO taken count
-          const Address backward_branch_limit(Rcounters, in_bytes(MethodCounters::interpreter_backward_branch_limit_offset()));
-          __ ldr_s32(Rtemp, backward_branch_limit);
-          __ cmp(Rbumped_taken_count, Rtemp);
-          __ b(dispatch, lo);
-
-          // When ProfileInterpreter is on, the backedge_count comes from the
-          // MethodData*, which value does not get reset on the call to
-          // frequency_counter_overflow().  To avoid excessive calls to the overflow
-          // routine while the method is being compiled, add a second test to make
-          // sure the overflow function is called only once every overflow_frequency.
-          const int overflow_frequency = 1024;
-
-          // was '__ andrs(...,overflow_frequency-1)', testing if lowest 10 bits are 0
-          assert(overflow_frequency == (1 << 10),"shift by 22 not correct for expected frequency");
-          __ movs(Rbumped_taken_count, AsmOperand(Rbumped_taken_count, lsl, 22));
-
-          __ b(backedge_counter_overflow, eq);
-        }
-      } else {
-        if (UseOnStackReplacement) {
-          // check for overflow against Rcnt, which is the sum of the counters
-          const Address backward_branch_limit(Rcounters, in_bytes(MethodCounters::interpreter_backward_branch_limit_offset()));
-          __ ldr_s32(Rtemp, backward_branch_limit);
-          __ cmp_32(Rcnt, Rtemp);
-          __ b(backedge_counter_overflow, hs);
-
-        }
-      }
+      __ b(dispatch);
     }
+    __ bind(no_mdo);
+    // Increment backedge counter in MethodCounters*
+    // Note Rbumped_taken_count is a callee saved registers for ARM32
+    __ get_method_counters(Rmethod, Rcounters, dispatch, true /*saveRegs*/,
+                           Rdisp, R3_bytecode,
+                           noreg);
+    const Address mask(Rcounters, in_bytes(MethodCounters::backedge_mask_offset()));
+    __ increment_mask_and_jump(Address(Rcounters, be_offset), increment, mask,
+                               Rcnt, R4_tmp, eq, &backedge_counter_overflow);
     __ bind(dispatch);
   }
 
@@ -2168,57 +2112,44 @@ void TemplateTable::branch(bool is_jsr, bool is_wide) {
   }
 
   // continue with the bytecode @ target
-  __ dispatch_only(vtos);
+  __ dispatch_only(vtos, true);
 
-  if (UseLoopCounter) {
-    if (ProfileInterpreter) {
-      // Out-of-line code to allocate method data oop.
-      __ bind(profile_method);
+  if (UseLoopCounter && UseOnStackReplacement) {
+    // invocation counter overflow
+    __ bind(backedge_counter_overflow);
 
-      __ call_VM(noreg, CAST_FROM_FN_PTR(address, InterpreterRuntime::profile_method));
-      __ set_method_data_pointer_for_bcp();
-      // reload next bytecode
-      __ ldrb(R3_bytecode, Address(Rbcp));
-      __ b(dispatch);
-    }
+    __ sub(R1, Rbcp, Rdisp);                   // branch bcp
+    call_VM(noreg, CAST_FROM_FN_PTR(address, InterpreterRuntime::frequency_counter_overflow), R1);
 
-    if (UseOnStackReplacement) {
-      // invocation counter overflow
-      __ bind(backedge_counter_overflow);
+    // R0: osr nmethod (osr ok) or NULL (osr not possible)
+    const Register Rnmethod = R0;
 
-      __ sub(R1, Rbcp, Rdisp);                   // branch bcp
-      call_VM(noreg, CAST_FROM_FN_PTR(address, InterpreterRuntime::frequency_counter_overflow), R1);
+    __ ldrb(R3_bytecode, Address(Rbcp));       // reload next bytecode
 
-      // R0: osr nmethod (osr ok) or NULL (osr not possible)
-      const Register Rnmethod = R0;
+    __ cbz(Rnmethod, dispatch);                // test result, no osr if null
 
-      __ ldrb(R3_bytecode, Address(Rbcp));       // reload next bytecode
+    // nmethod may have been invalidated (VM may block upon call_VM return)
+    __ ldrb(R1_tmp, Address(Rnmethod, nmethod::state_offset()));
+    __ cmp(R1_tmp, nmethod::in_use);
+    __ b(dispatch, ne);
 
-      __ cbz(Rnmethod, dispatch);                // test result, no osr if null
+    // We have the address of an on stack replacement routine in Rnmethod,
+    // We need to prepare to execute the OSR method. First we must
+    // migrate the locals and monitors off of the stack.
 
-      // nmethod may have been invalidated (VM may block upon call_VM return)
-      __ ldrb(R1_tmp, Address(Rnmethod, nmethod::state_offset()));
-      __ cmp(R1_tmp, nmethod::in_use);
-      __ b(dispatch, ne);
+    __ mov(Rtmp_save0, Rnmethod);                      // save the nmethod
 
-      // We have the address of an on stack replacement routine in Rnmethod,
-      // We need to prepare to execute the OSR method. First we must
-      // migrate the locals and monitors off of the stack.
+    call_VM(noreg, CAST_FROM_FN_PTR(address, SharedRuntime::OSR_migration_begin));
 
-      __ mov(Rtmp_save0, Rnmethod);                      // save the nmethod
+    // R0 is OSR buffer
 
-      call_VM(noreg, CAST_FROM_FN_PTR(address, SharedRuntime::OSR_migration_begin));
+    __ ldr(R1_tmp, Address(Rtmp_save0, nmethod::osr_entry_point_offset()));
+    __ ldr(Rtemp, Address(FP, frame::interpreter_frame_sender_sp_offset * wordSize));
 
-      // R0 is OSR buffer
+    __ ldmia(FP, RegisterSet(FP) | RegisterSet(LR));
+    __ bic(SP, Rtemp, StackAlignmentInBytes - 1);     // Remove frame and align stack
 
-      __ ldr(R1_tmp, Address(Rtmp_save0, nmethod::osr_entry_point_offset()));
-      __ ldr(Rtemp, Address(FP, frame::interpreter_frame_sender_sp_offset * wordSize));
-
-      __ ldmia(FP, RegisterSet(FP) | RegisterSet(LR));
-      __ bic(SP, Rtemp, StackAlignmentInBytes - 1);     // Remove frame and align stack
-
-      __ jump(R1_tmp);
-    }
+    __ jump(R1_tmp);
   }
 }
 
@@ -2362,7 +2293,7 @@ void TemplateTable::tableswitch() {
 
   // load the next bytecode to R3_bytecode and advance Rbcp
   __ ldrb(R3_bytecode, Address(Rbcp, Roffset, lsl, 0, pre_indexed));
-  __ dispatch_only(vtos);
+  __ dispatch_only(vtos, true);
 
 }
 
@@ -2439,7 +2370,7 @@ void TemplateTable::fast_linearswitch() {
 
   // load the next bytecode to R3_bytecode and advance Rbcp
   __ ldrb(R3_bytecode, Address(Rbcp, Roffset, lsl, 0, pre_indexed));
-  __ dispatch_only(vtos);
+  __ dispatch_only(vtos, true);
 }
 
 
@@ -2533,7 +2464,7 @@ void TemplateTable::fast_binaryswitch() {
   __ profile_switch_case(R0, i, R1, i);
   __ byteswap_u32(offset, temp1, temp2);
   __ ldrb(R3_bytecode, Address(Rbcp, offset, lsl, 0, pre_indexed));
-  __ dispatch_only(vtos);
+  __ dispatch_only(vtos, true);
 
   // default case
   __ bind(default_case);
@@ -2541,7 +2472,7 @@ void TemplateTable::fast_binaryswitch() {
   __ ldr_s32(offset, Address(array, -2*BytesPerInt));
   __ byteswap_u32(offset, temp1, temp2);
   __ ldrb(R3_bytecode, Address(Rbcp, offset, lsl, 0, pre_indexed));
-  __ dispatch_only(vtos);
+  __ dispatch_only(vtos, true);
 }
 
 
@@ -2594,7 +2525,7 @@ void TemplateTable::_return(TosState state) {
 //
 // According to the new Java Memory Model (JMM):
 // (1) All volatiles are serialized wrt to each other.
-// ALSO reads & writes act as aquire & release, so:
+// ALSO reads & writes act as acquire & release, so:
 // (2) A read cannot let unrelated NON-volatile memory refs that happen after
 // the read float up to before the read.  It's OK for non-volatile memory refs
 // that happen before the volatile read to float down below it.
@@ -3605,12 +3536,6 @@ void TemplateTable::fast_xaccess(TosState state) {
 //----------------------------------------------------------------------------------------------------
 // Calls
 
-void TemplateTable::count_calls(Register method, Register temp) {
-  // implemented elsewhere
-  ShouldNotReachHere();
-}
-
-
 void TemplateTable::prepare_invoke(int byte_no,
                                    Register method,  // linked method (or i-klass)
                                    Register index,   // itable index, MethodType, etc.
@@ -3923,13 +3848,6 @@ void TemplateTable::_new() {
   Label slow_case;
   Label done;
   Label initialize_header;
-  Label initialize_object;  // including clearing the fields
-
-  const bool allow_shared_alloc =
-    Universe::heap()->supports_inline_contig_alloc();
-
-  // Literals
-  InlinedAddress Lheap_top_addr(allow_shared_alloc ? (address)Universe::heap()->top_addr() : NULL);
 
   __ get_unsigned_2_byte_index_at_bcp(Rindex, 1);
   __ get_cpool_and_tags(Rcpool, Rtags);
@@ -3967,11 +3885,6 @@ void TemplateTable::_new() {
   //  If TLAB is enabled:
   //    Try to allocate in the TLAB.
   //    If fails, go to the slow path.
-  //  Else If inline contiguous allocations are enabled:
-  //    Try to allocate in eden.
-  //    If fails due to heap end, go to slow path.
-  //
-  //  If TLAB is enabled OR inline contiguous is enabled:
   //    Initialize the allocation.
   //    Exit.
   //
@@ -3985,23 +3898,8 @@ void TemplateTable::_new() {
     if (ZeroTLAB) {
       // the fields have been already cleared
       __ b(initialize_header);
-    } else {
-      // initialize both the header and fields
-      __ b(initialize_object);
     }
-  } else {
-    // Allocation in the shared Eden, if allowed.
-    if (allow_shared_alloc) {
-      const Register Rheap_top_addr = R2_tmp;
-      const Register Rheap_top = R5_tmp;
-      const Register Rheap_end = Rtemp;
-      assert_different_registers(Robj, Rklass, Rsize, Rheap_top_addr, Rheap_top, Rheap_end, LR);
 
-      __ eden_allocate(Robj, Rheap_top, Rheap_top_addr, Rheap_end, Rsize, slow_case);
-    }
-  }
-
-  if (UseTLAB || allow_shared_alloc) {
     const Register Rzero0 = R1_tmp;
     const Register Rzero1 = R2_tmp;
     const Register Rzero_end = R5_tmp;
@@ -4010,7 +3908,6 @@ void TemplateTable::_new() {
 
     // The object is initialized before the header.  If the object size is
     // zero, go directly to the header initialization.
-    __ bind(initialize_object);
     __ subs(Rsize, Rsize, sizeof(oopDesc));
     __ add(Rzero_cur, Robj, sizeof(oopDesc));
     __ b(initialize_header, eq);
@@ -4043,11 +3940,7 @@ void TemplateTable::_new() {
 
     // initialize object header only.
     __ bind(initialize_header);
-    if (UseBiasedLocking) {
-      __ ldr(Rtemp, Address(Rklass, Klass::prototype_header_offset()));
-    } else {
-      __ mov_slow(Rtemp, (intptr_t)markWord::prototype().value());
-    }
+    __ mov_slow(Rtemp, (intptr_t)markWord::prototype().value());
     // mark
     __ str(Rtemp, Address(Robj, oopDesc::mark_offset_in_bytes()));
 
@@ -4064,7 +3957,7 @@ void TemplateTable::_new() {
       __ cbz(Rtemp, Lcontinue);
 
       __ push(atos);
-      __ call_VM_leaf(CAST_FROM_FN_PTR(address, SharedRuntime::dtrace_object_alloc), Robj);
+      __ call_VM_leaf(CAST_FROM_FN_PTR(address, static_cast<int (*)(oopDesc*)>(SharedRuntime::dtrace_object_alloc)), Robj);
       __ pop(atos);
 
       __ bind(Lcontinue);
@@ -4074,10 +3967,6 @@ void TemplateTable::_new() {
   } else {
     // jump over literals
     __ b(slow_case);
-  }
-
-  if (allow_shared_alloc) {
-    __ bind_literal(Lheap_top_addr);
   }
 
   // slow case
@@ -4325,8 +4214,6 @@ void TemplateTable::monitorenter() {
   // check for NULL object
   __ null_check(Robj, Rtemp);
 
-  __ resolve(IS_NOT_NULL, Robj);
-
   const int entry_size = (frame::interpreter_frame_monitor_size() * wordSize);
   assert (entry_size % StackAlignmentInBytes == 0, "keep stack alignment");
   Label allocate_monitor, allocated;
@@ -4411,7 +4298,7 @@ void TemplateTable::monitorenter() {
   __ bind(allocated);
 
   // Increment bcp to point to the next bytecode, so exception handling for async. exceptions work correctly.
-  // The object has already been poped from the stack, so the expression stack looks correct.
+  // The object has already been popped from the stack, so the expression stack looks correct.
   __ add(Rbcp, Rbcp, 1);
 
   __ str(Robj, Address(Rentry, BasicObjectLock::obj_offset_in_bytes()));     // store object
@@ -4433,11 +4320,10 @@ void TemplateTable::monitorexit() {
   const Register Rcur = R1_tmp;
   const Register Rbottom = R2_tmp;
   const Register Rcur_obj = Rtemp;
+  const Register Rmonitor = R0;      // fixed in unlock_object()
 
   // check for NULL object
   __ null_check(Robj, Rtemp);
-
-  __ resolve(IS_NOT_NULL, Robj);
 
   const int entry_size = (frame::interpreter_frame_monitor_size() * wordSize);
   Label found, throw_exception;
@@ -4475,7 +4361,8 @@ void TemplateTable::monitorexit() {
   // Rcur: points to monitor entry
   __ bind(found);
   __ push_ptr(Robj);                             // make sure object is on stack (contract with oopMaps)
-  __ unlock_object(Rcur);
+  __ mov(Rmonitor, Rcur);
+  __ unlock_object(Rmonitor);
   __ pop_ptr(Robj);                              // discard object
 }
 

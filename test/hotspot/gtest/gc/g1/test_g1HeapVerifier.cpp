@@ -26,6 +26,7 @@
 #include "gc/g1/g1Arguments.hpp"
 #include "gc/g1/g1HeapVerifier.hpp"
 #include "logging/logConfiguration.hpp"
+#include "logging/logTag.hpp"
 #include "logging/logTestFixture.hpp"
 #include "unittest.hpp"
 
@@ -40,20 +41,20 @@ TEST_VM_F(G1HeapVerifierTest, parse) {
   LogConfiguration::configure_stdout(LogLevel::Off, true, LOG_TAGS(gc, verify));
 
   // Default is to verify everything.
-  ASSERT_TRUE(G1HeapVerifier::should_verify(G1HeapVerifier::G1VerifyAll));
   ASSERT_TRUE(G1HeapVerifier::should_verify(G1HeapVerifier::G1VerifyYoungNormal));
   ASSERT_TRUE(G1HeapVerifier::should_verify(G1HeapVerifier::G1VerifyConcurrentStart));
   ASSERT_TRUE(G1HeapVerifier::should_verify(G1HeapVerifier::G1VerifyMixed));
+  ASSERT_TRUE(G1HeapVerifier::should_verify(G1HeapVerifier::G1VerifyYoungEvacFail));
   ASSERT_TRUE(G1HeapVerifier::should_verify(G1HeapVerifier::G1VerifyRemark));
   ASSERT_TRUE(G1HeapVerifier::should_verify(G1HeapVerifier::G1VerifyCleanup));
   ASSERT_TRUE(G1HeapVerifier::should_verify(G1HeapVerifier::G1VerifyFull));
 
   // Setting one will disable all other.
   G1HeapVerifierTest::parse_verification_type("full");
-  ASSERT_FALSE(G1HeapVerifier::should_verify(G1HeapVerifier::G1VerifyAll));
   ASSERT_FALSE(G1HeapVerifier::should_verify(G1HeapVerifier::G1VerifyYoungNormal));
   ASSERT_FALSE(G1HeapVerifier::should_verify(G1HeapVerifier::G1VerifyConcurrentStart));
   ASSERT_FALSE(G1HeapVerifier::should_verify(G1HeapVerifier::G1VerifyMixed));
+  ASSERT_FALSE(G1HeapVerifier::should_verify(G1HeapVerifier::G1VerifyYoungEvacFail));
   ASSERT_FALSE(G1HeapVerifier::should_verify(G1HeapVerifier::G1VerifyRemark));
   ASSERT_FALSE(G1HeapVerifier::should_verify(G1HeapVerifier::G1VerifyCleanup));
   ASSERT_TRUE(G1HeapVerifier::should_verify(G1HeapVerifier::G1VerifyFull));
@@ -78,7 +79,4 @@ TEST_VM_F(G1HeapVerifierTest, parse) {
   G1HeapVerifierTest::parse_verification_type("cleanup");
   ASSERT_TRUE(G1HeapVerifier::should_verify(G1HeapVerifier::G1VerifyRemark));
   ASSERT_TRUE(G1HeapVerifier::should_verify(G1HeapVerifier::G1VerifyCleanup));
-
-  // Enabling all is not the same as G1VerifyAll
-  ASSERT_FALSE(G1HeapVerifier::should_verify(G1HeapVerifier::G1VerifyAll));
 }

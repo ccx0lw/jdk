@@ -1,10 +1,10 @@
 /*
- * Copyright (c) 2002-2018, the original author or authors.
+ * Copyright (c) 2002-2019, the original author or authors.
  *
  * This software is distributable under the BSD license. See the terms of the
  * BSD license in the documentation provided with this software.
  *
- * http://www.opensource.org/licenses/bsd-license.php
+ * https://opensource.org/licenses/BSD-3-Clause
  */
 package jdk.internal.org.jline.terminal.impl.jna.win;
 
@@ -36,7 +36,7 @@ public class JnaWinSysTerminal extends AbstractWindowsTerminal {
         Writer writer;
         if (ansiPassThrough) {
             if (type == null) {
-                type = OSUtils.IS_CONEMU ? TYPE_WINDOWS_256_COLOR : TYPE_WINDOWS;
+                type = OSUtils.IS_CONEMU ? TYPE_WINDOWS_CONEMU : TYPE_WINDOWS;
             }
             writer = new JnaWinConsoleWriter(consoleOut);
         } else {
@@ -51,7 +51,7 @@ public class JnaWinSysTerminal extends AbstractWindowsTerminal {
             } catch (LastErrorException e) {
                 if (OSUtils.IS_CONEMU) {
                     if (type == null) {
-                        type = TYPE_WINDOWS_256_COLOR;
+                        type = TYPE_WINDOWS_CONEMU;
                     }
                     writer = new JnaWinConsoleWriter(consoleOut);
                 } else {
@@ -70,14 +70,40 @@ public class JnaWinSysTerminal extends AbstractWindowsTerminal {
         return terminal;
     }
 
+    public static boolean isWindowsConsole() {
+        try {
+            IntByReference mode = new IntByReference();
+            Kernel32.INSTANCE.GetConsoleMode(consoleOut, mode);
+            Kernel32.INSTANCE.GetConsoleMode(consoleIn, mode);
+            return true;
+        } catch (LastErrorException e) {
+            return false;
+        }
+    }
+
+    public static boolean isConsoleOutput() {
+        try {
+            IntByReference mode = new IntByReference();
+            Kernel32.INSTANCE.GetConsoleMode(consoleOut, mode);
+            return true;
+        } catch (LastErrorException e) {
+            return false;
+        }
+    }
+
+    public static boolean isConsoleInput() {
+        try {
+            IntByReference mode = new IntByReference();
+            Kernel32.INSTANCE.GetConsoleMode(consoleIn, mode);
+            return true;
+        } catch (LastErrorException e) {
+            return false;
+        }
+    }
+
     JnaWinSysTerminal(Writer writer, String name, String type, Charset encoding, int codepage, boolean nativeSignals, SignalHandler signalHandler, Function<InputStream, InputStream> inputStreamWrapper) throws IOException {
         super(writer, name, type, encoding, codepage, nativeSignals, signalHandler, inputStreamWrapper);
         strings.put(InfoCmp.Capability.key_mouse, "\\E[M");
-    }
-
-    @Override
-    protected int getConsoleOutputCP() {
-        return Kernel32.INSTANCE.GetConsoleOutputCP();
     }
 
     @Override
@@ -93,6 +119,12 @@ public class JnaWinSysTerminal extends AbstractWindowsTerminal {
     }
 
     public Size getSize() {
+        Kernel32.CONSOLE_SCREEN_BUFFER_INFO info = new Kernel32.CONSOLE_SCREEN_BUFFER_INFO();
+        Kernel32.INSTANCE.GetConsoleScreenBufferInfo(consoleOut, info);
+        return new Size(info.windowWidth(), info.windowHeight());
+    }
+
+    public Size getBufferSize() {
         Kernel32.CONSOLE_SCREEN_BUFFER_INFO info = new Kernel32.CONSOLE_SCREEN_BUFFER_INFO();
         Kernel32.INSTANCE.GetConsoleScreenBufferInfo(consoleOut, info);
         return new Size(info.dwSize.X, info.dwSize.Y);

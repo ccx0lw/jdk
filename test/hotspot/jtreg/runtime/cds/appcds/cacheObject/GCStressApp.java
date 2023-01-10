@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,7 +24,8 @@
 
 import java.io.*;
 import java.util.*;
-import sun.hotspot.WhiteBox;
+import jdk.test.lib.Utils;
+import jdk.test.whitebox.WhiteBox;
 
 // All strings in archived classes are shared
 public class GCStressApp {
@@ -43,7 +44,7 @@ public class GCStressApp {
 
     static void allocAlot() {
         try {
-            Random random = new Random();
+            Random random = Utils.getRandomInstance();
             for (int i = 0; i < 1024 * 1024; i++) {
                 int len = random.nextInt(10000);
                 arr = new int[len];
@@ -61,8 +62,8 @@ public class GCStressApp {
            return;
         }
 
-        if (wb.areSharedStringsIgnored()) {
-          System.out.println("Shared strings are ignored.");
+        if (!wb.areSharedStringsMapped()) {
+          System.out.println("Shared strings are not mapped.");
           return;
         }
 

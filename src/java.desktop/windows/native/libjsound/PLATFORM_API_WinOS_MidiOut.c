@@ -37,14 +37,9 @@
 #ifdef USE_ERROR
 #include <stdio.h>
 
-/* Use THIS_FILE when it is available. */
-#ifndef THIS_FILE
-    #define THIS_FILE __FILE__
-#endif
-
 #define MIDIOUT_CHECK_ERROR  { \
         if (err != MMSYSERR_NOERROR) \
-            ERROR3("MIDI OUT Error in %s:%d : %s\n", THIS_FILE, __LINE__, MIDI_OUT_GetErrorStr((INT32) err)); \
+            ERROR3("MIDI OUT Error in %s:%d : %s\n", __FILE__, __LINE__, MIDI_OUT_GetErrorStr((INT32) err)); \
         }
 #else
 #define MIDIOUT_CHECK_ERROR
@@ -302,7 +297,7 @@ INT32 MIDI_OUT_CloseDevice(MidiDeviceHandle* handle) {
 
     // issue a "SUSTAIN OFF" message to each MIDI channel, 0 to 15.
     // "CONTROL CHANGE" is 176, "SUSTAIN CONTROLLER" is 64, and the value is 0.
-    // $$fb 2002-04-04: It is responsability of the application developer to
+    // $$fb 2002-04-04: It is the responsibility of the application developer to
     // leave the device in a consistent state. So I put this in comments
     /*
       for (channel = 0; channel < 16; channel++)

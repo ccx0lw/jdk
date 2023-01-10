@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -77,9 +77,11 @@ class Bytecode: public StackObj {
   int get_index_u2(Bytecodes::Code bc, bool is_wide = false) const {
     assert_same_format_as(bc, is_wide); assert_index_size(2, bc, is_wide);
     address p = addr_at(is_wide ? 2 : 1);
-    if (can_use_native_byte_order(bc, is_wide))
+    if (can_use_native_byte_order(bc, is_wide)) {
       return Bytes::get_native_u2(p);
-    else  return Bytes::get_Java_u2(p);
+    } else {
+      return Bytes::get_Java_u2(p);
+    }
   }
   int get_index_u1_cpcache(Bytecodes::Code bc) const {
     assert_same_format_as(bc); assert_index_size(1, bc);
@@ -209,8 +211,7 @@ class Bytecode_invoke: public Bytecode_member_ref {
   void verify() const;
 
   // Attributes
-  methodHandle static_target(TRAPS);             // "specified" method   (from constant pool)
-  Handle       appendix(TRAPS);                  // if CPCE::has_appendix (from constant pool)
+  Method* static_target(TRAPS);                  // "specified" method   (from constant pool)
 
   // Testers
   bool is_invokeinterface() const                { return invoke_code() == Bytecodes::_invokeinterface; }

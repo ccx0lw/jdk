@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,15 +24,21 @@
 #ifndef SHARE_GC_Z_ZGRANULEMAP_INLINE_HPP
 #define SHARE_GC_Z_ZGRANULEMAP_INLINE_HPP
 
-#include "gc/z/zAddress.inline.hpp"
-#include "gc/z/zGlobals.hpp"
 #include "gc/z/zGranuleMap.hpp"
+
+#include "gc/z/zArray.inline.hpp"
+#include "gc/z/zGlobals.hpp"
 #include "memory/allocation.inline.hpp"
+#include "runtime/atomic.hpp"
+#include "utilities/align.hpp"
+#include "utilities/debug.hpp"
 
 template <typename T>
-inline ZGranuleMap<T>::ZGranuleMap() :
-    _size(ZAddressOffsetMax >> ZGranuleSizeShift),
-    _map(MmapArrayAllocator<T>::allocate(_size, mtGC)) {}
+inline ZGranuleMap<T>::ZGranuleMap(size_t max_offset) :
+    _size(max_offset >> ZGranuleSizeShift),
+    _map(MmapArrayAllocator<T>::allocate(_size, mtGC)) {
+  assert(is_aligned(max_offset, ZGranuleSize), "Misaligned");
+}
 
 template <typename T>
 inline ZGranuleMap<T>::~ZGranuleMap() {
@@ -40,32 +46,29 @@ inline ZGranuleMap<T>::~ZGranuleMap() {
 }
 
 template <typename T>
-inline size_t ZGranuleMap<T>::index_for_addr(uintptr_t addr) const {
-  assert(!ZAddress::is_null(addr), "Invalid address");
-
-  const size_t index = ZAddress::offset(addr) >> ZGranuleSizeShift;
+inline size_t ZGranuleMap<T>::index_for_offset(uintptr_t offset) const {
+  const size_t index = offset >> ZGranuleSizeShift;
   assert(index < _size, "Invalid index");
-
   return index;
 }
 
 template <typename T>
-inline T ZGranuleMap<T>::get(uintptr_t addr) const {
-  const size_t index = index_for_addr(addr);
+inline T ZGranuleMap<T>::get(uintptr_t offset) const {
+  const size_t index = index_for_offset(offset);
   return _map[index];
 }
 
 template <typename T>
-inline void ZGranuleMap<T>::put(uintptr_t addr, T value) {
-  const size_t index = index_for_addr(addr);
+inline void ZGranuleMap<T>::put(uintptr_t offset, T value) {
+  const size_t index = index_for_offset(offset);
   _map[index] = value;
 }
 
 template <typename T>
-inline void ZGranuleMap<T>::put(uintptr_t addr, size_t size, T value) {
+inline void ZGranuleMap<T>::put(uintptr_t offset, size_t size, T value) {
   assert(is_aligned(size, ZGranuleSize), "Misaligned");
 
-  const size_t start_index = index_for_addr(addr);
+  const size_t start_index = index_for_offset(offset);
   const size_t end_index = start_index + (size >> ZGranuleSizeShift);
   for (size_t index = start_index; index < end_index; index++) {
     _map[index] = value;
@@ -73,30 +76,19 @@ inline void ZGranuleMap<T>::put(uintptr_t addr, size_t size, T value) {
 }
 
 template <typename T>
-inline ZGranuleMapIterator<T>::ZGranuleMapIterator(const ZGranuleMap<T>* map) :
-    _map(map),
-    _next(0) {}
-
-template <typename T>
-inline bool ZGranuleMapIterator<T>::next(T* value) {
-  if (_next < _map->_size) {
-    *value = _map->_map[_next++];
-    return true;
-  }
-
-  // End of map
-  return false;
+inline T ZGranuleMap<T>::get_acquire(uintptr_t offset) const {
+  const size_t index = index_for_offset(offset);
+  return Atomic::load_acquire(_map + index);
 }
 
 template <typename T>
-inline bool ZGranuleMapIterator<T>::next(T** value) {
-  if (_next < _map->_size) {
-    *value = _map->_map + _next++;
-    return true;
-  }
-
-  // End of map
-  return false;
+inline void ZGranuleMap<T>::release_put(uintptr_t offset, T value) {
+  const size_t index = index_for_offset(offset);
+  Atomic::release_store(_map + index, value);
 }
+
+template <typename T>
+inline ZGranuleMapIterator<T>::ZGranuleMapIterator(const ZGranuleMap<T>* granule_map) :
+    ZArrayIteratorImpl<T, false /* Parallel */>(granule_map->_map, granule_map->_size) {}
 
 #endif // SHARE_GC_Z_ZGRANULEMAP_INLINE_HPP

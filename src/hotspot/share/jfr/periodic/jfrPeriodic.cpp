@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,7 +23,6 @@
  */
 
 #include "precompiled.hpp"
-#include "jvm.h"
 #include "classfile/classLoaderDataGraph.hpp"
 #include "classfile/classLoaderStats.hpp"
 #include "classfile/javaClasses.hpp"
@@ -37,15 +36,17 @@
 #include "gc/shared/gcVMOperations.hpp"
 #include "gc/shared/objectCountEventSender.hpp"
 #include "jfr/jfrEvents.hpp"
+#include "jfr/periodic/jfrFinalizerStatisticsEvent.hpp"
 #include "jfr/periodic/jfrModuleEvent.hpp"
 #include "jfr/periodic/jfrOSInterface.hpp"
 #include "jfr/periodic/jfrThreadCPULoadEvent.hpp"
 #include "jfr/periodic/jfrThreadDumpEvent.hpp"
 #include "jfr/periodic/jfrNetworkUtilization.hpp"
 #include "jfr/recorder/jfrRecorder.hpp"
-#include "jfr/support/jfrThreadId.hpp"
+#include "jfr/utilities/jfrThreadIterator.hpp"
 #include "jfr/utilities/jfrTime.hpp"
 #include "jfrfiles/jfrPeriodic.hpp"
+#include "jvm.h"
 #include "logging/log.hpp"
 #include "memory/heapInspection.hpp"
 #include "memory/resourceArea.hpp"
@@ -53,14 +54,16 @@
 #include "runtime/arguments.hpp"
 #include "runtime/flags/jvmFlag.hpp"
 #include "runtime/globals.hpp"
+#include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/os.hpp"
 #include "runtime/os_perf.hpp"
 #include "runtime/thread.inline.hpp"
-#include "runtime/threadSMR.hpp"
-#include "runtime/sweeper.hpp"
+#include "runtime/threads.hpp"
 #include "runtime/vmThread.hpp"
+#include "runtime/vm_version.hpp"
 #include "services/classLoadingService.hpp"
 #include "services/management.hpp"
+#include "services/memJfrReporter.hpp"
 #include "services/threadService.hpp"
 #include "utilities/exceptions.hpp"
 #include "utilities/globalDefinitions.hpp"
@@ -70,12 +73,25 @@
 #if INCLUDE_SHENANDOAHGC
 #include "gc/shenandoah/shenandoahJfrSupport.hpp"
 #endif
+
 /**
  *  JfrPeriodic class
  *  Implementation of declarations in
  *  xsl generated traceRequestables.hpp
  */
 #define TRACE_REQUEST_FUNC(id)    void JfrPeriodicEventSet::request##id(void)
+
+// Timestamp to correlate events in the same batch/generation
+Ticks JfrPeriodicEventSet::_timestamp;
+PeriodicType JfrPeriodicEventSet::_type;
+
+Ticks JfrPeriodicEventSet::timestamp(void) {
+  return _timestamp;
+}
+
+PeriodicType JfrPeriodicEventSet::type(void) {
+  return _type;
+}
 
 TRACE_REQUEST_FUNC(JVMInformation) {
   ResourceMark rm;
@@ -135,6 +151,7 @@ static int _native_library_callback(const char* name, address base, address top,
   event.set_name(name);
   event.set_baseAddress((u8)base);
   event.set_topAddress((u8)top);
+  event.set_starttime(*(JfrTicks*)param);
   event.set_endtime(*(JfrTicks*) param);
   event.commit();
   return 0;
@@ -174,7 +191,13 @@ TRACE_REQUEST_FUNC(CPULoad) {
   double u = 0; // user time
   double s = 0; // kernel time
   double t = 0; // total time
-  int ret_val = JfrOSInterface::cpu_loads_process(&u, &s, &t);
+  int ret_val = OS_ERR;
+  {
+    // Can take some time on certain platforms, especially under heavy load.
+    // Transition to native to avoid unnecessary stalls for pending safepoint synchronizations.
+    ThreadToNativeFromVM transition(JavaThread::current());
+    ret_val = JfrOSInterface::cpu_loads_process(&u, &s, &t);
+  }
   if (ret_val == OS_ERR) {
     log_debug(jfr, system)( "Unable to generate requestable event CPULoad");
     return;
@@ -248,7 +271,13 @@ TRACE_REQUEST_FUNC(SystemProcess) {
 
 TRACE_REQUEST_FUNC(ThreadContextSwitchRate) {
   double rate = 0.0;
-  int ret_val = JfrOSInterface::context_switch_rate(&rate);
+  int ret_val = OS_ERR;
+  {
+    // Can take some time on certain platforms, especially under heavy load.
+    // Transition to native to avoid unnecessary stalls for pending safepoint synchronizations.
+    ThreadToNativeFromVM transition(JavaThread::current());
+    ret_val = JfrOSInterface::context_switch_rate(&rate);
+  }
   if (ret_val == OS_ERR) {
     log_debug(jfr, system)( "Unable to generate requestable event ThreadContextSwitchRate");
     return;
@@ -266,13 +295,13 @@ TRACE_REQUEST_FUNC(ThreadContextSwitchRate) {
 #define SEND_FLAGS_OF_TYPE(eventType, flagType)                   \
   do {                                                            \
     JVMFlag *flag = JVMFlag::flags;                               \
-    while (flag->_name != NULL) {                                 \
+    while (flag->name() != NULL) {                                \
       if (flag->is_ ## flagType()) {                              \
         if (flag->is_unlocked()) {                                \
           Event ## eventType event;                               \
-          event.set_name(flag->_name);                            \
+          event.set_name(flag->name());                           \
           event.set_value(flag->get_ ## flagType());              \
-          event.set_origin(flag->get_origin());                   \
+          event.set_origin(static_cast<u8>(flag->get_origin()));  \
           event.commit();                                         \
         }                                                         \
       }                                                           \
@@ -397,6 +426,7 @@ TRACE_REQUEST_FUNC(InitialSystemProperty) {
       EventInitialSystemProperty event(UNTIMED);
       event.set_key(p->key());
       event.set_value(p->value());
+      event.set_starttime(time_stamp);
       event.set_endtime(time_stamp);
       event.commit();
     }
@@ -410,13 +440,12 @@ TRACE_REQUEST_FUNC(ThreadAllocationStatistics) {
   GrowableArray<jlong> allocated(initial_size);
   GrowableArray<traceid> thread_ids(initial_size);
   JfrTicks time_stamp = JfrTicks::now();
-  {
-    // Collect allocation statistics while holding threads lock
-    MutexLocker ml(Threads_lock);
-    for (JavaThreadIteratorWithHandle jtiwh; JavaThread *jt = jtiwh.next(); ) {
-      allocated.append(jt->cooked_allocated_bytes());
-      thread_ids.append(JFR_THREAD_ID(jt));
-    }
+  JfrJavaThreadIterator iter;
+  while (iter.has_next()) {
+    JavaThread* const jt = iter.next();
+    assert(jt != NULL, "invariant");
+    allocated.append(jt->cooked_allocated_bytes());
+    thread_ids.append(JFR_JVM_THREAD_ID(jt));
   }
 
   // Write allocation statistics to buffer.
@@ -424,6 +453,7 @@ TRACE_REQUEST_FUNC(ThreadAllocationStatistics) {
     EventThreadAllocationStatistics event(UNTIMED);
     event.set_allocated(allocated.at(i));
     event.set_thread(thread_ids.at(i));
+    event.set_starttime(time_stamp);
     event.set_endtime(time_stamp);
     event.commit();
   }
@@ -459,31 +489,35 @@ TRACE_REQUEST_FUNC(JavaThreadStatistics) {
 }
 
 TRACE_REQUEST_FUNC(ClassLoadingStatistics) {
+#if INCLUDE_MANAGEMENT
   EventClassLoadingStatistics event;
   event.set_loadedClassCount(ClassLoadingService::loaded_class_count());
   event.set_unloadedClassCount(ClassLoadingService::unloaded_class_count());
   event.commit();
+#else
+  log_debug(jfr, system)("Unable to generate requestable event ClassLoadingStatistics. The required jvm feature 'management' is missing.");
+#endif
 }
 
 class JfrClassLoaderStatsClosure : public ClassLoaderStatsClosure {
 public:
   JfrClassLoaderStatsClosure() : ClassLoaderStatsClosure(NULL) {}
 
-  bool do_entry(oop const& key, ClassLoaderStats* const& cls) {
-    const ClassLoaderData* this_cld = cls->_class_loader != NULL ?
-      java_lang_ClassLoader::loader_data_acquire(cls->_class_loader) : NULL;
-    const ClassLoaderData* parent_cld = cls->_parent != NULL ?
-      java_lang_ClassLoader::loader_data_acquire(cls->_parent) : NULL;
+  bool do_entry(oop const& key, ClassLoaderStats const& cls) {
+    const ClassLoaderData* this_cld = cls._class_loader != NULL ?
+      java_lang_ClassLoader::loader_data_acquire(cls._class_loader) : NULL;
+    const ClassLoaderData* parent_cld = cls._parent != NULL ?
+      java_lang_ClassLoader::loader_data_acquire(cls._parent) : NULL;
     EventClassLoaderStatistics event;
     event.set_classLoader(this_cld);
     event.set_parentClassLoader(parent_cld);
-    event.set_classLoaderData((intptr_t)cls->_cld);
-    event.set_classCount(cls->_classes_count);
-    event.set_chunkSize(cls->_chunk_sz);
-    event.set_blockSize(cls->_block_sz);
-    event.set_unsafeAnonymousClassCount(cls->_anon_classes_count);
-    event.set_unsafeAnonymousChunkSize(cls->_anon_chunk_sz);
-    event.set_unsafeAnonymousBlockSize(cls->_anon_block_sz);
+    event.set_classLoaderData((intptr_t)cls._cld);
+    event.set_classCount(cls._classes_count);
+    event.set_chunkSize(cls._chunk_sz);
+    event.set_blockSize(cls._block_sz);
+    event.set_hiddenClassCount(cls._hidden_classes_count);
+    event.set_hiddenChunkSize(cls._hidden_chunk_sz);
+    event.set_hiddenBlockSize(cls._hidden_block_sz);
     event.commit();
     return true;
   }
@@ -534,21 +568,6 @@ TRACE_REQUEST_FUNC(StringTableStatistics) {
   emit_table_statistics<EventStringTableStatistics>(statistics);
 }
 
-TRACE_REQUEST_FUNC(PlaceholderTableStatistics) {
-  TableStatistics statistics = SystemDictionary::placeholders_statistics();
-  emit_table_statistics<EventPlaceholderTableStatistics>(statistics);
-}
-
-TRACE_REQUEST_FUNC(LoaderConstraintsTableStatistics) {
-  TableStatistics statistics = SystemDictionary::loader_constraints_statistics();
-  emit_table_statistics<EventLoaderConstraintsTableStatistics>(statistics);
-}
-
-TRACE_REQUEST_FUNC(ProtectionDomainCacheTableStatistics) {
-  TableStatistics statistics = SystemDictionary::protection_domain_cache_statistics();
-  emit_table_statistics<EventProtectionDomainCacheTableStatistics>(statistics);
-}
-
 TRACE_REQUEST_FUNC(CompilerStatistics) {
   EventCompilerStatistics event;
   event.set_compileCount(CompileBroker::get_total_compile_count());
@@ -558,8 +577,8 @@ TRACE_REQUEST_FUNC(CompilerStatistics) {
   event.set_standardCompileCount(CompileBroker::get_total_standard_compile_count());
   event.set_osrBytesCompiled(CompileBroker::get_sum_osr_bytes_compiled());
   event.set_standardBytesCompiled(CompileBroker::get_sum_standard_bytes_compiled());
-  event.set_nmetodsSize(CompileBroker::get_sum_nmethod_size());
-  event.set_nmetodCodeSize(CompileBroker::get_sum_nmethod_code_size());
+  event.set_nmethodsSize(CompileBroker::get_sum_nmethod_size());
+  event.set_nmethodCodeSize(CompileBroker::get_sum_nmethod_code_size());
   event.set_peakTimeSpent(CompileBroker::get_peak_compilation_time());
   event.set_totalTimeSpent(CompileBroker::get_total_compilation_time());
   event.commit();
@@ -569,12 +588,14 @@ TRACE_REQUEST_FUNC(CompilerConfiguration) {
   EventCompilerConfiguration event;
   event.set_threadCount(CICompilerCount);
   event.set_tieredCompilation(TieredCompilation);
+  event.set_dynamicCompilerThreadCount(UseDynamicNumberOfCompilerThreads);
   event.commit();
 }
 
 TRACE_REQUEST_FUNC(CodeCacheStatistics) {
   // Emit stats for all available code heaps
-  for (int bt = 0; bt < CodeBlobType::NumTypes; ++bt) {
+  for (int bt_index = 0; bt_index < static_cast<int>(CodeBlobType::NumTypes); ++bt_index) {
+    const CodeBlobType bt = static_cast<CodeBlobType>(bt_index);
     if (CodeCache::heap_available(bt)) {
       EventCodeCacheStatistics event;
       event.set_codeBlobType((u1)bt);
@@ -604,24 +625,6 @@ TRACE_REQUEST_FUNC(CodeCacheConfiguration) {
   event.commit();
 }
 
-TRACE_REQUEST_FUNC(CodeSweeperStatistics) {
-  EventCodeSweeperStatistics event;
-  event.set_sweepCount(NMethodSweeper::traversal_count());
-  event.set_methodReclaimedCount(NMethodSweeper::total_nof_methods_reclaimed());
-  event.set_totalSweepTime(NMethodSweeper::total_time_sweeping());
-  event.set_peakFractionTime(NMethodSweeper::peak_sweep_fraction_time());
-  event.set_peakSweepTime(NMethodSweeper::peak_sweep_time());
-  event.commit();
-}
-
-TRACE_REQUEST_FUNC(CodeSweeperConfiguration) {
-  EventCodeSweeperConfiguration event;
-  event.set_sweeperEnabled(MethodFlushing);
-  event.set_flushingEnabled(UseCodeCacheFlushing);
-  event.commit();
-}
-
-
 TRACE_REQUEST_FUNC(ShenandoahHeapRegionInformation) {
 #if INCLUDE_SHENANDOAHGC
   if (UseShenandoahGC) {
@@ -631,3 +634,18 @@ TRACE_REQUEST_FUNC(ShenandoahHeapRegionInformation) {
 #endif
 }
 
+TRACE_REQUEST_FUNC(FinalizerStatistics) {
+#if INCLUDE_MANAGEMENT
+  JfrFinalizerStatisticsEvent::generate_events();
+#else
+  log_debug(jfr, system)("Unable to generate requestable event FinalizerStatistics. The required jvm feature 'management' is missing.");
+#endif
+}
+
+TRACE_REQUEST_FUNC(NativeMemoryUsage) {
+  MemJFRReporter::send_type_events();
+}
+
+TRACE_REQUEST_FUNC(NativeMemoryUsageTotal) {
+  MemJFRReporter::send_total_event();
+}

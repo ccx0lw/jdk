@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,7 +27,10 @@ package sun.security.ssl;
 
 import java.io.EOFException;
 import java.io.IOException;
+import java.io.InterruptedIOException;
+import java.net.SocketException;
 import java.nio.ByteBuffer;
+import javax.crypto.AEADBadTagException;
 import javax.crypto.BadPaddingException;
 import javax.net.ssl.SSLHandshakeException;
 
@@ -102,12 +105,12 @@ interface SSLTransport {
         ByteBuffer[] srcs, int srcsOffset, int srcsLength,
         ByteBuffer[] dsts, int dstsOffset, int dstsLength) throws IOException {
 
-        Plaintext[] plaintexts = null;
+        Plaintext[] plaintexts;
         try {
             plaintexts =
                     context.inputRecord.decode(srcs, srcsOffset, srcsLength);
         } catch (UnsupportedOperationException unsoe) {         // SSLv2Hello
-            // Hack code to deliver SSLv2 error message for SSL/TLS connections.
+            // Code to deliver SSLv2 error message for SSL/TLS connections.
             if (!context.sslContext.isDTLS()) {
                 context.outputRecord.encodeV2NoCipher();
                 if (SSLLogger.isOn && SSLLogger.isOn("ssl")) {
@@ -116,6 +119,8 @@ interface SSLTransport {
             }
 
             throw context.fatal(Alert.UNEXPECTED_MESSAGE, unsoe);
+        } catch (AEADBadTagException bte) {
+            throw context.fatal(Alert.BAD_RECORD_MAC, bte);
         } catch (BadPaddingException bpe) {
             /*
              * The basic SSLv3 record protection involves (optional)
@@ -123,16 +128,19 @@ interface SSLTransport {
              * data origin authentication.  We do them both here, and
              * throw a fatal alert if the integrity check fails.
              */
-            Alert alert = (context.handshakeContext != null) ?
-                    Alert.HANDSHAKE_FAILURE :
-                    Alert.BAD_RECORD_MAC;
+             Alert alert = (context.handshakeContext != null) ?
+                     Alert.HANDSHAKE_FAILURE :
+                     Alert.BAD_RECORD_MAC;
             throw context.fatal(alert, bpe);
         } catch (SSLHandshakeException she) {
             // may be record sequence number overflow
             throw context.fatal(Alert.HANDSHAKE_FAILURE, she);
         } catch (EOFException eofe) {
-            // rethrow EOFException, the call will handle it if neede.
+            // rethrow EOFException, the call will handle it if needed.
             throw eofe;
+        } catch (InterruptedIOException | SocketException se) {
+            // don't close the Socket in case of timeouts or interrupts or SocketException.
+            throw se;
         } catch (IOException ioe) {
             throw context.fatal(Alert.UNEXPECTED_MESSAGE, ioe);
         }
@@ -154,7 +162,7 @@ interface SSLTransport {
                     context.handshakeContext.sslConfig.enableRetransmissions &&
                     context.sslContext.isDTLS()) {
                     if (SSLLogger.isOn && SSLLogger.isOn("ssl,verbose")) {
-                        SSLLogger.finest("retransmited handshake flight");
+                        SSLLogger.finest("retransmitted handshake flight");
                     }
 
                     context.outputRecord.launchRetransmission();
@@ -166,12 +174,24 @@ interface SSLTransport {
 
             if (plainText == null) {
                 plainText = Plaintext.PLAINTEXT_NULL;
-            } else {
-                // Fill the destination buffers.
-                if ((dsts != null) && (dstsLength > 0) &&
-                        (plainText.contentType ==
-                            ContentType.APPLICATION_DATA.id)) {
+            } else if (plainText.contentType ==
+                            ContentType.APPLICATION_DATA.id) {
+                // check handshake status
+                //
+                // Note that JDK does not support 0-RTT yet.  Otherwise, it is
+                // needed to check early_data.
+                if (!context.isNegotiated) {
+                    if (SSLLogger.isOn && SSLLogger.isOn("ssl,verbose")) {
+                        SSLLogger.warning("unexpected application data " +
+                            "before handshake completion");
+                    }
 
+                    throw context.fatal(Alert.UNEXPECTED_MESSAGE,
+                        "Receiving application data before handshake complete");
+                }
+
+                // Fill the destination buffers.
+                if ((dsts != null) && (dstsLength > 0)) {
                     ByteBuffer fragment = plainText.fragment;
                     int remains = fragment.remaining();
 

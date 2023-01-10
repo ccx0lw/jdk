@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -32,9 +32,12 @@
 #include "ci/ciField.hpp"
 #include "ci/ciKlass.hpp"
 #include "ci/ciMemberName.hpp"
+#include "ci/ciSymbols.hpp"
 #include "ci/ciUtilities.inline.hpp"
+#include "classfile/javaClasses.hpp"
 #include "compiler/compilationPolicy.hpp"
 #include "compiler/compileBroker.hpp"
+#include "compiler/compilerEvent.hpp"
 #include "interpreter/bytecode.hpp"
 #include "jfr/jfrEvents.hpp"
 #include "memory/resourceArea.hpp"
@@ -42,6 +45,11 @@
 #include "runtime/sharedRuntime.hpp"
 #include "runtime/vm_version.hpp"
 #include "utilities/bitMap.inline.hpp"
+#include "utilities/powerOfTwo.hpp"
+#include "utilities/macros.hpp"
+#if INCLUDE_JFR
+#include "jfr/jfr.hpp"
+#endif
 
 class BlockListBuilder {
  private:
@@ -50,14 +58,17 @@ class BlockListBuilder {
 
   BlockList    _blocks;                // internal list of all blocks
   BlockList*   _bci2block;             // mapping from bci to blocks for GraphBuilder
+  GrowableArray<BlockList> _bci2block_successors; // Mapping bcis to their blocks successors while we dont have a blockend
 
   // fields used by mark_loops
   ResourceBitMap _active;              // for iteration of control flow graph
   ResourceBitMap _visited;             // for iteration of control flow graph
-  intArray       _loop_map;            // caches the information if a block is contained in a loop
+  GrowableArray<ResourceBitMap> _loop_map; // caches the information if a block is contained in a loop
   int            _next_loop_index;     // next free loop number
   int            _next_block_number;   // for reverse postorder numbering of blocks
+  int            _block_id_start;
 
+  int           bit_number(int block_id) const   { return block_id - _block_id_start; }
   // accessors
   Compilation*  compilation() const              { return _compilation; }
   IRScope*      scope() const                    { return _scope; }
@@ -79,12 +90,17 @@ class BlockListBuilder {
 
   void make_loop_header(BlockBegin* block);
   void mark_loops();
-  int  mark_loops(BlockBegin* b, bool in_subroutine);
+  BitMap& mark_loops(BlockBegin* b, bool in_subroutine);
 
   // debugging
 #ifndef PRODUCT
   void print();
 #endif
+
+  int number_of_successors(BlockBegin* block);
+  BlockBegin* successor_at(BlockBegin* block, int i);
+  void add_successor(BlockBegin* block, BlockBegin* sux);
+  bool is_successor(BlockBegin* block, BlockBegin* sux);
 
  public:
   // creation
@@ -102,11 +118,13 @@ BlockListBuilder::BlockListBuilder(Compilation* compilation, IRScope* scope, int
  , _scope(scope)
  , _blocks(16)
  , _bci2block(new BlockList(scope->method()->code_size(), NULL))
+ , _bci2block_successors(scope->method()->code_size())
  , _active()         // size not known yet
  , _visited()        // size not known yet
  , _loop_map() // size not known yet
  , _next_loop_index(0)
  , _next_block_number(0)
+ , _block_id_start(0)
 {
   set_entries(osr_bci);
   set_leaders();
@@ -115,12 +133,14 @@ BlockListBuilder::BlockListBuilder(Compilation* compilation, IRScope* scope, int
   mark_loops();
   NOT_PRODUCT(if (PrintInitialBlockList) print());
 
+  // _bci2block still contains blocks with _end == null and > 0 sux in _bci2block_successors.
+
 #ifndef PRODUCT
   if (PrintCFGToFile) {
     stringStream title;
     title.print("BlockListBuilder ");
     scope->method()->print_name(&title);
-    CFGPrinter::print_cfg(_bci2block, title.as_string(), false, false);
+    CFGPrinter::print_cfg(_bci2block, title.freeze(), false, false);
   }
 #endif
 }
@@ -157,6 +177,7 @@ BlockBegin* BlockListBuilder::make_block_at(int cur_bci, BlockBegin* predecessor
     block = new BlockBegin(cur_bci);
     block->init_stores_to_locals(method()->max_locals());
     _bci2block->at_put(cur_bci, block);
+    _bci2block_successors.at_put_grow(cur_bci, BlockList());
     _blocks.append(block);
 
     assert(predecessor == NULL || predecessor->bci() < cur_bci, "targets for backward branches must already exist");
@@ -167,7 +188,7 @@ BlockBegin* BlockListBuilder::make_block_at(int cur_bci, BlockBegin* predecessor
       BAILOUT_("Exception handler can be reached by both normal and exceptional control flow", block);
     }
 
-    predecessor->add_successor(block);
+    add_successor(predecessor, block);
     block->increment_total_preds();
   }
 
@@ -198,8 +219,8 @@ void BlockListBuilder::handle_exceptions(BlockBegin* current, int cur_bci) {
       assert(entry->is_set(BlockBegin::exception_entry_flag), "flag must be set");
 
       // add each exception handler only once
-      if (!current->is_successor(entry)) {
-        current->add_successor(entry);
+      if(!is_successor(current, entry)) {
+        add_successor(current, entry);
         entry->increment_total_preds();
       }
 
@@ -210,8 +231,10 @@ void BlockListBuilder::handle_exceptions(BlockBegin* current, int cur_bci) {
 }
 
 void BlockListBuilder::handle_jsr(BlockBegin* current, int sr_bci, int next_bci) {
-  // start a new block after jsr-bytecode and link this block into cfg
-  make_block_at(next_bci, current);
+  if (next_bci < method()->code_size()) {
+    // start a new block after jsr-bytecode and link this block into cfg
+    make_block_at(next_bci, current);
+  }
 
   // start a new block at the subroutine entry at mark it with special flag
   BlockBegin* sr_block = make_block_at(sr_bci, current);
@@ -230,6 +253,8 @@ void BlockListBuilder::set_leaders() {
   // during bytecode iteration. This would require the creation of a new block at the
   // branch target and a modification of the successor lists.
   const BitMap& bci_block_start = method()->bci_block_start();
+
+  int end_bci = method()->code_size();
 
   ciBytecodeStream s(method());
   while (s.next() != ciBytecodeStream::EOBC()) {
@@ -301,7 +326,9 @@ void BlockListBuilder::set_leaders() {
       case Bytecodes::_if_acmpne: // fall through
       case Bytecodes::_ifnull:    // fall through
       case Bytecodes::_ifnonnull:
-        make_block_at(s.next_bci(), current);
+        if (s.next_bci() < end_bci) {
+          make_block_at(s.next_bci(), current);
+        }
         make_block_at(s.get_dest(), current);
         current = NULL;
         break;
@@ -360,22 +387,46 @@ void BlockListBuilder::set_leaders() {
 void BlockListBuilder::mark_loops() {
   ResourceMark rm;
 
-  _active.initialize(BlockBegin::number_of_blocks());
-  _visited.initialize(BlockBegin::number_of_blocks());
-  _loop_map = intArray(BlockBegin::number_of_blocks(), BlockBegin::number_of_blocks(), 0);
+  const int number_of_blocks = _blocks.length();
+  _active.initialize(number_of_blocks);
+  _visited.initialize(number_of_blocks);
+  _loop_map = GrowableArray<ResourceBitMap>(number_of_blocks, number_of_blocks, ResourceBitMap());
+  for (int i = 0; i < number_of_blocks; i++) {
+    _loop_map.at(i).initialize(number_of_blocks);
+  }
   _next_loop_index = 0;
   _next_block_number = _blocks.length();
 
-  // recursively iterate the control flow graph
-  mark_loops(_bci2block->at(0), false);
+  // The loop detection algorithm works as follows:
+  // - We maintain the _loop_map, where for each block we have a bitmap indicating which loops contain this block.
+  // - The CFG is recursively traversed (depth-first) and if we detect a loop, we assign the loop a unique number that is stored
+  // in the bitmap associated with the loop header block. Until we return back through that loop header the bitmap contains
+  // only a single bit corresponding to the loop number.
+  // -  The bit is then propagated for all the blocks in the loop after we exit them (post-order). There could be multiple bits
+  // of course in case of nested loops.
+  // -  When we exit the loop header we remove that single bit and assign the real loop state for it.
+  // -  Now, the tricky part here is how we detect irreducible loops. In the algorithm above the loop state bits
+  // are propagated to the predecessors. If we encounter an irreducible loop (a loop with multiple heads) we would see
+  // a node with some loop bit set that would then propagate back and be never cleared because we would
+  // never go back through the original loop header. Therefore if there are any irreducible loops the bits in the states
+  // for these loops are going to propagate back to the root.
+  BlockBegin* start = _bci2block->at(0);
+  _block_id_start = start->block_id();
+  BitMap& loop_state = mark_loops(start, false);
+  if (!loop_state.is_empty()) {
+    compilation()->set_has_irreducible_loops(true);
+  }
   assert(_next_block_number >= 0, "invalid block numbers");
 
   // Remove dangling Resource pointers before the ResourceMark goes out-of-scope.
   _active.resize(0);
   _visited.resize(0);
+  _loop_map.clear();
 }
 
 void BlockListBuilder::make_loop_header(BlockBegin* block) {
+  int block_id = block->block_id();
+  int block_bit = bit_number(block_id);
   if (block->is_set(BlockBegin::exception_entry_flag)) {
     // exception edges may look like loops but don't mark them as such
     // since it screws up block ordering.
@@ -384,26 +435,25 @@ void BlockListBuilder::make_loop_header(BlockBegin* block) {
   if (!block->is_set(BlockBegin::parser_loop_header_flag)) {
     block->set(BlockBegin::parser_loop_header_flag);
 
-    assert(_loop_map.at(block->block_id()) == 0, "must not be set yet");
-    assert(0 <= _next_loop_index && _next_loop_index < BitsPerInt, "_next_loop_index is used as a bit-index in integer");
-    _loop_map.at_put(block->block_id(), 1 << _next_loop_index);
-    if (_next_loop_index < 31) _next_loop_index++;
+    assert(_loop_map.at(block_bit).is_empty(), "must not be set yet");
+    assert(0 <= _next_loop_index && _next_loop_index < _loop_map.length(), "_next_loop_index is too large");
+    _loop_map.at(block_bit).set_bit(_next_loop_index++);
   } else {
     // block already marked as loop header
-    assert(is_power_of_2((unsigned int)_loop_map.at(block->block_id())), "exactly one bit must be set");
+    assert(_loop_map.at(block_bit).count_one_bits() == 1, "exactly one bit must be set");
   }
 }
 
-int BlockListBuilder::mark_loops(BlockBegin* block, bool in_subroutine) {
+BitMap& BlockListBuilder::mark_loops(BlockBegin* block, bool in_subroutine) {
   int block_id = block->block_id();
-
-  if (_visited.at(block_id)) {
-    if (_active.at(block_id)) {
+  int block_bit = bit_number(block_id);
+  if (_visited.at(block_bit)) {
+    if (_active.at(block_bit)) {
       // reached block via backward branch
       make_loop_header(block);
     }
     // return cached loop information for this block
-    return _loop_map.at(block_id);
+    return _loop_map.at(block_bit);
   }
 
   if (block->is_set(BlockBegin::subroutine_entry_flag)) {
@@ -411,44 +461,64 @@ int BlockListBuilder::mark_loops(BlockBegin* block, bool in_subroutine) {
   }
 
   // set active and visited bits before successors are processed
-  _visited.set_bit(block_id);
-  _active.set_bit(block_id);
+  _visited.set_bit(block_bit);
+  _active.set_bit(block_bit);
 
-  intptr_t loop_state = 0;
-  for (int i = block->number_of_sux() - 1; i >= 0; i--) {
+  ResourceMark rm;
+  ResourceBitMap loop_state(_loop_map.length());
+  for (int i = number_of_successors(block) - 1; i >= 0; i--) {
+    BlockBegin* sux = successor_at(block, i);
     // recursively process all successors
-    loop_state |= mark_loops(block->sux_at(i), in_subroutine);
+    loop_state.set_union(mark_loops(sux, in_subroutine));
   }
 
   // clear active-bit after all successors are processed
-  _active.clear_bit(block_id);
+  _active.clear_bit(block_bit);
 
   // reverse-post-order numbering of all blocks
   block->set_depth_first_number(_next_block_number);
   _next_block_number--;
 
-  if (loop_state != 0 || in_subroutine ) {
+  if (!loop_state.is_empty() || in_subroutine ) {
     // block is contained at least in one loop, so phi functions are necessary
     // phi functions are also necessary for all locals stored in a subroutine
     scope()->requires_phi_function().set_union(block->stores_to_locals());
   }
 
   if (block->is_set(BlockBegin::parser_loop_header_flag)) {
-    int header_loop_state = _loop_map.at(block_id);
-    assert(is_power_of_2((unsigned)header_loop_state), "exactly one bit must be set");
-
-    // If the highest bit is set (i.e. when integer value is negative), the method
-    // has 32 or more loops. This bit is never cleared because it is used for multiple loops
-    if (header_loop_state >= 0) {
-      clear_bits(loop_state, header_loop_state);
-    }
+    BitMap& header_loop_state = _loop_map.at(block_bit);
+    assert(header_loop_state.count_one_bits() == 1, "exactly one bit must be set");
+    // remove the bit with the loop number for the state (header is outside of the loop)
+    loop_state.set_difference(header_loop_state);
   }
 
   // cache and return loop information for this block
-  _loop_map.at_put(block_id, loop_state);
-  return loop_state;
+  _loop_map.at(block_bit).set_from(loop_state);
+  return _loop_map.at(block_bit);
 }
 
+inline int BlockListBuilder::number_of_successors(BlockBegin* block)
+{
+  assert(_bci2block_successors.length() > block->bci(), "sux must exist");
+  return _bci2block_successors.at(block->bci()).length();
+}
+
+inline BlockBegin* BlockListBuilder::successor_at(BlockBegin* block, int i)
+{
+  assert(_bci2block_successors.length() > block->bci(), "sux must exist");
+  return _bci2block_successors.at(block->bci()).at(i);
+}
+
+inline void BlockListBuilder::add_successor(BlockBegin* block, BlockBegin* sux)
+{
+  assert(_bci2block_successors.length() > block->bci(), "sux must exist");
+  _bci2block_successors.at(block->bci()).append(sux);
+}
+
+inline bool BlockListBuilder::is_successor(BlockBegin* block, BlockBegin* sux) {
+  assert(_bci2block_successors.length() > block->bci(), "sux must exist");
+  return _bci2block_successors.at(block->bci()).contains(sux);
+}
 
 #ifndef PRODUCT
 
@@ -474,10 +544,10 @@ void BlockListBuilder::print() {
     tty->print(cur->is_set(BlockBegin::subroutine_entry_flag)        ? " sr" : "   ");
     tty->print(cur->is_set(BlockBegin::parser_loop_header_flag)      ? " lh" : "   ");
 
-    if (cur->number_of_sux() > 0) {
+    if (number_of_successors(cur) > 0) {
       tty->print("    sux: ");
-      for (int j = 0; j < cur->number_of_sux(); j++) {
-        BlockBegin* sux = cur->sux_at(j);
+      for (int j = 0; j < number_of_successors(cur); j++) {
+        BlockBegin* sux = successor_at(cur, j);
         tty->print("B%d ", sux->block_id());
       }
     }
@@ -607,9 +677,15 @@ class MemoryBuffer: public CompilationResourceObj {
       return load;
     }
 
-    if (RoundFPResults && UseSSE < 2 && load->type()->is_float_kind()) {
-      // can't skip load since value might get rounded as a side effect
-      return load;
+    if (strict_fp_requires_explicit_rounding && load->type()->is_float_kind()) {
+#ifdef IA32
+      if (UseSSE < 2) {
+        // can't skip load since value might get rounded as a side effect
+        return load;
+      }
+#else
+      Unimplemented();
+#endif // IA32
     }
 
     ciField* field = load->field();
@@ -693,10 +769,10 @@ GraphBuilder::ScopeData::ScopeData(ScopeData* parent)
   if (parent != NULL) {
     _max_inline_size = (intx) ((float) NestedInliningSizeRatio * (float) parent->max_inline_size() / 100.0f);
   } else {
-    _max_inline_size = MaxInlineSize;
+    _max_inline_size = C1MaxInlineSize;
   }
-  if (_max_inline_size < MaxTrivialSize) {
-    _max_inline_size = MaxTrivialSize;
+  if (_max_inline_size < C1MaxTrivialSize) {
+    _max_inline_size = C1MaxTrivialSize;
   }
 }
 
@@ -875,53 +951,70 @@ void GraphBuilder::ScopeData::incr_num_returns() {
 
 void GraphBuilder::load_constant() {
   ciConstant con = stream()->get_constant();
-  if (con.basic_type() == T_ILLEGAL) {
-    // FIXME: an unresolved Dynamic constant can get here,
-    // and that should not terminate the whole compilation.
-    BAILOUT("could not resolve a constant");
-  } else {
+  if (con.is_valid()) {
     ValueType* t = illegalType;
     ValueStack* patch_state = NULL;
     switch (con.basic_type()) {
-      case T_BOOLEAN: t = new IntConstant     (con.as_boolean()); break;
-      case T_BYTE   : t = new IntConstant     (con.as_byte   ()); break;
-      case T_CHAR   : t = new IntConstant     (con.as_char   ()); break;
-      case T_SHORT  : t = new IntConstant     (con.as_short  ()); break;
-      case T_INT    : t = new IntConstant     (con.as_int    ()); break;
-      case T_LONG   : t = new LongConstant    (con.as_long   ()); break;
-      case T_FLOAT  : t = new FloatConstant   (con.as_float  ()); break;
-      case T_DOUBLE : t = new DoubleConstant  (con.as_double ()); break;
-      case T_ARRAY  : t = new ArrayConstant   (con.as_object ()->as_array   ()); break;
-      case T_OBJECT :
-       {
+      case T_BOOLEAN: t = new IntConstant   (con.as_boolean()); break;
+      case T_BYTE   : t = new IntConstant   (con.as_byte   ()); break;
+      case T_CHAR   : t = new IntConstant   (con.as_char   ()); break;
+      case T_SHORT  : t = new IntConstant   (con.as_short  ()); break;
+      case T_INT    : t = new IntConstant   (con.as_int    ()); break;
+      case T_LONG   : t = new LongConstant  (con.as_long   ()); break;
+      case T_FLOAT  : t = new FloatConstant (con.as_float  ()); break;
+      case T_DOUBLE : t = new DoubleConstant(con.as_double ()); break;
+      case T_ARRAY  : // fall-through
+      case T_OBJECT : {
         ciObject* obj = con.as_object();
-        if (!obj->is_loaded()
-            || (PatchALot && obj->klass() != ciEnv::current()->String_klass())) {
-          // A Class, MethodType, MethodHandle, or String.
-          // Unloaded condy nodes show up as T_ILLEGAL, above.
+        if (!obj->is_loaded() || (PatchALot && !stream()->is_string_constant())) {
+          // A Class, MethodType, MethodHandle, Dynamic, or String.
           patch_state = copy_state_before();
           t = new ObjectConstant(obj);
         } else {
           // Might be a Class, MethodType, MethodHandle, or Dynamic constant
           // result, which might turn out to be an array.
-          if (obj->is_null_object())
+          if (obj->is_null_object()) {
             t = objectNull;
-          else if (obj->is_array())
+          } else if (obj->is_array()) {
             t = new ArrayConstant(obj->as_array());
-          else
+          } else {
             t = new InstanceConstant(obj->as_instance());
+          }
         }
         break;
-       }
-      default       : ShouldNotReachHere();
+      }
+      default: ShouldNotReachHere();
     }
     Value x;
     if (patch_state != NULL) {
-      x = new Constant(t, patch_state);
+      // Arbitrary memory effects from running BSM or class loading (using custom loader) during linkage.
+      bool kills_memory = stream()->is_dynamic_constant() ||
+                          (!stream()->is_string_constant() && !method()->holder()->has_trusted_loader());
+      x = new Constant(t, patch_state, kills_memory);
     } else {
       x = new Constant(t);
     }
+
+    // Unbox the value at runtime, if needed.
+    // ConstantDynamic entry can be of a primitive type, but it is cached in boxed form.
+    if (patch_state != NULL) {
+      int index = stream()->get_constant_pool_index();
+      BasicType type = stream()->get_basic_type_for_constant_at(index);
+      if (is_java_primitive(type)) {
+        ciInstanceKlass* box_klass = ciEnv::current()->get_box_klass_for_primitive_type(type);
+        assert(box_klass->is_loaded(), "sanity");
+        int offset = java_lang_boxing_object::value_offset(type);
+        ciField* value_field = box_klass->get_field_by_offset(offset, false /*is_static*/);
+        x = new LoadField(append(x), offset, value_field, false /*is_static*/, patch_state, false /*needs_patching*/);
+        t = as_ValueType(type);
+      } else {
+        assert(is_reference_type(type), "not a reference: %s", type2name(type));
+      }
+    }
+
     push(t, append(x));
+  } else {
+    BAILOUT("could not resolve a constant");
   }
 }
 
@@ -975,8 +1068,10 @@ void GraphBuilder::load_indexed(BasicType type) {
   Value array = apop();
   Value length = NULL;
   if (CSEArrayLength ||
+      (array->as_Constant() != NULL) ||
       (array->as_AccessField() && array->as_AccessField()->field()->is_constant()) ||
-      (array->as_NewArray() && array->as_NewArray()->length() && array->as_NewArray()->length()->type()->is_constant())) {
+      (array->as_NewArray() && array->as_NewArray()->length() && array->as_NewArray()->length()->type()->is_constant()) ||
+      (array->as_NewMultiArray() && array->as_NewMultiArray()->dims()->at(0)->type()->is_constant())) {
     length = append(new ArrayLength(array, state_before));
   }
   push(as_ValueType(type), append(new LoadIndexed(array, index, length, type, state_before)));
@@ -992,8 +1087,10 @@ void GraphBuilder::store_indexed(BasicType type) {
   Value array = apop();
   Value length = NULL;
   if (CSEArrayLength ||
+      (array->as_Constant() != NULL) ||
       (array->as_AccessField() && array->as_AccessField()->field()->is_constant()) ||
-      (array->as_NewArray() && array->as_NewArray()->length() && array->as_NewArray()->length()->type()->is_constant())) {
+      (array->as_NewArray() && array->as_NewArray()->length() && array->as_NewArray()->length()->type()->is_constant()) ||
+      (array->as_NewMultiArray() && array->as_NewMultiArray()->dims()->at(0)->type()->is_constant())) {
     length = append(new ArrayLength(array, state_before));
   }
   ciType* array_type = array->declared_type();
@@ -1110,14 +1207,10 @@ void GraphBuilder::stack_op(Bytecodes::Code code) {
 void GraphBuilder::arithmetic_op(ValueType* type, Bytecodes::Code code, ValueStack* state_before) {
   Value y = pop(type);
   Value x = pop(type);
-  // NOTE: strictfp can be queried from current method since we don't
-  // inline methods with differing strictfp bits
-  Value res = new ArithmeticOp(code, x, y, method()->is_strict(), state_before);
+  Value res = new ArithmeticOp(code, x, y, state_before);
   // Note: currently single-precision floating-point rounding on Intel is handled at the LIRGenerator level
   res = append(res);
-  if (method()->is_strict()) {
-    res = round_fp(res);
-  }
+  res = round_fp(res);
   push(type, res);
 }
 
@@ -1469,7 +1562,7 @@ void GraphBuilder::method_return(Value x, bool ignore_return) {
 
   // The conditions for a memory barrier are described in Parse::do_exits().
   bool need_mem_bar = false;
-  if (method()->name() == ciSymbol::object_initializer_name() &&
+  if (method()->name() == ciSymbols::object_initializer_name() &&
        (scope()->wrote_final() ||
          (AlwaysSafeConstructors && scope()->wrote_fields()) ||
          (support_IRIW_for_not_multiple_copy_atomic_cpu && scope()->wrote_volatile()))) {
@@ -1707,7 +1800,7 @@ void GraphBuilder::access_field(Bytecodes::Code code) {
             // For CallSite objects add a dependency for invalidation of the optimization.
             if (field->is_call_site_target()) {
               ciCallSite* call_site = const_oop->as_call_site();
-              if (!call_site->is_constant_call_site()) {
+              if (!call_site->is_fully_initialized_constant_call_site()) {
                 ciMethodHandle* target = field_value.as_object()->as_method_handle();
                 dependency_recorder()->assert_call_site_target_value(call_site, target);
               }
@@ -1725,6 +1818,23 @@ void GraphBuilder::access_field(Bytecodes::Code code) {
         Value replacement = !needs_patching ? _memory->load(load) : load;
         if (replacement != load) {
           assert(replacement->is_linked() || !replacement->can_be_linked(), "should already by linked");
+          // Writing an (integer) value to a boolean, byte, char or short field includes an implicit narrowing
+          // conversion. Emit an explicit conversion here to get the correct field value after the write.
+          BasicType bt = field->type()->basic_type();
+          switch (bt) {
+          case T_BOOLEAN:
+          case T_BYTE:
+            replacement = append(new Convert(Bytecodes::_i2b, replacement, as_ValueType(bt)));
+            break;
+          case T_CHAR:
+            replacement = append(new Convert(Bytecodes::_i2c, replacement, as_ValueType(bt)));
+            break;
+          case T_SHORT:
+            replacement = append(new Convert(Bytecodes::_i2s, replacement, as_ValueType(bt)));
+            break;
+          default:
+            break;
+          }
           push(type, replacement);
         } else {
           push(type, append(load));
@@ -1792,7 +1902,7 @@ void GraphBuilder::check_args_for_profiling(Values* obj_args, int expected) {
   bool ignored_will_link;
   ciSignature* declared_signature = NULL;
   ciMethod* real_target = method()->get_method_at_bci(bci(), ignored_will_link, &declared_signature);
-  assert(expected == obj_args->max_length() || real_target->is_method_handle_intrinsic(), "missed on arg?");
+  assert(expected == obj_args->capacity() || real_target->is_method_handle_intrinsic(), "missed on arg?");
 #endif
 }
 
@@ -1803,7 +1913,7 @@ Values* GraphBuilder::collect_args_for_profiling(Values* args, ciMethod* target,
   if (obj_args == NULL) {
     return NULL;
   }
-  int s = obj_args->max_length();
+  int s = obj_args->capacity();
   // if called through method handle invoke, some arguments may have been popped
   for (int i = start, j = 0; j < s && i < args->length(); i++) {
     if (args->at(i)->type()->is_object_kind()) {
@@ -1815,7 +1925,6 @@ Values* GraphBuilder::collect_args_for_profiling(Values* args, ciMethod* target,
   return obj_args;
 }
 
-
 void GraphBuilder::invoke(Bytecodes::Code code) {
   bool will_link;
   ciSignature* declared_signature = NULL;
@@ -1824,6 +1933,7 @@ void GraphBuilder::invoke(Bytecodes::Code code) {
   const Bytecodes::Code bc_raw = stream()->cur_bc_raw();
   assert(declared_signature != NULL, "cannot be null");
   assert(will_link == target->is_loaded(), "");
+  JFR_ONLY(Jfr::on_resolution(this, holder, target); CHECK_BAILOUT();)
 
   ciInstanceKlass* klass = target->holder();
   assert(!target->is_loaded() || klass->is_loaded(), "loaded target must imply loaded klass");
@@ -1839,24 +1949,17 @@ void GraphBuilder::invoke(Bytecodes::Code code) {
                 log->identify(target),
                 Bytecodes::name(code));
 
-  // invoke-special-super
-  if (bc_raw == Bytecodes::_invokespecial && !target->is_object_initializer()) {
-    ciInstanceKlass* sender_klass =
-          calling_klass->is_unsafe_anonymous() ? calling_klass->unsafe_anonymous_host() :
-                                                 calling_klass;
-    if (sender_klass->is_interface()) {
-      int index = state()->stack_size() - (target->arg_size_no_receiver() + 1);
-      Value receiver = state()->stack_at(index);
-      CheckCast* c = new CheckCast(sender_klass, receiver, copy_state_before());
-      c->set_invokespecial_receiver_check();
-      state()->stack_at_put(index, append_split(c));
-    }
-  }
-
   // Some methods are obviously bindable without any type checks so
   // convert them directly to an invokespecial or invokestatic.
   if (target->is_loaded() && !target->is_abstract() && target->can_be_statically_bound()) {
     switch (bc_raw) {
+    case Bytecodes::_invokeinterface:
+      // convert to invokespecial if the target is the private interface method.
+      if (target->is_private()) {
+        assert(holder->is_interface(), "How did we get a non-interface method here!");
+        code = Bytecodes::_invokespecial;
+      }
+      break;
     case Bytecodes::_invokevirtual:
       code = Bytecodes::_invokespecial;
       break;
@@ -1870,6 +1973,26 @@ void GraphBuilder::invoke(Bytecodes::Code code) {
     if (bc_raw == Bytecodes::_invokehandle) {
       assert(!will_link, "should come here only for unlinked call");
       code = Bytecodes::_invokespecial;
+    }
+  }
+
+  if (code == Bytecodes::_invokespecial) {
+    // Additional receiver subtype checks for interface calls via invokespecial or invokeinterface.
+    ciKlass* receiver_constraint = nullptr;
+
+    if (bc_raw == Bytecodes::_invokeinterface) {
+      receiver_constraint = holder;
+    } else if (bc_raw == Bytecodes::_invokespecial && !target->is_object_initializer() && calling_klass->is_interface()) {
+      receiver_constraint = calling_klass;
+    }
+
+    if (receiver_constraint != nullptr) {
+      int index = state()->stack_size() - (target->arg_size_no_receiver() + 1);
+      Value receiver = state()->stack_at(index);
+      CheckCast* c = new CheckCast(receiver_constraint, receiver, copy_state_before());
+      // go to uncommon_trap when checkcast fails
+      c->set_invokespecial_receiver_check();
+      state()->stack_at_put(index, append_split(c));
     }
   }
 
@@ -1960,25 +2083,24 @@ void GraphBuilder::invoke(Bytecodes::Code code) {
       // no point in inlining.
       ciInstanceKlass* declared_interface = callee_holder;
       ciInstanceKlass* singleton = declared_interface->unique_implementor();
-      if (singleton != NULL &&
-          (!target->is_default_method() || target->is_overpass()) /* CHA doesn't support default methods yet. */ ) {
+      if (singleton != NULL) {
         assert(singleton != declared_interface, "not a unique implementor");
         cha_monomorphic_target = target->find_monomorphic_target(calling_klass, declared_interface, singleton);
         if (cha_monomorphic_target != NULL) {
           if (cha_monomorphic_target->holder() != compilation()->env()->Object_klass()) {
-            // If CHA is able to bind this invoke then update the class
-            // to match that class, otherwise klass will refer to the
-            // interface.
-            klass = cha_monomorphic_target->holder();
+            ciInstanceKlass* holder = cha_monomorphic_target->holder();
+            ciInstanceKlass* constraint = (holder->is_subtype_of(singleton) ? holder : singleton); // avoid upcasts
             actual_recv = declared_interface;
 
             // insert a check it's really the expected class.
-            CheckCast* c = new CheckCast(klass, receiver, copy_state_for_exception());
+            CheckCast* c = new CheckCast(constraint, receiver, copy_state_for_exception());
             c->set_incompatible_class_change_check();
-            c->set_direct_compare(klass->is_final());
+            c->set_direct_compare(constraint->is_final());
             // pass the result of the checkcast so that the compiler has
             // more accurate type info in the inlinee
             better_receiver = append_split(c);
+
+            dependency_recorder()->assert_unique_implementor(declared_interface, singleton);
           } else {
             cha_monomorphic_target = NULL; // subtype check against Object is useless
           }
@@ -1996,23 +2118,24 @@ void GraphBuilder::invoke(Bytecodes::Code code) {
       // by dynamic class loading.  Be sure to test the "static" receiver
       // dest_method here, as opposed to the actual receiver, which may
       // falsely lead us to believe that the receiver is final or private.
-      dependency_recorder()->assert_unique_concrete_method(actual_recv, cha_monomorphic_target);
+      dependency_recorder()->assert_unique_concrete_method(actual_recv, cha_monomorphic_target, callee_holder, target);
     }
     code = Bytecodes::_invokespecial;
   }
 
   // check if we could do inlining
-  if (!PatchALot && Inline && target->is_loaded() &&
-      (klass->is_initialized() || (klass->is_interface() && target->holder()->is_initialized()))
-      && !patch_for_appendix) {
+  if (!PatchALot && Inline && target->is_loaded() && !patch_for_appendix &&
+      callee_holder->is_loaded()) { // the effect of symbolic reference resolution
+
     // callee is known => check if we have static binding
-    if (code == Bytecodes::_invokestatic  ||
+    if ((code == Bytecodes::_invokestatic && klass->is_initialized()) || // invokestatic involves an initialization barrier on declaring class
         code == Bytecodes::_invokespecial ||
         (code == Bytecodes::_invokevirtual && target->is_final_method()) ||
         code == Bytecodes::_invokedynamic) {
-      ciMethod* inline_target = (cha_monomorphic_target != NULL) ? cha_monomorphic_target : target;
       // static binding => check if callee is ok
-      bool success = try_inline(inline_target, (cha_monomorphic_target != NULL) || (exact_target != NULL), false, code, better_receiver);
+      ciMethod* inline_target = (cha_monomorphic_target != NULL) ? cha_monomorphic_target : target;
+      bool holder_known = (cha_monomorphic_target != NULL) || (exact_target != NULL);
+      bool success = try_inline(inline_target, holder_known, false /* ignore_return */, code, better_receiver);
 
       CHECK_BAILOUT();
       clear_inline_bailout();
@@ -2055,24 +2178,6 @@ void GraphBuilder::invoke(Bytecodes::Code code) {
     code == Bytecodes::_invokeinterface;
   Values* args = state()->pop_arguments(target->arg_size_no_receiver() + patching_appendix_arg);
   Value recv = has_receiver ? apop() : NULL;
-  int vtable_index = Method::invalid_vtable_index;
-
-#ifdef SPARC
-  // Currently only supported on Sparc.
-  // The UseInlineCaches only controls dispatch to invokevirtuals for
-  // loaded classes which we weren't able to statically bind.
-  if (!UseInlineCaches && target->is_loaded() && code == Bytecodes::_invokevirtual
-      && !target->can_be_statically_bound()) {
-    // Find a vtable index if one is available
-    // For arrays, callee_holder is Object. Resolving the call with
-    // Object would allow an illegal call to finalize() on an
-    // array. We use holder instead: illegal calls to finalize() won't
-    // be compiled as vtable calls (IC call resolution will catch the
-    // illegal call) and the few legal calls on array types won't be
-    // either.
-    vtable_index = target->resolve_vtable_index(calling_klass, holder);
-  }
-#endif
 
   // A null check is required here (when there is a receiver) for any of the following cases
   // - invokespecial, always need a null check.
@@ -2112,16 +2217,12 @@ void GraphBuilder::invoke(Bytecodes::Code code) {
     }
   }
 
-  Invoke* result = new Invoke(code, result_type, recv, args, vtable_index, target, state_before);
+  Invoke* result = new Invoke(code, result_type, recv, args, target, state_before);
   // push result
   append_split(result);
 
   if (result_type != voidType) {
-    if (method()->is_strict()) {
-      push(result_type, round_fp(result));
-    } else {
-      push(result_type, result);
-    }
+    push(result_type, round_fp(result));
   }
   if (profile_return() && result_type->is_object_kind()) {
     profile_return_type(result, target);
@@ -2131,8 +2232,7 @@ void GraphBuilder::invoke(Bytecodes::Code code) {
 
 void GraphBuilder::new_instance(int klass_index) {
   ValueStack* state_before = copy_state_exhandling();
-  bool will_link;
-  ciKlass* klass = stream()->get_klass(will_link);
+  ciKlass* klass = stream()->get_klass();
   assert(klass->is_instance_klass(), "must be an instance klass");
   NewInstance* new_instance = new NewInstance(klass->as_instance_klass(), state_before, stream()->is_unresolved_klass());
   _memory->new_instance(new_instance);
@@ -2147,8 +2247,7 @@ void GraphBuilder::new_type_array() {
 
 
 void GraphBuilder::new_object_array() {
-  bool will_link;
-  ciKlass* klass = stream()->get_klass(will_link);
+  ciKlass* klass = stream()->get_klass();
   ValueStack* state_before = !klass->is_loaded() || PatchALot ? copy_state_before() : copy_state_exhandling();
   NewArray* n = new NewObjectArray(klass, ipop(), state_before);
   apush(append_split(n));
@@ -2173,8 +2272,7 @@ bool GraphBuilder::direct_compare(ciKlass* k) {
 
 
 void GraphBuilder::check_cast(int klass_index) {
-  bool will_link;
-  ciKlass* klass = stream()->get_klass(will_link);
+  ciKlass* klass = stream()->get_klass();
   ValueStack* state_before = !klass->is_loaded() || PatchALot ? copy_state_before() : copy_state_for_exception();
   CheckCast* c = new CheckCast(klass, apop(), state_before);
   apush(append_split(c));
@@ -2194,8 +2292,7 @@ void GraphBuilder::check_cast(int klass_index) {
 
 
 void GraphBuilder::instance_of(int klass_index) {
-  bool will_link;
-  ciKlass* klass = stream()->get_klass(will_link);
+  ciKlass* klass = stream()->get_klass();
   ValueStack* state_before = !klass->is_loaded() || PatchALot ? copy_state_before() : copy_state_exhandling();
   InstanceOf* i = new InstanceOf(klass, apop(), state_before);
   ipush(append_split(i));
@@ -2217,6 +2314,7 @@ void GraphBuilder::instance_of(int klass_index) {
 void GraphBuilder::monitorenter(Value x, int bci) {
   // save state before locking in case of deoptimization after a NullPointerException
   ValueStack* state_before = copy_state_for_exception_with_bci(bci);
+  compilation()->set_has_monitors(true);
   append_with_bci(new MonitorEnter(x, state()->lock(x), state_before), bci);
   kill_all();
 }
@@ -2229,8 +2327,7 @@ void GraphBuilder::monitorexit(Value x, int bci) {
 
 
 void GraphBuilder::new_multi_array(int dimensions) {
-  bool will_link;
-  ciKlass* klass = stream()->get_klass(will_link);
+  ciKlass* klass = stream()->get_klass();
   ValueStack* state_before = !klass->is_loaded() || PatchALot ? copy_state_before() : copy_state_exhandling();
 
   Values* dims = new Values(dimensions, dimensions, NULL);
@@ -2255,17 +2352,23 @@ void GraphBuilder::throw_op(int bci) {
 
 
 Value GraphBuilder::round_fp(Value fp_value) {
-  // no rounding needed if SSE2 is used
-  if (RoundFPResults && UseSSE < 2) {
-    // Must currently insert rounding node for doubleword values that
-    // are results of expressions (i.e., not loads from memory or
-    // constants)
-    if (fp_value->type()->tag() == doubleTag &&
-        fp_value->as_Constant() == NULL &&
-        fp_value->as_Local() == NULL &&       // method parameters need no rounding
-        fp_value->as_RoundFP() == NULL) {
-      return append(new RoundFP(fp_value));
+  if (strict_fp_requires_explicit_rounding) {
+#ifdef IA32
+    // no rounding needed if SSE2 is used
+    if (UseSSE < 2) {
+      // Must currently insert rounding node for doubleword values that
+      // are results of expressions (i.e., not loads from memory or
+      // constants)
+      if (fp_value->type()->tag() == doubleTag &&
+          fp_value->as_Constant() == NULL &&
+          fp_value->as_Local() == NULL &&       // method parameters need no rounding
+          fp_value->as_RoundFP() == NULL) {
+        return append(new RoundFP(fp_value));
+      }
     }
+#else
+    Unimplemented();
+#endif // IA32
   }
   return fp_value;
 }
@@ -2425,7 +2528,7 @@ XHandlers* GraphBuilder::handle_exception(Instruction* instruction) {
         // The only test case we've seen so far which exhibits this
         // problem is caught by the infinite recursion test in
         // GraphBuilder::jsr() if the join doesn't work.
-        if (!entry->try_merge(cur_state)) {
+        if (!entry->try_merge(cur_state, compilation()->has_irreducible_loops())) {
           BAILOUT_("error while joining with exception handler, prob. due to complicated jsr/rets", exception_handlers);
         }
 
@@ -2566,7 +2669,7 @@ Value PhiSimplifier::simplify(Value v) {
       }
     }
 
-    // sucessfully simplified phi function
+    // successfully simplified phi function
     assert(subst != NULL, "illegal phi function");
     _has_substitutions = true;
     phi->clear(Phi::visited);
@@ -2590,7 +2693,7 @@ void PhiSimplifier::block_do(BlockBegin* b) {
 
 #ifdef ASSERT
   for_each_phi_fun(b, phi,
-                   assert(phi->operand_count() != 1 || phi->subst() != phi, "missed trivial simplification");
+                   assert(phi->operand_count() != 1 || phi->subst() != phi || phi->is_illegal(), "missed trivial simplification");
   );
 
   ValueStack* state = b->state()->caller_state();
@@ -2911,7 +3014,7 @@ BlockEnd* GraphBuilder::iterate_bytecodes_for_block(int bci) {
     BlockBegin* sux = end->sux_at(i);
     assert(sux->is_predecessor(block()), "predecessor missing");
     // be careful, bailout if bytecodes are strange
-    if (!sux->try_merge(end->state())) BAILOUT_("block join failed", NULL);
+    if (!sux->try_merge(end->state(), compilation()->has_irreducible_loops())) BAILOUT_("block join failed", NULL);
     scope_data()->add_to_work_list(end->sux_at(i));
   }
 
@@ -3038,12 +3141,14 @@ BlockBegin* GraphBuilder::setup_start_block(int osr_bci, BlockBegin* std_entry, 
   // each method.  Previously, each method started with the
   // start-block created below, and this block was followed by the
   // header block that was always empty.  This header block is only
-  // necesary if std_entry is also a backward branch target because
+  // necessary if std_entry is also a backward branch target because
   // then phi functions may be necessary in the header block.  It's
   // also necessary when profiling so that there's a single block that
-  // can increment the interpreter_invocation_count.
+  // can increment the counters.
+  // In addition, with range check elimination, we may need a valid block
+  // that dominates all the rest to insert range predicates.
   BlockBegin* new_header_block;
-  if (std_entry->number_of_preds() > 0 || count_invocations() || count_backedges()) {
+  if (std_entry->number_of_preds() > 0 || is_profiling() || RangeCheckElimination) {
     new_header_block = header_block(std_entry, BlockBegin::std_entry_flag, state);
   } else {
     new_header_block = std_entry;
@@ -3063,7 +3168,7 @@ BlockBegin* GraphBuilder::setup_start_block(int osr_bci, BlockBegin* std_entry, 
 
   if (base->std_entry()->state() == NULL) {
     // setup states for header blocks
-    base->std_entry()->merge(state);
+    base->std_entry()->merge(state, compilation()->has_irreducible_loops());
   }
 
   assert(base->std_entry()->state() != NULL, "");
@@ -3130,10 +3235,11 @@ void GraphBuilder::setup_osr_entry_block() {
       // doesn't so pretend that the interpreter passed in null.
       get = append(new Constant(objectNull));
     } else {
-      get = append(new UnsafeGetRaw(as_BasicType(local->type()), e,
-                                    append(new Constant(new IntConstant(offset))),
-                                    0,
-                                    true /*unaligned*/, true /*wide*/));
+      Value off_val = append(new Constant(new IntConstant(offset)));
+      get = append(new UnsafeGet(as_BasicType(local->type()), e,
+                                 off_val,
+                                 false/*is_volatile*/,
+                                 true/*is_raw*/));
     }
     _state->store_local(index, get);
   }
@@ -3145,7 +3251,7 @@ void GraphBuilder::setup_osr_entry_block() {
   Goto* g = new Goto(target, false);
   append(g);
   _osr_entry->set_end(g);
-  target->merge(_osr_entry->end()->state());
+  target->merge(_osr_entry->end()->state(), compilation()->has_irreducible_loops());
 
   scope_data()->set_stream(NULL);
 }
@@ -3204,13 +3310,16 @@ GraphBuilder::GraphBuilder(Compilation* compilation, IRScope* scope)
 
   // setup state for std entry
   _initial_state = state_at_entry();
-  start_block->merge(_initial_state);
+  start_block->merge(_initial_state, compilation->has_irreducible_loops());
+
+  // End nulls still exist here
 
   // complete graph
   _vmap        = new ValueMap();
   switch (scope->method()->intrinsic_id()) {
   case vmIntrinsics::_dabs          : // fall through
   case vmIntrinsics::_dsqrt         : // fall through
+  case vmIntrinsics::_dsqrt_strict  : // fall through
   case vmIntrinsics::_dsin          : // fall through
   case vmIntrinsics::_dcos          : // fall through
   case vmIntrinsics::_dtan          : // fall through
@@ -3222,7 +3331,7 @@ GraphBuilder::GraphBuilder(Compilation* compilation, IRScope* scope)
       // Compiles where the root method is an intrinsic need a special
       // compilation environment because the bytecodes for the method
       // shouldn't be parsed during the compilation, only the special
-      // Intrinsic node should be emitted.  If this isn't done the the
+      // Intrinsic node should be emitted.  If this isn't done the
       // code for the inlined version will be different than the root
       // compiled version which could lead to monotonicity problems on
       // intel.
@@ -3307,6 +3416,27 @@ GraphBuilder::GraphBuilder(Compilation* compilation, IRScope* scope)
     break;
   }
   CHECK_BAILOUT();
+
+# ifdef ASSERT
+  //All blocks reachable from start_block have _end != NULL
+  {
+    BlockList processed;
+    BlockList to_go;
+    to_go.append(start_block);
+    while(to_go.length() > 0) {
+      BlockBegin* current = to_go.pop();
+      assert(current != NULL, "Should not happen.");
+      assert(current->end() != NULL, "All blocks reachable from start_block should have end() != NULL.");
+      processed.append(current);
+      for(int i = 0; i < current->number_of_sux(); i++) {
+        BlockBegin* s = current->sux_at(i);
+        if (!processed.contains(s)) {
+          to_go.append(s);
+        }
+      }
+    }
+  }
+#endif // ASSERT
 
   _start = setup_start_block(osr_bci, start_block, _osr_entry, _initial_state);
 
@@ -3401,7 +3531,7 @@ bool GraphBuilder::try_inline(ciMethod* callee, bool holder_known, bool ignore_r
 
   // handle intrinsics
   if (callee->intrinsic_id() != vmIntrinsics::_none &&
-      (CheckIntrinsics ? callee->intrinsic_candidate() : true)) {
+      callee->check_intrinsic_candidate()) {
     if (try_inline_intrinsics(callee, ignore_return)) {
       print_inlining(callee, "intrinsic");
       if (callee->has_reserved_stack_access()) {
@@ -3443,7 +3573,6 @@ const char* GraphBuilder::check_can_parse(ciMethod* callee) const {
   // Certain methods cannot be parsed at all:
   if ( callee->is_native())            return "native method";
   if ( callee->is_abstract())          return "abstract method";
-  if (!callee->can_be_compiled())      return "not compilable (disabled)";
   if (!callee->can_be_parsed())        return "cannot be parsed";
   return NULL;
 }
@@ -3461,60 +3590,60 @@ void GraphBuilder::build_graph_for_intrinsic(ciMethod* callee, bool ignore_retur
 
   // Some intrinsics need special IR nodes.
   switch(id) {
-  case vmIntrinsics::_getReference       : append_unsafe_get_obj(callee, T_OBJECT,  false); return;
-  case vmIntrinsics::_getBoolean         : append_unsafe_get_obj(callee, T_BOOLEAN, false); return;
-  case vmIntrinsics::_getByte            : append_unsafe_get_obj(callee, T_BYTE,    false); return;
-  case vmIntrinsics::_getShort           : append_unsafe_get_obj(callee, T_SHORT,   false); return;
-  case vmIntrinsics::_getChar            : append_unsafe_get_obj(callee, T_CHAR,    false); return;
-  case vmIntrinsics::_getInt             : append_unsafe_get_obj(callee, T_INT,     false); return;
-  case vmIntrinsics::_getLong            : append_unsafe_get_obj(callee, T_LONG,    false); return;
-  case vmIntrinsics::_getFloat           : append_unsafe_get_obj(callee, T_FLOAT,   false); return;
-  case vmIntrinsics::_getDouble          : append_unsafe_get_obj(callee, T_DOUBLE,  false); return;
-  case vmIntrinsics::_putReference       : append_unsafe_put_obj(callee, T_OBJECT,  false); return;
-  case vmIntrinsics::_putBoolean         : append_unsafe_put_obj(callee, T_BOOLEAN, false); return;
-  case vmIntrinsics::_putByte            : append_unsafe_put_obj(callee, T_BYTE,    false); return;
-  case vmIntrinsics::_putShort           : append_unsafe_put_obj(callee, T_SHORT,   false); return;
-  case vmIntrinsics::_putChar            : append_unsafe_put_obj(callee, T_CHAR,    false); return;
-  case vmIntrinsics::_putInt             : append_unsafe_put_obj(callee, T_INT,     false); return;
-  case vmIntrinsics::_putLong            : append_unsafe_put_obj(callee, T_LONG,    false); return;
-  case vmIntrinsics::_putFloat           : append_unsafe_put_obj(callee, T_FLOAT,   false); return;
-  case vmIntrinsics::_putDouble          : append_unsafe_put_obj(callee, T_DOUBLE,  false); return;
-  case vmIntrinsics::_getShortUnaligned  : append_unsafe_get_obj(callee, T_SHORT,   false); return;
-  case vmIntrinsics::_getCharUnaligned   : append_unsafe_get_obj(callee, T_CHAR,    false); return;
-  case vmIntrinsics::_getIntUnaligned    : append_unsafe_get_obj(callee, T_INT,     false); return;
-  case vmIntrinsics::_getLongUnaligned   : append_unsafe_get_obj(callee, T_LONG,    false); return;
-  case vmIntrinsics::_putShortUnaligned  : append_unsafe_put_obj(callee, T_SHORT,   false); return;
-  case vmIntrinsics::_putCharUnaligned   : append_unsafe_put_obj(callee, T_CHAR,    false); return;
-  case vmIntrinsics::_putIntUnaligned    : append_unsafe_put_obj(callee, T_INT,     false); return;
-  case vmIntrinsics::_putLongUnaligned   : append_unsafe_put_obj(callee, T_LONG,    false); return;
-  case vmIntrinsics::_getReferenceVolatile  : append_unsafe_get_obj(callee, T_OBJECT,  true); return;
-  case vmIntrinsics::_getBooleanVolatile : append_unsafe_get_obj(callee, T_BOOLEAN, true); return;
-  case vmIntrinsics::_getByteVolatile    : append_unsafe_get_obj(callee, T_BYTE,    true); return;
-  case vmIntrinsics::_getShortVolatile   : append_unsafe_get_obj(callee, T_SHORT,   true); return;
-  case vmIntrinsics::_getCharVolatile    : append_unsafe_get_obj(callee, T_CHAR,    true); return;
-  case vmIntrinsics::_getIntVolatile     : append_unsafe_get_obj(callee, T_INT,     true); return;
-  case vmIntrinsics::_getLongVolatile    : append_unsafe_get_obj(callee, T_LONG,    true); return;
-  case vmIntrinsics::_getFloatVolatile   : append_unsafe_get_obj(callee, T_FLOAT,   true); return;
-  case vmIntrinsics::_getDoubleVolatile  : append_unsafe_get_obj(callee, T_DOUBLE,  true); return;
-  case vmIntrinsics::_putReferenceVolatile : append_unsafe_put_obj(callee, T_OBJECT,  true); return;
-  case vmIntrinsics::_putBooleanVolatile : append_unsafe_put_obj(callee, T_BOOLEAN, true); return;
-  case vmIntrinsics::_putByteVolatile    : append_unsafe_put_obj(callee, T_BYTE,    true); return;
-  case vmIntrinsics::_putShortVolatile   : append_unsafe_put_obj(callee, T_SHORT,   true); return;
-  case vmIntrinsics::_putCharVolatile    : append_unsafe_put_obj(callee, T_CHAR,    true); return;
-  case vmIntrinsics::_putIntVolatile     : append_unsafe_put_obj(callee, T_INT,     true); return;
-  case vmIntrinsics::_putLongVolatile    : append_unsafe_put_obj(callee, T_LONG,    true); return;
-  case vmIntrinsics::_putFloatVolatile   : append_unsafe_put_obj(callee, T_FLOAT,   true); return;
-  case vmIntrinsics::_putDoubleVolatile  : append_unsafe_put_obj(callee, T_DOUBLE,  true); return;
+  case vmIntrinsics::_getReference           : append_unsafe_get(callee, T_OBJECT,  false); return;
+  case vmIntrinsics::_getBoolean             : append_unsafe_get(callee, T_BOOLEAN, false); return;
+  case vmIntrinsics::_getByte                : append_unsafe_get(callee, T_BYTE,    false); return;
+  case vmIntrinsics::_getShort               : append_unsafe_get(callee, T_SHORT,   false); return;
+  case vmIntrinsics::_getChar                : append_unsafe_get(callee, T_CHAR,    false); return;
+  case vmIntrinsics::_getInt                 : append_unsafe_get(callee, T_INT,     false); return;
+  case vmIntrinsics::_getLong                : append_unsafe_get(callee, T_LONG,    false); return;
+  case vmIntrinsics::_getFloat               : append_unsafe_get(callee, T_FLOAT,   false); return;
+  case vmIntrinsics::_getDouble              : append_unsafe_get(callee, T_DOUBLE,  false); return;
+  case vmIntrinsics::_putReference           : append_unsafe_put(callee, T_OBJECT,  false); return;
+  case vmIntrinsics::_putBoolean             : append_unsafe_put(callee, T_BOOLEAN, false); return;
+  case vmIntrinsics::_putByte                : append_unsafe_put(callee, T_BYTE,    false); return;
+  case vmIntrinsics::_putShort               : append_unsafe_put(callee, T_SHORT,   false); return;
+  case vmIntrinsics::_putChar                : append_unsafe_put(callee, T_CHAR,    false); return;
+  case vmIntrinsics::_putInt                 : append_unsafe_put(callee, T_INT,     false); return;
+  case vmIntrinsics::_putLong                : append_unsafe_put(callee, T_LONG,    false); return;
+  case vmIntrinsics::_putFloat               : append_unsafe_put(callee, T_FLOAT,   false); return;
+  case vmIntrinsics::_putDouble              : append_unsafe_put(callee, T_DOUBLE,  false); return;
+  case vmIntrinsics::_getShortUnaligned      : append_unsafe_get(callee, T_SHORT,   false); return;
+  case vmIntrinsics::_getCharUnaligned       : append_unsafe_get(callee, T_CHAR,    false); return;
+  case vmIntrinsics::_getIntUnaligned        : append_unsafe_get(callee, T_INT,     false); return;
+  case vmIntrinsics::_getLongUnaligned       : append_unsafe_get(callee, T_LONG,    false); return;
+  case vmIntrinsics::_putShortUnaligned      : append_unsafe_put(callee, T_SHORT,   false); return;
+  case vmIntrinsics::_putCharUnaligned       : append_unsafe_put(callee, T_CHAR,    false); return;
+  case vmIntrinsics::_putIntUnaligned        : append_unsafe_put(callee, T_INT,     false); return;
+  case vmIntrinsics::_putLongUnaligned       : append_unsafe_put(callee, T_LONG,    false); return;
+  case vmIntrinsics::_getReferenceVolatile   : append_unsafe_get(callee, T_OBJECT,  true); return;
+  case vmIntrinsics::_getBooleanVolatile     : append_unsafe_get(callee, T_BOOLEAN, true); return;
+  case vmIntrinsics::_getByteVolatile        : append_unsafe_get(callee, T_BYTE,    true); return;
+  case vmIntrinsics::_getShortVolatile       : append_unsafe_get(callee, T_SHORT,   true); return;
+  case vmIntrinsics::_getCharVolatile        : append_unsafe_get(callee, T_CHAR,    true); return;
+  case vmIntrinsics::_getIntVolatile         : append_unsafe_get(callee, T_INT,     true); return;
+  case vmIntrinsics::_getLongVolatile        : append_unsafe_get(callee, T_LONG,    true); return;
+  case vmIntrinsics::_getFloatVolatile       : append_unsafe_get(callee, T_FLOAT,   true); return;
+  case vmIntrinsics::_getDoubleVolatile      : append_unsafe_get(callee, T_DOUBLE,  true); return;
+  case vmIntrinsics::_putReferenceVolatile   : append_unsafe_put(callee, T_OBJECT,  true); return;
+  case vmIntrinsics::_putBooleanVolatile     : append_unsafe_put(callee, T_BOOLEAN, true); return;
+  case vmIntrinsics::_putByteVolatile        : append_unsafe_put(callee, T_BYTE,    true); return;
+  case vmIntrinsics::_putShortVolatile       : append_unsafe_put(callee, T_SHORT,   true); return;
+  case vmIntrinsics::_putCharVolatile        : append_unsafe_put(callee, T_CHAR,    true); return;
+  case vmIntrinsics::_putIntVolatile         : append_unsafe_put(callee, T_INT,     true); return;
+  case vmIntrinsics::_putLongVolatile        : append_unsafe_put(callee, T_LONG,    true); return;
+  case vmIntrinsics::_putFloatVolatile       : append_unsafe_put(callee, T_FLOAT,   true); return;
+  case vmIntrinsics::_putDoubleVolatile      : append_unsafe_put(callee, T_DOUBLE,  true); return;
   case vmIntrinsics::_compareAndSetLong:
   case vmIntrinsics::_compareAndSetInt:
   case vmIntrinsics::_compareAndSetReference : append_unsafe_CAS(callee); return;
   case vmIntrinsics::_getAndAddInt:
-  case vmIntrinsics::_getAndAddLong      : append_unsafe_get_and_set_obj(callee, true); return;
-  case vmIntrinsics::_getAndSetInt       :
-  case vmIntrinsics::_getAndSetLong      :
-  case vmIntrinsics::_getAndSetReference : append_unsafe_get_and_set_obj(callee, false); return;
-  case vmIntrinsics::_getCharStringU     : append_char_access(callee, false); return;
-  case vmIntrinsics::_putCharStringU     : append_char_access(callee, true); return;
+  case vmIntrinsics::_getAndAddLong          : append_unsafe_get_and_set(callee, true); return;
+  case vmIntrinsics::_getAndSetInt           :
+  case vmIntrinsics::_getAndSetLong          :
+  case vmIntrinsics::_getAndSetReference     : append_unsafe_get_and_set(callee, false); return;
+  case vmIntrinsics::_getCharStringU         : append_char_access(callee, false); return;
+  case vmIntrinsics::_putCharStringU         : append_char_access(callee, true); return;
   default:
     break;
   }
@@ -3720,7 +3849,7 @@ void GraphBuilder::fill_sync_handler(Value lock, BlockBegin* sync_handler, bool 
     }
   }
 
-  // perform the throw as if at the the call site
+  // perform the throw as if at the call site
   apush(exception);
   throw_op(bci);
 
@@ -3735,7 +3864,7 @@ void GraphBuilder::fill_sync_handler(Value lock, BlockBegin* sync_handler, bool 
 
 bool GraphBuilder::try_inline_full(ciMethod* callee, bool holder_known, bool ignore_return, Bytecodes::Code bc, Value receiver) {
   assert(!callee->is_native(), "callee must not be native");
-  if (CompilationPolicy::policy()->should_not_inline(compilation()->env(), callee)) {
+  if (CompilationPolicy::should_not_inline(compilation()->env(), callee)) {
     INLINE_BAILOUT("inlining prohibited by policy");
   }
   // first perform tests of things it's not possible to inline
@@ -3743,28 +3872,40 @@ bool GraphBuilder::try_inline_full(ciMethod* callee, bool holder_known, bool ign
       !InlineMethodsWithExceptionHandlers) INLINE_BAILOUT("callee has exception handlers");
   if (callee->is_synchronized() &&
       !InlineSynchronizedMethods         ) INLINE_BAILOUT("callee is synchronized");
-  if (!callee->holder()->is_initialized()) INLINE_BAILOUT("callee's klass not initialized yet");
+  if (!callee->holder()->is_linked())      INLINE_BAILOUT("callee's klass not linked yet");
+  if (bc == Bytecodes::_invokestatic &&
+      !callee->holder()->is_initialized()) INLINE_BAILOUT("callee's klass not initialized yet");
   if (!callee->has_balanced_monitors())    INLINE_BAILOUT("callee's monitors do not match");
 
   // Proper inlining of methods with jsrs requires a little more work.
   if (callee->has_jsrs()                 ) INLINE_BAILOUT("jsrs not handled properly by inliner yet");
 
-  // When SSE2 is used on intel, then no special handling is needed
-  // for strictfp because the enum-constant is fixed at compile time,
-  // the check for UseSSE2 is needed here
-  if (strict_fp_requires_explicit_rounding && UseSSE < 2 && method()->is_strict() != callee->is_strict()) {
-    INLINE_BAILOUT("caller and callee have different strict fp requirements");
-  }
-
   if (is_profiling() && !callee->ensure_method_data()) {
     INLINE_BAILOUT("mdo allocation failed");
+  }
+
+  const bool is_invokedynamic = (bc == Bytecodes::_invokedynamic);
+  const bool has_receiver = (bc != Bytecodes::_invokestatic && !is_invokedynamic);
+
+  const int args_base = state()->stack_size() - callee->arg_size();
+  assert(args_base >= 0, "stack underflow during inlining");
+
+  Value recv = NULL;
+  if (has_receiver) {
+    assert(!callee->is_static(), "callee must not be static");
+    assert(callee->arg_size() > 0, "must have at least a receiver");
+
+    recv = state()->stack_at(args_base);
+    if (recv->is_null_obj()) {
+      INLINE_BAILOUT("receiver is always null");
+    }
   }
 
   // now perform tests that are based on flag settings
   bool inlinee_by_directive = compilation()->directive()->should_inline(callee);
   if (callee->force_inline() || inlinee_by_directive) {
-    if (inline_level() > MaxForceInlineLevel                    ) INLINE_BAILOUT("MaxForceInlineLevel");
-    if (recursive_inline_level(callee) > MaxRecursiveInlineLevel) INLINE_BAILOUT("recursive inlining too deep");
+    if (inline_level() > MaxForceInlineLevel                      ) INLINE_BAILOUT("MaxForceInlineLevel");
+    if (recursive_inline_level(callee) > C1MaxRecursiveInlineLevel) INLINE_BAILOUT("recursive inlining too deep");
 
     const char* msg = "";
     if (callee->force_inline())  msg = "force inline by annotation";
@@ -3772,12 +3913,18 @@ bool GraphBuilder::try_inline_full(ciMethod* callee, bool holder_known, bool ign
     print_inlining(callee, msg);
   } else {
     // use heuristic controls on inlining
-    if (inline_level() > MaxInlineLevel                         ) INLINE_BAILOUT("inlining too deep");
-    if (recursive_inline_level(callee) > MaxRecursiveInlineLevel) INLINE_BAILOUT("recursive inlining too deep");
+    if (inline_level() > C1MaxInlineLevel                       ) INLINE_BAILOUT("inlining too deep");
+    int callee_recursive_level = recursive_inline_level(callee);
+    if (callee_recursive_level > C1MaxRecursiveInlineLevel      ) INLINE_BAILOUT("recursive inlining too deep");
     if (callee->code_size_for_inlining() > max_inline_size()    ) INLINE_BAILOUT("callee is too large");
+    // Additional condition to limit stack usage for non-recursive calls.
+    if ((callee_recursive_level == 0) &&
+        (callee->max_stack() + callee->max_locals() - callee->size_of_parameters() > C1InlineStackLimit)) {
+      INLINE_BAILOUT("callee uses too much stack");
+    }
 
     // don't inline throwable methods unless the inlining tree is rooted in a throwable class
-    if (callee->name() == ciSymbol::object_initializer_name() &&
+    if (callee->name() == ciSymbols::object_initializer_name() &&
         callee->holder()->is_subclass_of(ciEnv::current()->Throwable_klass())) {
       // Throwable constructor call
       IRScope* top = scope();
@@ -3793,8 +3940,10 @@ bool GraphBuilder::try_inline_full(ciMethod* callee, bool holder_known, bool ign
       INLINE_BAILOUT("total inlining greater than DesiredMethodLimit");
     }
     // printing
-    print_inlining(callee);
+    print_inlining(callee, "inline", /*success*/ true);
   }
+
+  assert(bc != Bytecodes::_invokestatic || callee->holder()->is_initialized(), "required");
 
   // NOTE: Bailouts from this point on, which occur at the
   // GraphBuilder level, do not cause bailout just of the inlining but
@@ -3802,21 +3951,11 @@ bool GraphBuilder::try_inline_full(ciMethod* callee, bool holder_known, bool ign
 
   BlockBegin* orig_block = block();
 
-  const bool is_invokedynamic = bc == Bytecodes::_invokedynamic;
-  const bool has_receiver = (bc != Bytecodes::_invokestatic && !is_invokedynamic);
-
-  const int args_base = state()->stack_size() - callee->arg_size();
-  assert(args_base >= 0, "stack underflow during inlining");
-
   // Insert null check if necessary
-  Value recv = NULL;
   if (has_receiver) {
     // note: null check must happen even if first instruction of callee does
     //       an implicit null check since the callee is in a different scope
     //       and we must make sure exception handling does the right thing
-    assert(!callee->is_static(), "callee must not be static");
-    assert(callee->arg_size() > 0, "must have at least a receiver");
-    recv = state()->stack_at(args_base);
     null_check(recv);
   }
 
@@ -3829,9 +3968,9 @@ bool GraphBuilder::try_inline_full(ciMethod* callee, bool holder_known, bool ign
       int start = 0;
       Values* obj_args = args_list_for_profiling(callee, start, has_receiver);
       if (obj_args != NULL) {
-        int s = obj_args->max_length();
+        int s = obj_args->capacity();
         // if called through method handle invoke, some arguments may have been popped
-        for (int i = args_base+start, j = 0; j < obj_args->max_length() && i < state()->stack_size(); ) {
+        for (int i = args_base+start, j = 0; j < obj_args->capacity() && i < state()->stack_size(); ) {
           Value v = state()->stack_at_inc(i);
           if (v->type()->is_object_kind()) {
             obj_args->push(v);
@@ -3922,7 +4061,7 @@ bool GraphBuilder::try_inline_full(ciMethod* callee, bool holder_known, bool ign
     // the entry bci for the callee instead of the call site bci.
     append_with_bci(goto_callee, 0);
     _block->set_end(goto_callee);
-    callee_start_block->merge(callee_state);
+    callee_start_block->merge(callee_state, compilation()->has_irreducible_loops());
 
     _last = _block = callee_start_block;
 
@@ -4011,20 +4150,28 @@ bool GraphBuilder::try_method_handle_inline(ciMethod* callee, bool ignore_return
       const int args_base = state()->stack_size() - callee->arg_size();
       ValueType* type = state()->stack_at(args_base)->type();
       if (type->is_constant()) {
-        ciMethod* target = type->as_ObjectType()->constant_value()->as_method_handle()->get_vmtarget();
-        // We don't do CHA here so only inline static and statically bindable methods.
-        if (target->is_static() || target->can_be_statically_bound()) {
-          if (ciMethod::is_consistent_info(callee, target)) {
-            Bytecodes::Code bc = target->is_static() ? Bytecodes::_invokestatic : Bytecodes::_invokevirtual;
-            ignore_return = ignore_return || (callee->return_type()->is_void() && !target->return_type()->is_void());
-            if (try_inline(target, /*holder_known*/ true, ignore_return, bc)) {
-              return true;
+        ciObject* mh = type->as_ObjectType()->constant_value();
+        if (mh->is_method_handle()) {
+          ciMethod* target = mh->as_method_handle()->get_vmtarget();
+
+          // We don't do CHA here so only inline static and statically bindable methods.
+          if (target->is_static() || target->can_be_statically_bound()) {
+            if (ciMethod::is_consistent_info(callee, target)) {
+              Bytecodes::Code bc = target->is_static() ? Bytecodes::_invokestatic : Bytecodes::_invokevirtual;
+              ignore_return = ignore_return || (callee->return_type()->is_void() && !target->return_type()->is_void());
+              if (try_inline(target, /*holder_known*/ !callee->is_static(), ignore_return, bc)) {
+                return true;
+              }
+            } else {
+              print_inlining(target, "signatures mismatch", /*success*/ false);
             }
           } else {
-            print_inlining(target, "signatures mismatch", /*success*/ false);
+            assert(false, "no inlining through MH::invokeBasic"); // missing optimization opportunity due to suboptimal LF shape
+            print_inlining(target, "not static or statically bindable", /*success*/ false);
           }
         } else {
-          print_inlining(target, "not static or statically bindable", /*success*/ false);
+          assert(mh->is_null_object(), "not a null");
+          print_inlining(callee, "receiver is always null", /*success*/ false);
         }
       } else {
         print_inlining(callee, "receiver not constant", /*success*/ false);
@@ -4083,7 +4230,7 @@ bool GraphBuilder::try_method_handle_inline(ciMethod* callee, bool ignore_return
           // We don't do CHA here so only inline static and statically bindable methods.
           if (target->is_static() || target->can_be_statically_bound()) {
             Bytecodes::Code bc = target->is_static() ? Bytecodes::_invokestatic : Bytecodes::_invokevirtual;
-            if (try_inline(target, /*holder_known*/ true, ignore_return, bc)) {
+            if (try_inline(target, /*holder_known*/ !callee->is_static(), ignore_return, bc)) {
               return true;
             }
           } else {
@@ -4096,8 +4243,12 @@ bool GraphBuilder::try_method_handle_inline(ciMethod* callee, bool ignore_return
     }
     break;
 
+  case vmIntrinsics::_linkToNative:
+    print_inlining(callee, "native call", /*success*/ false);
+    break;
+
   default:
-    fatal("unexpected intrinsic %d: %s", iid, vmIntrinsics::name_at(iid));
+    fatal("unexpected intrinsic %d: %s", vmIntrinsics::as_int(iid), vmIntrinsics::name_at(iid));
     break;
   }
   set_state(state_before->copy_for_parsing());
@@ -4179,20 +4330,20 @@ void GraphBuilder::pop_scope_for_jsr() {
   _scope_data = scope_data()->parent();
 }
 
-void GraphBuilder::append_unsafe_get_obj(ciMethod* callee, BasicType t, bool is_volatile) {
+void GraphBuilder::append_unsafe_get(ciMethod* callee, BasicType t, bool is_volatile) {
   Values* args = state()->pop_arguments(callee->arg_size());
   null_check(args->at(0));
   Instruction* offset = args->at(2);
 #ifndef _LP64
   offset = append(new Convert(Bytecodes::_l2i, offset, as_ValueType(T_INT)));
 #endif
-  Instruction* op = append(new UnsafeGetObject(t, args->at(1), offset, is_volatile));
+  Instruction* op = append(new UnsafeGet(t, args->at(1), offset, is_volatile));
   push(op->type(), op);
   compilation()->set_has_unsafe_access(true);
 }
 
 
-void GraphBuilder::append_unsafe_put_obj(ciMethod* callee, BasicType t, bool is_volatile) {
+void GraphBuilder::append_unsafe_put(ciMethod* callee, BasicType t, bool is_volatile) {
   Values* args = state()->pop_arguments(callee->arg_size());
   null_check(args->at(0));
   Instruction* offset = args->at(2);
@@ -4204,28 +4355,10 @@ void GraphBuilder::append_unsafe_put_obj(ciMethod* callee, BasicType t, bool is_
     Value mask = append(new Constant(new IntConstant(1)));
     val = append(new LogicOp(Bytecodes::_iand, val, mask));
   }
-  Instruction* op = append(new UnsafePutObject(t, args->at(1), offset, val, is_volatile));
+  Instruction* op = append(new UnsafePut(t, args->at(1), offset, val, is_volatile));
   compilation()->set_has_unsafe_access(true);
   kill_all();
 }
-
-
-void GraphBuilder::append_unsafe_get_raw(ciMethod* callee, BasicType t) {
-  Values* args = state()->pop_arguments(callee->arg_size());
-  null_check(args->at(0));
-  Instruction* op = append(new UnsafeGetRaw(t, args->at(1), false));
-  push(op->type(), op);
-  compilation()->set_has_unsafe_access(true);
-}
-
-
-void GraphBuilder::append_unsafe_put_raw(ciMethod* callee, BasicType t) {
-  Values* args = state()->pop_arguments(callee->arg_size());
-  null_check(args->at(0));
-  Instruction* op = append(new UnsafePutRaw(t, args->at(1), args->at(2)));
-  compilation()->set_has_unsafe_access(true);
-}
-
 
 void GraphBuilder::append_unsafe_CAS(ciMethod* callee) {
   ValueStack* state_before = copy_state_for_exception();
@@ -4288,48 +4421,19 @@ void GraphBuilder::append_char_access(ciMethod* callee, bool is_store) {
   }
 }
 
-static void post_inlining_event(EventCompilerInlining* event,
-                                int compile_id,
-                                const char* msg,
-                                bool success,
-                                int bci,
-                                ciMethod* caller,
-                                ciMethod* callee) {
-  assert(caller != NULL, "invariant");
-  assert(callee != NULL, "invariant");
-  assert(event != NULL, "invariant");
-  assert(event->should_commit(), "invariant");
-  JfrStructCalleeMethod callee_struct;
-  callee_struct.set_type(callee->holder()->name()->as_utf8());
-  callee_struct.set_name(callee->name()->as_utf8());
-  callee_struct.set_descriptor(callee->signature()->as_symbol()->as_utf8());
-  event->set_compileId(compile_id);
-  event->set_message(msg);
-  event->set_succeeded(success);
-  event->set_bci(bci);
-  event->set_caller(caller->get_Method());
-  event->set_callee(callee_struct);
-  event->commit();
-}
-
 void GraphBuilder::print_inlining(ciMethod* callee, const char* msg, bool success) {
   CompileLog* log = compilation()->log();
   if (log != NULL) {
+    assert(msg != NULL, "inlining msg should not be null!");
     if (success) {
-      if (msg != NULL)
-        log->inline_success(msg);
-      else
-        log->inline_success("receiver is statically known");
+      log->inline_success(msg);
     } else {
-      if (msg != NULL)
-        log->inline_fail(msg);
-      else
-        log->inline_fail("reason unknown");
+      log->inline_fail(msg);
     }
   }
   EventCompilerInlining event;
   if (event.should_commit()) {
-    post_inlining_event(&event, compilation()->env()->task()->compile_id(), msg, success, bci(), method(), callee);
+    CompilerEvent::InlineEvent::post(event, compilation()->env()->task()->compile_id(), method()->get_Method(), callee, success, msg, bci());
   }
 
   CompileTask::print_inlining_ul(callee, scope()->level(), bci(), msg);
@@ -4343,7 +4447,7 @@ void GraphBuilder::print_inlining(ciMethod* callee, const char* msg, bool succes
   }
 }
 
-void GraphBuilder::append_unsafe_get_and_set_obj(ciMethod* callee, bool is_add) {
+void GraphBuilder::append_unsafe_get_and_set(ciMethod* callee, bool is_add) {
   Values* args = state()->pop_arguments(callee->arg_size());
   BasicType t = callee->return_type()->basic_type();
   null_check(args->at(0));
@@ -4351,7 +4455,7 @@ void GraphBuilder::append_unsafe_get_and_set_obj(ciMethod* callee, bool is_add) 
 #ifndef _LP64
   offset = append(new Convert(Bytecodes::_l2i, offset, as_ValueType(T_INT)));
 #endif
-  Instruction* op = append(new UnsafeGetAndSetObject(t, args->at(1), offset, args->at(3), is_add));
+  Instruction* op = append(new UnsafeGetAndSet(t, args->at(1), offset, args->at(3), is_add));
   compilation()->set_has_unsafe_access(true);
   kill_all();
   push(op->type(), op);

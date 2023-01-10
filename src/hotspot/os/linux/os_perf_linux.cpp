@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,10 +26,11 @@
 #include "jvm.h"
 #include "memory/allocation.inline.hpp"
 #include "os_linux.inline.hpp"
+#include "os_posix.hpp"
 #include "runtime/os.hpp"
 #include "runtime/os_perf.hpp"
-
-#include CPU_HEADER(vm_version_ext)
+#include "runtime/vm_version.hpp"
+#include "utilities/globalDefinitions.hpp"
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -153,7 +154,7 @@
                      The bitmap of ignored signals.
 
               34. sigcatch %lu
-                     The bitmap of catched signals.
+                     The bitmap of caught signals.
 
               35. wchan %lu
                      This  is the "channel" in which the process is waiting.  It is the address of a system call, and can be looked up in a namelist if you need
@@ -234,7 +235,7 @@ static int SCANF_ARGS(2, 0) vread_statdata(const char* procfile, _SCANFMT_ const
   int n;
   char buf[2048];
 
-  if ((f = fopen(procfile, "r")) == NULL) {
+  if ((f = os::fopen(procfile, "r")) == NULL) {
     return -1;
   }
 
@@ -271,7 +272,7 @@ static int SCANF_ARGS(2, 3) read_statdata(const char* procfile, _SCANFMT_ const 
 static FILE* open_statfile(void) {
   FILE *f;
 
-  if ((f = fopen("/proc/stat", "r")) == NULL) {
+  if ((f = os::fopen("/proc/stat", "r")) == NULL) {
     static int haveWarned = 0;
     if (!haveWarned) {
       haveWarned = 1;
@@ -430,19 +431,21 @@ static int get_boot_time(uint64_t* time) {
 
 static int perf_context_switch_rate(double* rate) {
   static pthread_mutex_t contextSwitchLock = PTHREAD_MUTEX_INITIALIZER;
-  static uint64_t      lastTime;
+  static uint64_t      bootTime;
+  static uint64_t      lastTimeNanos;
   static uint64_t      lastSwitches;
   static double        lastRate;
 
-  uint64_t lt = 0;
+  uint64_t bt = 0;
   int res = 0;
 
-  if (lastTime == 0) {
+  // First time through bootTime will be zero.
+  if (bootTime == 0) {
     uint64_t tmp;
     if (get_boot_time(&tmp) < 0) {
       return OS_ERR;
     }
-    lt = tmp * 1000;
+    bt = tmp * 1000;
   }
 
   res = OS_OK;
@@ -453,20 +456,29 @@ static int perf_context_switch_rate(double* rate) {
     uint64_t sw;
     s8 t, d;
 
-    if (lastTime == 0) {
-      lastTime = lt;
+    if (bootTime == 0) {
+      // First interval is measured from boot time which is
+      // seconds since the epoch. Thereafter we measure the
+      // elapsed time using javaTimeNanos as it is monotonic-
+      // non-decreasing.
+      lastTimeNanos = os::javaTimeNanos();
+      t = os::javaTimeMillis();
+      d = t - bt;
+      // keep bootTime zero for now to use as a first-time-through flag
+    } else {
+      t = os::javaTimeNanos();
+      d = nanos_to_millis(t - lastTimeNanos);
     }
-
-    t = os::javaTimeMillis();
-    d = t - lastTime;
 
     if (d == 0) {
       *rate = lastRate;
-    } else if (!get_noof_context_switches(&sw)) {
+    } else if (get_noof_context_switches(&sw) == 0) {
       *rate      = ( (double)(sw - lastSwitches) / d ) * 1000;
       lastRate     = *rate;
       lastSwitches = sw;
-      lastTime     = t;
+      if (bootTime != 0) {
+        lastTimeNanos = t;
+      }
     } else {
       *rate = 0;
       res   = OS_ERR;
@@ -474,6 +486,10 @@ static int perf_context_switch_rate(double* rate) {
     if (*rate <= 0) {
       *rate = 0;
       lastRate = 0;
+    }
+
+    if (bootTime == 0) {
+      bootTime = bt;
     }
   }
   pthread_mutex_unlock(&contextSwitchLock);
@@ -707,7 +723,7 @@ void SystemProcessInterface::SystemProcesses::ProcessIterator::get_exe_name() {
 
   jio_snprintf(buffer, PATH_MAX, "/proc/%s/stat", _entry->d_name);
   buffer[PATH_MAX - 1] = '\0';
-  if ((fp = fopen(buffer, "r")) != NULL) {
+  if ((fp = os::fopen(buffer, "r")) != NULL) {
     if (fgets(buffer, PATH_MAX, fp) != NULL) {
       char* start, *end;
       // exe-name is between the first pair of ( and )
@@ -735,7 +751,7 @@ char* SystemProcessInterface::SystemProcesses::ProcessIterator::get_cmdline() {
 
   jio_snprintf(buffer, PATH_MAX, "/proc/%s/cmdline", _entry->d_name);
   buffer[PATH_MAX - 1] = '\0';
-  if ((fp = fopen(buffer, "r")) != NULL) {
+  if ((fp = os::fopen(buffer, "r")) != NULL) {
     size_t size = 0;
     char   dummy;
 
@@ -770,7 +786,7 @@ char* SystemProcessInterface::SystemProcesses::ProcessIterator::get_exe_path() {
 
   jio_snprintf(buffer, PATH_MAX, "/proc/%s/exe", _entry->d_name);
   buffer[PATH_MAX - 1] = '\0';
-  return realpath(buffer, _exePath);
+  return os::Posix::realpath(buffer, _exePath, PATH_MAX);
 }
 
 char* SystemProcessInterface::SystemProcesses::ProcessIterator::allocate_string(const char* str) const {
@@ -911,11 +927,12 @@ CPUInformationInterface::CPUInformationInterface() {
 
 bool CPUInformationInterface::initialize() {
   _cpu_info = new CPUInformation();
-  _cpu_info->set_number_of_hardware_threads(VM_Version_Ext::number_of_threads());
-  _cpu_info->set_number_of_cores(VM_Version_Ext::number_of_cores());
-  _cpu_info->set_number_of_sockets(VM_Version_Ext::number_of_sockets());
-  _cpu_info->set_cpu_name(VM_Version_Ext::cpu_name());
-  _cpu_info->set_cpu_description(VM_Version_Ext::cpu_description());
+  VM_Version::initialize_cpu_information();
+  _cpu_info->set_number_of_hardware_threads(VM_Version::number_of_threads());
+  _cpu_info->set_number_of_cores(VM_Version::number_of_cores());
+  _cpu_info->set_number_of_sockets(VM_Version::number_of_sockets());
+  _cpu_info->set_cpu_name(VM_Version::cpu_name());
+  _cpu_info->set_cpu_description(VM_Version::cpu_description());
   return true;
 }
 
@@ -948,8 +965,7 @@ class NetworkPerformanceInterface::NetworkPerformance : public CHeapObj<mtIntern
   friend class NetworkPerformanceInterface;
  private:
   NetworkPerformance();
-  NetworkPerformance(const NetworkPerformance& rhs); // no impl
-  NetworkPerformance& operator=(const NetworkPerformance& rhs); // no impl
+  NONCOPYABLE(NetworkPerformance);
   bool initialize();
   ~NetworkPerformance();
   int64_t read_counter(const char* iface, const char* counter) const;

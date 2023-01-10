@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2017, 2018, Red Hat, Inc. All rights reserved.
+ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
@@ -25,14 +26,25 @@ package gc.epsilon;
 
 /**
  * @test TestMemoryMXBeans
- * @key gc
- * @requires vm.gc.Epsilon & !vm.graal.enabled
+ * @requires vm.gc.Epsilon
  * @summary Test JMX memory beans
  * @modules java.base/jdk.internal.misc
  *          java.management
- * @run main/othervm -XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC          -Xmx1g gc.epsilon.TestMemoryMXBeans   -1 1024
- * @run main/othervm -XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC -Xms1g   -Xmx1g gc.epsilon.TestMemoryMXBeans 1024 1024
- * @run main/othervm -XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC -Xms128m -Xmx1g gc.epsilon.TestMemoryMXBeans  128 1024
+ *
+ * @run main/othervm -Xmx256m
+ *                   -XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC
+ *                   gc.epsilon.TestMemoryMXBeans
+ *                   -1 256
+ *
+ * @run main/othervm -Xms256m -Xmx256m
+ *                   -XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC
+ *                   gc.epsilon.TestMemoryMXBeans
+ *                   256 256
+ *
+ * @run main/othervm -Xms64m -Xmx256m
+ *                   -XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC
+ *                   gc.epsilon.TestMemoryMXBeans
+ *                   64 256
  */
 
 import java.lang.management.*;

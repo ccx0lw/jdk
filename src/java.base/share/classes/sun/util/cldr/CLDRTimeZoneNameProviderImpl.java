@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -34,7 +34,6 @@ import java.util.Objects;
 import java.util.ResourceBundle;
 import java.util.Set;
 import java.util.TimeZone;
-import java.util.stream.Collectors;
 import sun.util.calendar.ZoneInfoFile;
 import sun.util.locale.provider.LocaleProviderAdapter;
 import sun.util.locale.provider.LocaleResources;
@@ -73,8 +72,6 @@ public class CLDRTimeZoneNameProviderImpl extends TimeZoneNameProviderImpl {
 
     @Override
     protected String[] getDisplayNameArray(String id, Locale locale) {
-        // Use English for the ROOT locale
-        locale = locale.equals(Locale.ROOT) ? Locale.ENGLISH : locale;
         String[] namesSuper = super.getDisplayNameArray(id, locale);
 
         if (namesSuper == null) {
@@ -85,7 +82,7 @@ public class CLDRTimeZoneNameProviderImpl extends TimeZoneNameProviderImpl {
         }
 
         if (namesSuper != null) {
-            // CLDR's resource bundle has an translated entry for this id.
+            // CLDR's resource bundle has a translated entry for this id.
             // Fix up names if needed, either missing or no-inheritance
             namesSuper[INDEX_TZID] = id;
 
@@ -94,12 +91,12 @@ public class CLDRTimeZoneNameProviderImpl extends TimeZoneNameProviderImpl {
                 case "":
                     // Fill in empty elements
                     deriveFallbackName(namesSuper, i, locale,
-                                       !exists(namesSuper, INDEX_DST_LONG));
+                                       TimeZone.getTimeZone(id).toZoneId().getRules().isFixedOffset());
                     break;
                 case NO_INHERITANCE_MARKER:
                     // CLDR's "no inheritance marker"
                     namesSuper[i] = toGMTFormat(id, i == INDEX_DST_LONG || i == INDEX_DST_SHORT,
-                                                i % 2 != 0, locale);
+                                                locale);
                     break;
                 default:
                     break;
@@ -121,24 +118,19 @@ public class CLDRTimeZoneNameProviderImpl extends TimeZoneNameProviderImpl {
 
     @Override
     protected String[][] getZoneStrings(Locale locale) {
-        // Use English for the ROOT locale
-        locale = locale.equals(Locale.ROOT) ? Locale.ENGLISH : locale;
         String[][] ret = super.getZoneStrings(locale);
 
         // Fill in for the empty names.
-        // English names are prefilled for performance.
-        if (!locale.equals(Locale.ENGLISH) &&
-            !locale.equals(Locale.US)) {
-            for (int zoneIndex = 0; zoneIndex < ret.length; zoneIndex++) {
-                deriveFallbackNames(ret[zoneIndex], locale);
-            }
+        for (int zoneIndex = 0; zoneIndex < ret.length; zoneIndex++) {
+            deriveFallbackNames(ret[zoneIndex], locale);
         }
         return ret;
     }
 
     // Derive fallback time zone name according to LDML's logic
     private void deriveFallbackNames(String[] names, Locale locale) {
-        boolean noDST = !exists(names, INDEX_DST_LONG);
+        boolean noDST = TimeZone.getTimeZone(names[0]).toZoneId().getRules().isFixedOffset();
+
         for (int i = INDEX_STD_LONG; i <= INDEX_GEN_SHORT; i++) {
             deriveFallbackName(names, i, locale, noDST);
         }
@@ -152,24 +144,21 @@ public class CLDRTimeZoneNameProviderImpl extends TimeZoneNameProviderImpl {
                 // CLDR's "no inheritance marker"
                 names[index] = toGMTFormat(id,
                                     index == INDEX_DST_LONG || index == INDEX_DST_SHORT,
-                                    index % 2 != 0, locale);
+                                    locale);
             }
             return;
         }
 
-        // Check if COMPAT can substitute the name
-        if (LocaleProviderAdapter.getAdapterPreference().contains(Type.JRE)) {
-            String[] compatNames = (String[])LocaleProviderAdapter.forJRE()
-                .getLocaleResources(mapChineseLocale(locale))
-                .getTimeZoneNames(id);
-            if (compatNames != null) {
-                for (int i = INDEX_STD_LONG; i <= INDEX_GEN_SHORT; i++) {
-                    // Assumes COMPAT has no empty slots
-                    if (i == index || !exists(names, i)) {
-                        names[i] = compatNames[i];
-                    }
+        // Check parent locales first
+        if (!exists(names, index)) {
+            var cands = ((CLDRLocaleProviderAdapter)LocaleProviderAdapter.forType(Type.CLDR))
+                    .getCandidateLocales("", locale);
+            for (int i = 1; i < cands.size() ; i++) {
+                String[] parentNames = super.getDisplayNameArray(id, cands.get(i));
+                if (parentNames != null && !parentNames[index].isEmpty()) {
+                    names[index] = parentNames[index];
+                    return;
                 }
-                return;
             }
         }
 
@@ -178,32 +167,42 @@ public class CLDRTimeZoneNameProviderImpl extends TimeZoneNameProviderImpl {
             return;
         }
 
+        // Check if COMPAT can substitute the name
+        if (!exists(names, index) &&
+                LocaleProviderAdapter.getAdapterPreference().contains(Type.JRE)) {
+            String[] compatNames = (String[])LocaleProviderAdapter.forJRE()
+                    .getLocaleResources(mapChineseLocale(locale))
+                    .getTimeZoneNames(id);
+            if (compatNames != null) {
+                // Assumes COMPAT has no empty slots
+                names[index] = compatNames[index];
+                return;
+            }
+        }
+
         // Region Fallback
         if (regionFormatFallback(names, index, locale)) {
             return;
         }
 
         // last resort
-        if (!id.toUpperCase(Locale.ROOT).startsWith("UT")) {
-            names[index] = toGMTFormat(id,
-                                       index == INDEX_DST_LONG || index == INDEX_DST_SHORT,
-                                       index % 2 != 0,
-                                       locale);
-            // aliases of "GMT" timezone.
-            if ((exists(names, INDEX_STD_LONG)) && (id.startsWith("Etc/")
-                    || id.startsWith("GMT") || id.startsWith("Greenwich"))) {
-                switch (id) {
-                case "Etc/GMT":
-                case "Etc/GMT-0":
-                case "Etc/GMT+0":
-                case "Etc/GMT0":
-                case "GMT+0":
-                case "GMT-0":
-                case "GMT0":
-                case "Greenwich":
-                    names[INDEX_DST_LONG] = names[INDEX_GEN_LONG] = names[INDEX_STD_LONG];
-                    break;
-                }
+        names[index] = toGMTFormat(id,
+                                   index == INDEX_DST_LONG || index == INDEX_DST_SHORT,
+                                   locale);
+        // aliases of "GMT" timezone.
+        if ((exists(names, INDEX_STD_LONG)) && (id.startsWith("Etc/")
+                || id.startsWith("GMT") || id.startsWith("Greenwich"))) {
+            switch (id) {
+            case "Etc/GMT":
+            case "Etc/GMT-0":
+            case "Etc/GMT+0":
+            case "Etc/GMT0":
+            case "GMT+0":
+            case "GMT-0":
+            case "GMT0":
+            case "Greenwich":
+                names[INDEX_DST_LONG] = names[INDEX_GEN_LONG] = names[INDEX_STD_LONG];
+                break;
             }
         }
     }
@@ -217,12 +216,12 @@ public class CLDRTimeZoneNameProviderImpl extends TimeZoneNameProviderImpl {
     private boolean typeFallback(String[] names, int index) {
         // check generic
         int genIndex = INDEX_GEN_SHORT - index % 2;
-        if (!exists(names, index) && exists(names, genIndex)) {
+        if (!exists(names, index) && exists(names, genIndex) && !names[genIndex].startsWith("GMT")) {
             names[index] = names[genIndex];
         } else {
             // check standard
             int stdIndex = INDEX_STD_SHORT - index % 2;
-            if (!exists(names, index) && exists(names, stdIndex)) {
+            if (!exists(names, index) && exists(names, stdIndex) && !names[stdIndex].startsWith("GMT")) {
                 names[index] = names[stdIndex];
             }
         }
@@ -231,10 +230,16 @@ public class CLDRTimeZoneNameProviderImpl extends TimeZoneNameProviderImpl {
     }
 
     private boolean regionFormatFallback(String[] names, int index, Locale l) {
+        if (index % 2 == 0) {
+            // ignore short names
+            return false;
+        }
+
         String id = names[INDEX_TZID];
         LocaleResources lr = LocaleProviderAdapter.forType(Type.CLDR).getLocaleResources(l);
         ResourceBundle fd = lr.getJavaTimeFormatData();
 
+        id = TimeZoneNameUtility.canonicalTZID(id).orElse(id);
         String rgn = (String) lr.getTimeZoneNames("timezone.excity." + id);
         if (rgn == null && !id.startsWith("Etc") && !id.startsWith("SystemV")) {
             int slash = id.lastIndexOf('/');
@@ -264,7 +269,7 @@ public class CLDRTimeZoneNameProviderImpl extends TimeZoneNameProviderImpl {
         return exists(names, index);
     }
 
-    private String toGMTFormat(String id, boolean daylight, boolean isShort, Locale l) {
+    private String toGMTFormat(String id, boolean daylight, Locale l) {
         TimeZone tz = ZoneInfoFile.getZoneInfo(id);
         int offset = (tz.getRawOffset() + (daylight ? tz.getDSTSavings() : 0)) / 60000;
         LocaleResources lr = LocaleProviderAdapter.forType(Type.CLDR).getLocaleResources(l);
@@ -283,7 +288,7 @@ public class CLDRTimeZoneNameProviderImpl extends TimeZoneNameProviderImpl {
                 offset = -offset;
             }
             hourFormat = hourFormat
-                .replaceFirst("H+", (isShort ? "\\%1\\$d" : "\\%1\\$02d"))
+                .replaceFirst("H+", "\\%1\\$02d")
                 .replaceFirst("m+", "\\%2\\$02d");
             return MessageFormat.format(gmtFormat,
                     String.format(l, hourFormat, offset / 60, offset % 60));

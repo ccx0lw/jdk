@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -56,9 +56,8 @@ class CodeStub: public CompilationResourceObj {
   virtual void emit_code(LIR_Assembler* e) = 0;
   virtual CodeEmitInfo* info() const             { return NULL; }
   virtual bool is_exception_throw_stub() const   { return false; }
-  virtual bool is_range_check_stub() const       { return false; }
-  virtual bool is_divbyzero_stub() const         { return false; }
   virtual bool is_simple_exception_stub() const  { return false; }
+  virtual int nr_immediate_oops_patched() const  { return 0; }
 #ifndef PRODUCT
   virtual void print_name(outputStream* out) const = 0;
 #endif
@@ -67,15 +66,7 @@ class CodeStub: public CompilationResourceObj {
   Label* entry()                                 { return &_entry; }
   Label* continuation()                          { return &_continuation; }
   // for LIR
-  virtual void visit(LIR_OpVisitState* visit) {
-#ifndef PRODUCT
-    if (LIRTracePeephole && Verbose) {
-      tty->print("no visitor for ");
-      print_name(tty);
-      tty->cr();
-    }
-#endif
-  }
+  virtual void visit(LIR_OpVisitState* visit) = 0;
 };
 
 class CodeStubList: public GrowableArray<CodeStub*> {
@@ -87,6 +78,28 @@ class CodeStubList: public GrowableArray<CodeStub*> {
       GrowableArray<CodeStub*>::append(stub);
     }
   }
+};
+
+class C1SafepointPollStub: public CodeStub {
+ private:
+  uintptr_t _safepoint_offset;
+
+ public:
+  C1SafepointPollStub() :
+      _safepoint_offset(0) {
+  }
+
+  uintptr_t safepoint_offset() { return _safepoint_offset; }
+  void set_safepoint_offset(uintptr_t safepoint_offset) { _safepoint_offset = safepoint_offset; }
+
+  virtual void emit_code(LIR_Assembler* e);
+  virtual void visit(LIR_OpVisitState* visitor) {
+    // don't pass in the code emit info since it's processed in the fast path
+    visitor->do_slow_case();
+  }
+#ifndef PRODUCT
+  virtual void print_name(outputStream* out) const { out->print("C1SafepointPollStub"); }
+#endif // PRODUCT
 };
 
 class CounterOverflowStub: public CodeStub {
@@ -123,6 +136,7 @@ class ConversionStub: public CodeStub {
  public:
   ConversionStub(Bytecodes::Code bytecode, LIR_Opr input, LIR_Opr result)
     : _bytecode(bytecode), _input(input), _result(result) {
+    NOT_IA32( ShouldNotReachHere(); ) // used only on x86-32
   }
 
   Bytecodes::Code bytecode() { return _bytecode; }
@@ -158,7 +172,6 @@ class RangeCheckStub: public CodeStub {
   virtual void emit_code(LIR_Assembler* e);
   virtual CodeEmitInfo* info() const             { return _info; }
   virtual bool is_exception_throw_stub() const   { return true; }
-  virtual bool is_range_check_stub() const       { return true; }
   virtual void visit(LIR_OpVisitState* visitor) {
     visitor->do_slow_case(_info);
     visitor->do_input(_index);
@@ -201,7 +214,6 @@ class DivByZeroStub: public CodeStub {
   virtual void emit_code(LIR_Assembler* e);
   virtual CodeEmitInfo* info() const             { return _info; }
   virtual bool is_exception_throw_stub() const   { return true; }
-  virtual bool is_divbyzero_stub() const         { return true; }
   virtual void visit(LIR_OpVisitState* visitor) {
     visitor->do_slow_case(_info);
   }
@@ -382,7 +394,7 @@ class PatchingStub: public CodeStub {
   Label         _patch_site_continuation;
   Register      _obj;
   CodeEmitInfo* _info;
-  int           _index;  // index of the patchable oop or Klass* in nmethod oop or metadata table if needed
+  int           _index;  // index of the patchable oop or Klass* in nmethod or metadata table if needed
   static int    _patch_info_offset;
 
   void align_patch_site(MacroAssembler* masm);
@@ -401,6 +413,13 @@ class PatchingStub: public CodeStub {
     masm->bind(_patch_site_entry);
   }
 
+  virtual int nr_immediate_oops_patched() const  {
+    if (_id == load_mirror_id || _id == load_appendix_id) {
+      return 1;
+    }
+    return 0;
+  }
+
   void install(MacroAssembler* masm, LIR_PatchCode patch_code, Register obj, CodeEmitInfo* info) {
     _info = info;
     _obj = obj;
@@ -409,7 +428,7 @@ class PatchingStub: public CodeStub {
     if (_id == PatchingStub::access_field_id) {
       // embed a fixed offset to handle long patches which need to be offset by a word.
       // the patching code will just add the field offset field to this offset so
-      // that we can refernce either the high or low word of a double word field.
+      // that we can reference either the high or low word of a double word field.
       int field_offset = 0;
       switch (patch_code) {
       case lir_patch_low:         field_offset = lo_word_offset_in_bytes; break;
@@ -419,6 +438,8 @@ class PatchingStub: public CodeStub {
       }
       NativeMovRegMem* n_move = nativeMovRegMem_at(pc_start());
       n_move->set_offset(field_offset);
+      // Copy will never get executed, so only copy the part which is required for patching.
+      _bytes_to_copy = MAX2(n_move->num_bytes_to_end_of_patch(), (int)NativeGeneralJump::instruction_size);
     } else if (_id == load_klass_id || _id == load_mirror_id || _id == load_appendix_id) {
       assert(_obj != noreg, "must have register object for load_klass/load_mirror");
 #ifdef ASSERT
@@ -500,9 +521,6 @@ class SimpleExceptionStub: public CodeStub {
 
 
 class ArrayStoreExceptionStub: public SimpleExceptionStub {
- private:
-  CodeEmitInfo* _info;
-
  public:
   ArrayStoreExceptionStub(LIR_Opr obj, CodeEmitInfo* info): SimpleExceptionStub(Runtime1::throw_array_store_exception_id, obj, info) {}
 #ifndef PRODUCT

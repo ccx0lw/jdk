@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,15 +24,19 @@
 
 /*
  * @test
+ * @key cgroups
  * @summary Test JVM's CPU resource awareness when running inside docker container
  * @requires docker.support
  * @library /test/lib
  * @modules java.base/jdk.internal.misc
+ *          java.base/jdk.internal.platform
  *          java.management
  *          jdk.jartool/sun.tools.jar
+ * @build PrintContainerInfo CheckOperatingSystemMXBean
  * @run driver TestCPUAwareness
  */
 import java.util.List;
+import jdk.test.lib.process.OutputAnalyzer;
 import jdk.test.lib.containers.docker.Common;
 import jdk.test.lib.containers.docker.DockerRunOptions;
 import jdk.test.lib.containers.docker.DockerTestUtils;
@@ -48,16 +52,11 @@ public class TestCPUAwareness {
         }
 
         System.out.println("Test Environment: detected availableCPUs = " + availableCPUs);
-        DockerTestUtils.buildJdkDockerImage(imageName, "Dockerfile-BasicTest", "jdk-docker");
+        DockerTestUtils.buildJdkContainerImage(imageName);
 
         try {
             // cpuset, period, shares, expected Active Processor Count
             testComboWithCpuSets();
-
-            // cpu shares - it should be safe to use CPU shares exceeding available CPUs
-            testCpuShares(256, 1);
-            testCpuShares(2048, 2);
-            testCpuShares(4096, 4);
 
             // leave one CPU for system and tools, otherwise this test may be unstable
             int maxNrOfAvailableCpus =  availableCPUs - 1;
@@ -71,13 +70,24 @@ public class TestCPUAwareness {
             testActiveProcessorCount(2, 2);
 
             // cpu quota and period
-            testCpuQuotaAndPeriod(50*1000, 100*1000);
-            testCpuQuotaAndPeriod(100*1000, 100*1000);
-            testCpuQuotaAndPeriod(150*1000, 100*1000);
-            testCpuQuotaAndPeriod(400*1000, 100*1000);
+            testCpuQuotaAndPeriod(50*1000, 100*1000, false);
+            testCpuQuotaAndPeriod(100*1000, 100*1000, false);
+            testCpuQuotaAndPeriod(150*1000, 100*1000, false);
+            testCpuQuotaAndPeriod(400*1000, 100*1000, false);
+            testCpuQuotaAndPeriod(50*1000, 100*1000, true /* additional cgroup mount */);
+
+            testOperatingSystemMXBeanAwareness("0.5", "1");
+            testOperatingSystemMXBeanAwareness("1.0", "1");
+            if (availableCPUs > 2) {
+                testOperatingSystemMXBeanAwareness("1.2", "2");
+                testOperatingSystemMXBeanAwareness("1.8", "2");
+                testOperatingSystemMXBeanAwareness("2.0", "2");
+            }
 
         } finally {
-            DockerTestUtils.removeDockerImage(imageName);
+            if (!DockerTestUtils.RETAIN_IMAGE_AFTER_TEST) {
+                DockerTestUtils.removeDockerImage(imageName);
+            }
         }
     }
 
@@ -94,23 +104,21 @@ public class TestCPUAwareness {
             // Test subset of cpuset with one element
             if (cpuSet.size() >= 1) {
                 String testCpuSet = CPUSetsReader.listToString(cpuSet, 1);
-                testAPCCombo(testCpuSet, 200*1000, 100*1000,   4*1024, true, 1);
+                testAPCCombo(testCpuSet, 200*1000, 100*1000,   4*1024, 1);
             }
 
             // Test subset of cpuset with two elements
             if (cpuSet.size() >= 2) {
                 String testCpuSet = CPUSetsReader.listToString(cpuSet, 2);
-                testAPCCombo(testCpuSet, 200*1000, 100*1000, 4*1024, true, 2);
-                testAPCCombo(testCpuSet, 200*1000, 100*1000, 1023,   true, 2);
-                testAPCCombo(testCpuSet, 200*1000, 100*1000, 1023,   false,  1);
+                testAPCCombo(testCpuSet, 200*1000, 100*1000, 4*1024, 2);
+                testAPCCombo(testCpuSet, 200*1000, 100*1000, 1023,   2);
             }
 
             // Test subset of cpuset with three elements
             if (cpuSet.size() >= 3) {
                 String testCpuSet = CPUSetsReader.listToString(cpuSet, 3);
-                testAPCCombo(testCpuSet, 100*1000, 100*1000, 2*1024, true, 1);
-                testAPCCombo(testCpuSet, 200*1000, 100*1000, 1023,   true, 2);
-                testAPCCombo(testCpuSet, 200*1000, 100*1000, 1023,   false,  1);
+                testAPCCombo(testCpuSet, 100*1000, 100*1000, 2*1024, 1);
+                testAPCCombo(testCpuSet, 200*1000, 100*1000, 1023,   2);
             }
         }
     }
@@ -146,7 +154,7 @@ public class TestCPUAwareness {
     }
 
 
-    private static void testCpuQuotaAndPeriod(int quota, int period)
+    private static void testCpuQuotaAndPeriod(int quota, int period, boolean addCgmounts)
         throws Exception {
         Common.logNewTestCase("test cpu quota and period: ");
         System.out.println("quota = " + quota);
@@ -160,6 +168,10 @@ public class TestCPUAwareness {
             .addDockerOpts("--cpu-period=" + period)
             .addDockerOpts("--cpu-quota=" + quota);
 
+        if (addCgmounts) {
+            opts = opts.addDockerOpts("--volume", "/sys/fs/cgroup:/cgroups-in:ro");
+        }
+
         Common.run(opts)
             .shouldMatch("CPU Period is.*" + period)
             .shouldMatch("CPU Quota is.*" + quota)
@@ -167,16 +179,13 @@ public class TestCPUAwareness {
     }
 
 
-    // Test correctess of automatically selected active processor cound
     private static void testAPCCombo(String cpuset, int quota, int period, int shares,
-                                     boolean usePreferContainerQuotaForCPUCount,
                                      int expectedAPC) throws Exception {
         Common.logNewTestCase("test APC Combo");
         System.out.println("cpuset = " + cpuset);
         System.out.println("quota = " + quota);
         System.out.println("period = " + period);
         System.out.println("shares = " + shares);
-        System.out.println("usePreferContainerQuotaForCPUCount = " + usePreferContainerQuotaForCPUCount);
         System.out.println("expectedAPC = " + expectedAPC);
 
         expectedAPC = adjustExpectedAPCForAvailableCPUs(expectedAPC);
@@ -187,23 +196,30 @@ public class TestCPUAwareness {
             .addDockerOpts("--cpu-quota=" + quota)
             .addDockerOpts("--cpu-shares=" + shares);
 
-        if (!usePreferContainerQuotaForCPUCount) opts.addJavaOpts("-XX:-PreferContainerQuotaForCPUCount");
-
         Common.run(opts)
             .shouldMatch("active_processor_count.*" + expectedAPC);
     }
 
 
-    private static void testCpuShares(int shares, int expectedAPC) throws Exception {
-        Common.logNewTestCase("test cpu shares, shares = " + shares);
-        System.out.println("expectedAPC = " + expectedAPC);
+    private static void testOperatingSystemMXBeanAwareness(String cpuAllocation, String expectedCpus) throws Exception {
+        Common.logNewTestCase("Check OperatingSystemMXBean");
 
-        expectedAPC = adjustExpectedAPCForAvailableCPUs(expectedAPC);
+        DockerRunOptions opts = Common.newOpts(imageName, "CheckOperatingSystemMXBean")
+            .addDockerOpts(
+                "--cpus", cpuAllocation
+            )
+            // CheckOperatingSystemMXBean uses Metrics (jdk.internal.platform) for
+            // diagnostics
+            .addJavaOpts("--add-exports")
+            .addJavaOpts("java.base/jdk.internal.platform=ALL-UNNAMED");
 
-        DockerRunOptions opts = Common.newOpts(imageName)
-            .addDockerOpts("--cpu-shares=" + shares);
-        Common.run(opts)
-            .shouldMatch("CPU Shares is.*" + shares)
-            .shouldMatch("active_processor_count.*" + expectedAPC);
+        DockerTestUtils.dockerRunJava(opts)
+            .shouldHaveExitValue(0)
+            .shouldContain("Checking OperatingSystemMXBean")
+            .shouldContain("Runtime.availableProcessors: " + expectedCpus)
+            .shouldContain("OperatingSystemMXBean.getAvailableProcessors: " + expectedCpus)
+            .shouldMatch("OperatingSystemMXBean\\.getSystemCpuLoad: [0-9]+\\.[0-9]+")
+            .shouldMatch("OperatingSystemMXBean\\.getCpuLoad: [0-9]+\\.[0-9]+")
+            ;
     }
 }

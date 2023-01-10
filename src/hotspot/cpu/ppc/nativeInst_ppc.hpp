@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2002, 2019, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2012, 2018 SAP SE. All rights reserved.
+ * Copyright (c) 2002, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2021 SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -30,6 +30,9 @@
 #include "runtime/icache.hpp"
 #include "runtime/os.hpp"
 #include "runtime/safepointMechanism.hpp"
+#ifdef COMPILER2
+#include "opto/c2_globals.hpp"
+#endif
 
 // We have interfaces for the following instructions:
 //
@@ -48,7 +51,9 @@ class NativeInstruction {
   friend class Relocation;
 
  public:
-  bool is_jump() { return Assembler::is_b(long_at(0)); } // See NativeGeneralJump.
+  bool is_nop() const { return Assembler::is_nop(long_at(0)); }
+
+  bool is_jump() const { return Assembler::is_b(long_at(0)); } // See NativeGeneralJump.
 
   bool is_sigtrap_ic_miss_check() {
     assert(UseSIGTRAP, "precondition");
@@ -60,21 +65,16 @@ class NativeInstruction {
     return MacroAssembler::is_trap_null_check(long_at(0));
   }
 
-  // We use a special trap for marking a method as not_entrant or zombie
-  // iff UseSIGTRAP.
-  bool is_sigtrap_zombie_not_entrant() {
-    assert(UseSIGTRAP, "precondition");
-    return MacroAssembler::is_trap_zombie_not_entrant(long_at(0));
+  int get_stop_type() {
+    return MacroAssembler::tdi_get_si16(long_at(0), Assembler::traptoUnconditional, 0);
   }
 
-  // We use an illtrap for marking a method as not_entrant or zombie
-  // iff !UseSIGTRAP.
-  bool is_sigill_zombie_not_entrant() {
-    assert(!UseSIGTRAP, "precondition");
+  // We use an illtrap for marking a method as not_entrant.
+  bool is_sigill_not_entrant() {
     // Work around a C++ compiler bug which changes 'this'.
-    return NativeInstruction::is_sigill_zombie_not_entrant_at(addr_at(0));
+    return NativeInstruction::is_sigill_not_entrant_at(addr_at(0));
   }
-  static bool is_sigill_zombie_not_entrant_at(address addr);
+  static bool is_sigill_not_entrant_at(address addr);
 
 #ifdef COMPILER2
   // SIGTRAP-based implicit range checks
@@ -84,20 +84,20 @@ class NativeInstruction {
   }
 #endif
 
-  // 'should not reach here'.
-  bool is_sigtrap_should_not_reach_here() {
-    return MacroAssembler::is_trap_should_not_reach_here(long_at(0));
-  }
-
   bool is_safepoint_poll() {
-    // Is the current instruction a POTENTIAL read access to the polling page?
     // The current arguments of the instruction are not checked!
-    if (SafepointMechanism::uses_thread_local_poll() && USE_POLL_BIT_ONLY) {
+    if (USE_POLL_BIT_ONLY) {
       int encoding = SafepointMechanism::poll_bit();
       return MacroAssembler::is_tdi(long_at(0), Assembler::traptoGreaterThanUnsigned | Assembler::traptoEqual,
                                     -1, encoding);
     }
     return MacroAssembler::is_load_from_polling_page(long_at(0), NULL);
+  }
+
+  bool is_safepoint_poll_return() {
+    // Safepoint poll at nmethod return with watermark check.
+    return MacroAssembler::is_td(long_at(0), Assembler::traptoGreaterThanUnsigned,
+                                 /* R1_SP */ 1, /* any reg */ -1);
   }
 
   address get_stack_bang_address(void *ucontext) {
@@ -259,7 +259,7 @@ class NativeMovConstReg: public NativeInstruction {
   // Patch the code stream and oop pool.
   void set_data(intptr_t x);
 
-  // Patch narrow oop constants. Use this also for narrow klass.
+  // Patch narrow oop constants.
   void set_narrow_oop(narrowOop data, CodeBlob *code = NULL);
 
   void verify() NOT_DEBUG_RETURN;
@@ -462,6 +462,8 @@ class NativeMovRegMem: public NativeInstruction {
 
   address instruction_address() const { return addr_at(0); }
 
+  int num_bytes_to_end_of_patch() const { return instruction_size; }
+
   intptr_t offset() const {
 #ifdef VM_LITTLE_ENDIAN
     short *hi_ptr = (short*)(addr_at(0));
@@ -501,6 +503,40 @@ class NativeMovRegMem: public NativeInstruction {
     DEBUG_ONLY( test->verify(); )
     return test;
   }
+};
+
+class NativePostCallNop: public NativeInstruction {
+public:
+  bool check() const { return is_nop(); }
+  int displacement() const { return 0; }
+  void patch(jint diff);
+  void make_deopt();
+};
+
+inline NativePostCallNop* nativePostCallNop_at(address address) {
+  NativePostCallNop* nop = (NativePostCallNop*) address;
+  if (nop->check()) {
+    return nop;
+  }
+  return NULL;
+}
+
+class NativeDeoptInstruction: public NativeInstruction {
+ public:
+  enum {
+    instruction_size            =    4,
+    instruction_offset          =    0,
+  };
+
+  address instruction_address() const       { return addr_at(instruction_offset); }
+  address next_instruction_address() const  { return addr_at(instruction_size); }
+
+  void  verify();
+
+  static bool is_deopt_at(address code_pos);
+
+  // MT-safe patching
+  static void insert(address code_pos);
 };
 
 #endif // CPU_PPC_NATIVEINST_PPC_HPP

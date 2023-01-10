@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -36,6 +36,7 @@
 #include "opto/opcodes.hpp"
 #include "opto/rootnode.hpp"
 #include "utilities/copy.hpp"
+#include "utilities/powerOfTwo.hpp"
 
 void Block_Array::grow( uint i ) {
   assert(i >= Max(), "must be an overflow");
@@ -47,7 +48,7 @@ void Block_Array::grow( uint i ) {
     _blocks[0] = NULL;
   }
   uint old = _size;
-  while( i >= _size ) _size <<= 1;      // Double to fit
+  _size = next_power_of_2(i);
   _blocks = (Block**)_arena->Arealloc( _blocks, old*sizeof(Block*),_size*sizeof(Block*));
   Copy::zero_to_bytes( &_blocks[old], (_size-old)*sizeof(Block*) );
 }
@@ -150,6 +151,10 @@ bool Block::contains(const Node *n) const {
   return _nodes.contains(n);
 }
 
+bool Block::is_trivially_unreachable() const {
+  return num_preds() <= 1 && !head()->is_Root() && !head()->is_Start();
+}
+
 // Return empty status of a block.  Empty blocks contain only the head, other
 // ideal nodes, and an optional trailing goto.
 int Block::is_Empty() const {
@@ -169,7 +174,7 @@ int Block::is_Empty() const {
   }
 
   // Unreachable blocks are considered empty
-  if (num_preds() <= 1) {
+  if (is_trivially_unreachable()) {
     return success_result;
   }
 
@@ -402,11 +407,10 @@ PhaseCFG::PhaseCFG(Arena* arena, RootNode* root, Matcher& matcher)
 // The RootNode both starts and ends it's own block.  Do this with a recursive
 // backwards walk over the control edges.
 uint PhaseCFG::build_cfg() {
-  Arena *a = Thread::current()->resource_area();
-  VectorSet visited(a);
+  VectorSet visited;
 
   // Allocate stack with enough space to avoid frequent realloc
-  Node_Stack nstack(a, C->live_nodes() >> 1);
+  Node_Stack nstack(C->live_nodes() >> 1);
   nstack.push(_root, 0);
   uint sum = 0;                 // Counter for blocks
 
@@ -539,6 +543,48 @@ void PhaseCFG::insert_goto_at(uint block_no, uint succ_no) {
   block->_freq = freq;
   // add new basic block to basic block list
   add_block_at(block_no + 1, block);
+  // Update dominator tree information of the new goto block.
+  block->_idom = in;
+  block->_dom_depth = in->_dom_depth + 1;
+  if (out->_idom != in) {
+    // The successor block was not immediately dominated by the predecessor
+    // block, so there is no dominator subtree to update.
+    return;
+  }
+  // Update immediate dominator of the successor block.
+  out->_idom = block;
+  // Increment the dominator tree depth of the goto block's descendants. These
+  // are found by a depth-first search starting from the successor block. Two
+  // domination properties guarantee that only descendant blocks are visited:
+  // 1) all dominators of a block b must appear in any path from the root to b;
+  // 2) if a block b does not dominate another block b', b cannot dominate any
+  //    block reachable from b' either.
+  // The exploration uses header indices as block identifiers, since
+  // Block::_pre_order might not be unique in the context of this function.
+  ResourceMark rm;
+  VectorSet descendants;
+  descendants.set(block->head()->_idx); // The goto block is a descendant of itself.
+  Block_List worklist;
+  worklist.push(out); // Start exploring from the successor block.
+  while (worklist.size() > 0) {
+    Block* b = worklist.pop();
+    // The immediate dominator of b is a descendant, hence b is also a
+    // descendant. Even though all predecessors of b might not have been visited
+    // yet, we know that all dominators of b have been already visited (since
+    // they must appear in any path from the goto block to b).
+    descendants.set(b->head()->_idx);
+    b->_dom_depth++;
+    for (uint i = 0; i < b->_num_succs; i++) {
+      Block* s = b->_succs[i];
+      if (s != get_root_block() &&
+          !descendants.test(s->head()->_idx) &&
+          // Do not search below non-descendant successors, since any block
+          // reachable from them cannot be descendant either.
+          descendants.test(s->_idom->head()->_idx)) {
+        worklist.push(s);
+      }
+    }
+  }
 }
 
 // Does this block end in a multiway branch that cannot have the default case
@@ -574,10 +620,13 @@ static bool no_flip_branch(Block *b) {
 // fake exit path to infinite loops.  At this late stage they need to turn
 // into Goto's so that when you enter the infinite loop you indeed hang.
 void PhaseCFG::convert_NeverBranch_to_Goto(Block *b) {
-  // Find true target
   int end_idx = b->end_idx();
-  int idx = b->get_node(end_idx+1)->as_Proj()->_con;
-  Block *succ = b->_succs[idx];
+  NeverBranchNode* never_branch = b->get_node(end_idx)->as_NeverBranch();
+  Block* succ = get_block_for_node(never_branch->proj_out(0)->unique_ctrl_out_or_null());
+  Block* dead = get_block_for_node(never_branch->proj_out(1)->unique_ctrl_out_or_null());
+  assert(succ == b->_succs[0] || succ == b->_succs[1], "succ is a successor");
+  assert(dead == b->_succs[0] || dead == b->_succs[1], "dead is a successor");
+
   Node* gto = _goto->clone(); // get a new goto node
   gto->set_req(0, b->head());
   Node *bp = b->get_node(end_idx);
@@ -590,19 +639,23 @@ void PhaseCFG::convert_NeverBranch_to_Goto(Block *b) {
   b->_num_succs = 1;
   // remap successor's predecessors if necessary
   uint j;
-  for( j = 1; j < succ->num_preds(); j++)
-    if( succ->pred(j)->in(0) == bp )
+  for (j = 1; j < succ->num_preds(); j++) {
+    if (succ->pred(j)->in(0) == bp) {
       succ->head()->set_req(j, gto);
+    }
+  }
   // Kill alternate exit path
-  Block *dead = b->_succs[1-idx];
-  for( j = 1; j < dead->num_preds(); j++)
-    if( dead->pred(j)->in(0) == bp )
+  for (j = 1; j < dead->num_preds(); j++) {
+    if (dead->pred(j)->in(0) == bp) {
       break;
+    }
+  }
   // Scan through block, yanking dead path from
   // all regions and phis.
   dead->head()->del_req(j);
-  for( int k = 1; dead->get_node(k)->is_Phi(); k++ )
+  for (int k = 1; dead->get_node(k)->is_Phi(); k++) {
     dead->get_node(k)->del_req(j);
+  }
 }
 
 // Helper function to move block bx to the slot following b_index. Return
@@ -689,7 +742,7 @@ void PhaseCFG::remove_empty_blocks() {
     // to give a fake exit path to infinite loops.  At this late stage they
     // need to turn into Goto's so that when you enter the infinite loop you
     // indeed hang.
-    if (block->get_node(block->end_idx())->Opcode() == Op_NeverBranch) {
+    if (block->get_node(block->end_idx())->is_NeverBranch()) {
       convert_NeverBranch_to_Goto(block);
     }
 
@@ -905,16 +958,13 @@ void PhaseCFG::fixup_flow() {
       // to succs[0], so we want the fall-thru case as the next block in
       // succs[1].
       if (bnext == bs0) {
-        // Fall-thru case in succs[0], so flip targets in succs map
+        // Fall-thru case in succs[0], should be in succs[1], so flip targets in _succs map
         Block* tbs0 = block->_succs[0];
         Block* tbs1 = block->_succs[1];
         block->_succs.map(0, tbs1);
         block->_succs.map(1, tbs0);
         // Flip projection for each target
-        ProjNode* tmp = proj0;
-        proj0 = proj1;
-        proj1 = tmp;
-
+        swap(proj0, proj1);
       } else if(bnext != bs1) {
         // Need a double-branch
         // The existing conditional branch need not change.
@@ -939,6 +989,46 @@ void PhaseCFG::fixup_flow() {
   } // End of for all blocks
 }
 
+void PhaseCFG::remove_unreachable_blocks() {
+  ResourceMark rm;
+  Block_List unreachable;
+  // Initialize worklist of unreachable blocks to be removed.
+  for (uint i = 0; i < number_of_blocks(); i++) {
+    Block* block = get_block(i);
+    assert(block->_pre_order == i, "Block::pre_order does not match block index");
+    if (block->is_trivially_unreachable()) {
+      unreachable.push(block);
+    }
+  }
+  // Now remove all blocks that are transitively unreachable.
+  while (unreachable.size() > 0) {
+    Block* dead = unreachable.pop();
+    // When this code runs (after PhaseCFG::fixup_flow()), Block::_pre_order
+    // does not contain pre-order but block-list indices. Ensure they stay
+    // contiguous by decrementing _pre_order for all elements after 'dead'.
+    // Block::_rpo does not contain valid reverse post-order indices anymore
+    // (they are invalidated by block insertions in PhaseCFG::fixup_flow()),
+    // so there is no need to update them.
+    for (uint i = dead->_pre_order + 1; i < number_of_blocks(); i++) {
+      get_block(i)->_pre_order--;
+    }
+    _blocks.remove(dead->_pre_order);
+    _number_of_blocks--;
+    // Update the successors' predecessor list and push new unreachable blocks.
+    for (uint i = 0; i < dead->_num_succs; i++) {
+      Block* succ = dead->_succs[i];
+      Node* head = succ->head();
+      for (int j = head->req() - 1; j >= 1; j--) {
+        if (get_block_for_node(head->in(j)) == dead) {
+          head->del_req(j);
+        }
+      }
+      if (succ->is_trivially_unreachable()) {
+        unreachable.push(succ);
+      }
+    }
+  }
+}
 
 // postalloc_expand: Expand nodes after register allocation.
 //
@@ -1086,7 +1176,7 @@ void PhaseCFG::postalloc_expand(PhaseRegAlloc* _ra) {
         // Collect succs of old node in remove (for projections) and in succs (for
         // all other nodes) do _not_ collect projections in remove (but in succs)
         // in case the node is a call. We need the projections for calls as they are
-        // associated with registes (i.e. they are defs).
+        // associated with registers (i.e. they are defs).
         succs.clear();
         for (DUIterator k = n->outs(); n->has_out(k); k++) {
           if (n->out(k)->is_Proj() && !n->is_MachCall() && !n->is_MachBranch()) {
@@ -1207,9 +1297,43 @@ void PhaseCFG::dump_headers() {
     }
   }
 }
+#endif // !PRODUCT
+
+#ifdef ASSERT
+void PhaseCFG::verify_memory_writer_placement(const Block* b, const Node* n) const {
+  if (!n->is_memory_writer()) {
+    return;
+  }
+  CFGLoop* home_or_ancestor = find_block_for_node(n->in(0))->_loop;
+  bool found = false;
+  do {
+    if (b->_loop == home_or_ancestor) {
+      found = true;
+      break;
+    }
+    home_or_ancestor = home_or_ancestor->parent();
+  } while (home_or_ancestor != NULL);
+  assert(found, "block b is not in n's home loop or an ancestor of it");
+}
+
+void PhaseCFG::verify_dominator_tree() const {
+  for (uint i = 0; i < number_of_blocks(); i++) {
+    Block* block = get_block(i);
+    assert(block->_dom_depth <= number_of_blocks(), "unexpected dominator tree depth");
+    if (block == get_root_block()) {
+      assert(block->_dom_depth == 1, "unexpected root dominator tree depth");
+      // The root block does not have an immediate dominator, stop checking.
+      continue;
+    }
+    assert(block->_idom != nullptr, "non-root blocks must have immediate dominators");
+    assert(block->_dom_depth == block->_idom->_dom_depth + 1,
+           "the dominator tree depth of a node must succeed that of its immediate dominator");
+    assert(block->num_preds() > 2 || block->_idom == get_block_for_node(block->pred(1)),
+           "the immediate dominator of a single-predecessor block must be the predecessor");
+  }
+}
 
 void PhaseCFG::verify() const {
-#ifdef ASSERT
   // Verify sane CFG
   for (uint i = 0; i < number_of_blocks(); i++) {
     Block* block = get_block(i);
@@ -1221,18 +1345,25 @@ void PhaseCFG::verify() const {
       if (j >= 1 && n->is_Mach() && n->as_Mach()->ideal_Opcode() == Op_CreateEx) {
         assert(j == 1 || block->get_node(j-1)->is_Phi(), "CreateEx must be first instruction in block");
       }
+      verify_memory_writer_placement(block, n);
       if (n->needs_anti_dependence_check()) {
         verify_anti_dependences(block, n);
       }
       for (uint k = 0; k < n->req(); k++) {
         Node *def = n->in(k);
         if (def && def != n) {
-          assert(get_block_for_node(def) || def->is_Con(), "must have block; constants for debug info ok");
-          // Verify that instructions in the block is in correct order.
+          Block* def_block = get_block_for_node(def);
+          assert(def_block || def->is_Con(), "must have block; constants for debug info ok");
+          // Verify that all definitions dominate their uses (except for virtual
+          // instructions merging multiple definitions).
+          assert(n->is_Root() || n->is_Region() || n->is_Phi() || n->is_MachMerge() ||
+                 def_block->dominates(block),
+                 "uses must be dominated by definitions");
+          // Verify that instructions in the block are in correct order.
           // Uses must follow their definition if they are at the same block.
           // Mostly done to check that MachSpillCopy nodes are placed correctly
           // when CreateEx node is moved in build_ifg_physical().
-          if (get_block_for_node(def) == block && !(block->head()->is_Loop() && n->is_Phi()) &&
+          if (def_block == block && !(block->head()->is_Loop() && n->is_Phi()) &&
               // See (+++) comment in reg_split.cpp
               !(n->jvms() != NULL && n->jvms()->is_monitor_use(k))) {
             bool is_loop = false;
@@ -1244,9 +1375,23 @@ void PhaseCFG::verify() const {
                 }
               }
             }
-            assert(is_loop || block->find_node(def) < j, "uses must follow definitions");
+            // Uses must be before definition, except if:
+            // - We are in some kind of loop we already detected
+            // - We are in infinite loop, where Region may not have been turned into LoopNode
+            assert(block->find_node(def) < j ||
+                   is_loop ||
+                   (n->is_Phi() && block->head()->as_Region()->is_in_infinite_subgraph()),
+                   "uses must follow definitions (except in loops)");
           }
         }
+      }
+      if (n->is_Proj()) {
+        assert(j >= 1, "a projection cannot be the first instruction in a block");
+        Node* pred = block->get_node(j - 1);
+        Node* parent = n->in(0);
+        assert(parent != NULL, "projections must have a parent");
+        assert(pred == parent || (pred->is_Proj() && pred->in(0) == parent),
+               "projections must follow their parents or other sibling projections");
       }
     }
 
@@ -1263,9 +1408,9 @@ void PhaseCFG::verify() const {
       assert(block->_num_succs == 2, "Conditional branch must have two targets");
     }
   }
-#endif
+  verify_dominator_tree();
 }
-#endif
+#endif // ASSERT
 
 UnionFind::UnionFind( uint max ) : _cnt(max), _max(max), _indices(NEW_RESOURCE_ARRAY(uint,max)) {
   Copy::zero_to_bytes( _indices, sizeof(uint)*max );
@@ -1617,8 +1762,7 @@ void PhaseBlockLayout::merge_traces(bool fall_thru_only) {
   }
 }
 
-// Order the sequence of the traces in some desirable way, and fixup the
-// jumps at the end of each block.
+// Order the sequence of the traces in some desirable way
 void PhaseBlockLayout::reorder_traces(int count) {
   ResourceArea *area = Thread::current()->resource_area();
   Trace ** new_traces = NEW_ARENA_ARRAY(area, Trace *, count);
@@ -1640,12 +1784,15 @@ void PhaseBlockLayout::reorder_traces(int count) {
   // Sort the new trace list by frequency
   qsort(new_traces + 1, new_count - 1, sizeof(new_traces[0]), trace_frequency_order);
 
-  // Patch up the successor blocks
+  // Collect all blocks from existing Traces
   _cfg.clear_blocks();
   for (int i = 0; i < new_count; i++) {
     Trace *tr = new_traces[i];
     if (tr != NULL) {
-      tr->fixup_blocks(_cfg);
+      // push blocks onto the CFG list
+      for (Block* b = tr->first_block(); b != NULL; b = tr->next(b)) {
+        _cfg.add_block(b);
+      }
     }
   }
 }
@@ -1725,7 +1872,7 @@ bool Trace::backedge(CFGEdge *e) {
 
     // Backbranch to the top of a trace
     // Scroll forward through the trace from the targ_block. If we find
-    // a loop head before another loop top, use the the loop head alignment.
+    // a loop head before another loop top, use the loop head alignment.
     for (Block *b = targ_block; b != NULL; b = next(b)) {
       if (b->has_loop_alignment()) {
         break;
@@ -1750,41 +1897,4 @@ bool Trace::backedge(CFGEdge *e) {
   }
 
   return loop_rotated;
-}
-
-// push blocks onto the CFG list
-// ensure that blocks have the correct two-way branch sense
-void Trace::fixup_blocks(PhaseCFG &cfg) {
-  Block *last = last_block();
-  for (Block *b = first_block(); b != NULL; b = next(b)) {
-    cfg.add_block(b);
-    if (!b->is_connector()) {
-      int nfallthru = b->num_fall_throughs();
-      if (b != last) {
-        if (nfallthru == 2) {
-          // Ensure that the sense of the branch is correct
-          Block *bnext = next(b);
-          Block *bs0 = b->non_connector_successor(0);
-
-          MachNode *iff = b->get_node(b->number_of_nodes() - 3)->as_Mach();
-          ProjNode *proj0 = b->get_node(b->number_of_nodes() - 2)->as_Proj();
-          ProjNode *proj1 = b->get_node(b->number_of_nodes() - 1)->as_Proj();
-
-          if (bnext == bs0) {
-            // Fall-thru case in succs[0], should be in succs[1]
-
-            // Flip targets in _succs map
-            Block *tbs0 = b->_succs[0];
-            Block *tbs1 = b->_succs[1];
-            b->_succs.map( 0, tbs1 );
-            b->_succs.map( 1, tbs0 );
-
-            // Flip projections to match targets
-            b->map_node(proj1, b->number_of_nodes() - 2);
-            b->map_node(proj0, b->number_of_nodes() - 1);
-          }
-        }
-      }
-    }
-  }
 }

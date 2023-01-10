@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,6 +27,7 @@ package sun.security.ssl;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.security.CryptoPrimitive;
 import java.security.GeneralSecurityException;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
@@ -37,10 +38,10 @@ import java.security.PublicKey;
 import java.security.Signature;
 import java.security.SignatureException;
 import java.text.MessageFormat;
+import java.util.EnumSet;
 import java.util.Locale;
-import sun.security.ssl.NamedGroup.NamedGroupSpec;
+import java.util.Map;
 import sun.security.ssl.SSLHandshake.HandshakeMessage;
-import sun.security.ssl.SupportedGroupsExtension.SupportedGroups;
 import sun.security.ssl.X509Authentication.X509Credentials;
 import sun.security.ssl.X509Authentication.X509Possession;
 import sun.security.util.HexDumpEncoder;
@@ -133,29 +134,25 @@ final class ECDHServerKeyExchange {
             } else {
                 useExplicitSigAlgorithm =
                         shc.negotiatedProtocol.useTLS12PlusSpec();
-                Signature signer = null;
+                Signature signer;
                 if (useExplicitSigAlgorithm) {
-                    signatureScheme = SignatureScheme.getPreferableAlgorithm(
-                            shc.algorithmConstraints,
-                            shc.peerRequestedSignatureSchemes,
-                            x509Possession,
-                            shc.negotiatedProtocol);
-                    if (signatureScheme == null) {
+                    Map.Entry<SignatureScheme, Signature> schemeAndSigner =
+                            SignatureScheme.getSignerOfPreferableAlgorithm(
+                                shc.sslConfig,
+                                shc.algorithmConstraints,
+                                shc.peerRequestedSignatureSchemes,
+                                x509Possession,
+                                shc.negotiatedProtocol);
+                    if (schemeAndSigner == null) {
                         // Unlikely, the credentials generator should have
                         // selected the preferable signature algorithm properly.
                         throw shc.conContext.fatal(Alert.INTERNAL_ERROR,
-                                "No preferred signature algorithm for " +
+                                "No supported signature algorithm for " +
                                 x509Possession.popPrivateKey.getAlgorithm() +
                                 "  key");
-                    }
-                    try {
-                        signer = signatureScheme.getSignature(
-                                x509Possession.popPrivateKey);
-                    } catch (NoSuchAlgorithmException | InvalidKeyException |
-                            InvalidAlgorithmParameterException nsae) {
-                        throw shc.conContext.fatal(Alert.INTERNAL_ERROR,
-                            "Unsupported signature algorithm: " +
-                            signatureScheme.name, nsae);
+                    } else {
+                        signatureScheme = schemeAndSigner.getKey();
+                        signer = schemeAndSigner.getValue();
                     }
                 } else {
                     signatureScheme = null;
@@ -170,7 +167,7 @@ final class ECDHServerKeyExchange {
                     }
                 }
 
-                byte[] signature = null;
+                byte[] signature;
                 try {
                     updateSignature(signer, shc.clientHelloRandom.randomBytes,
                             shc.serverHelloRandom.randomBytes,
@@ -207,7 +204,7 @@ final class ECDHServerKeyExchange {
                     "Unknown named group ID: " + namedGroupId);
             }
 
-            if (!SupportedGroups.isSupported(namedGroup)) {
+            if (!NamedGroup.isEnabled(chc.sslConfig, namedGroup)) {
                 throw chc.conContext.fatal(Alert.ILLEGAL_PARAMETER,
                     "Unsupported named group: " + namedGroup);
             }
@@ -219,10 +216,19 @@ final class ECDHServerKeyExchange {
             }
 
             try {
-                sslCredentials = namedGroup.decodeCredentials(
-                    publicPoint, handshakeContext.algorithmConstraints,
-                     s -> chc.conContext.fatal(Alert.INSUFFICIENT_SECURITY,
-                     "ServerKeyExchange " + namedGroup + ": " + (s)));
+                sslCredentials =
+                        namedGroup.decodeCredentials(publicPoint);
+                if (handshakeContext.algorithmConstraints != null &&
+                        sslCredentials instanceof
+                                NamedGroupCredentials namedGroupCredentials) {
+                    if (!handshakeContext.algorithmConstraints.permits(
+                            EnumSet.of(CryptoPrimitive.KEY_AGREEMENT),
+                            namedGroupCredentials.getPublicKey())) {
+                        chc.conContext.fatal(Alert.INSUFFICIENT_SECURITY,
+                            "ServerKeyExchange for " + namedGroup +
+                            " does not comply with algorithm constraints");
+                    }
+                }
             } catch (GeneralSecurityException ex) {
                 throw chc.conContext.fatal(Alert.UNEXPECTED_MESSAGE,
                         "Cannot decode named group: " +
@@ -276,7 +282,7 @@ final class ECDHServerKeyExchange {
             Signature signer;
             if (useExplicitSigAlgorithm) {
                 try {
-                    signer = signatureScheme.getSignature(
+                    signer = signatureScheme.getVerifier(
                             x509Credentials.popPublicKey);
                 } catch (NoSuchAlgorithmException | InvalidKeyException |
                         InvalidAlgorithmParameterException nsae) {
@@ -348,20 +354,21 @@ final class ECDHServerKeyExchange {
         public String toString() {
             if (useExplicitSigAlgorithm) {
                 MessageFormat messageFormat = new MessageFormat(
-                    "\"ECDH ServerKeyExchange\": '{'\n" +
-                    "  \"parameters\": '{'\n" +
-                    "    \"named group\": \"{0}\"\n" +
-                    "    \"ecdh public\": '{'\n" +
-                    "{1}\n" +
-                    "    '}',\n" +
-                    "  '}',\n" +
-                    "  \"digital signature\":  '{'\n" +
-                    "    \"signature algorithm\": \"{2}\"\n" +
-                    "    \"signature\": '{'\n" +
-                    "{3}\n" +
-                    "    '}',\n" +
-                    "  '}'\n" +
-                    "'}'",
+                        """
+                                "ECDH ServerKeyExchange": '{'
+                                  "parameters": '{'
+                                    "named group": "{0}"
+                                    "ecdh public": '{'
+                                {1}
+                                    '}',
+                                  '}',
+                                  "digital signature":  '{'
+                                    "signature algorithm": "{2}"
+                                    "signature": '{'
+                                {3}
+                                    '}',
+                                  '}'
+                                '}'""",
                     Locale.ENGLISH);
 
                 HexDumpEncoder hexEncoder = new HexDumpEncoder();
@@ -376,17 +383,18 @@ final class ECDHServerKeyExchange {
                 return messageFormat.format(messageFields);
             } else if (paramsSignature != null) {
                 MessageFormat messageFormat = new MessageFormat(
-                    "\"ECDH ServerKeyExchange\": '{'\n" +
-                    "  \"parameters\":  '{'\n" +
-                    "    \"named group\": \"{0}\"\n" +
-                    "    \"ecdh public\": '{'\n" +
-                    "{1}\n" +
-                    "    '}',\n" +
-                    "  '}',\n" +
-                    "  \"signature\": '{'\n" +
-                    "{2}\n" +
-                    "  '}'\n" +
-                    "'}'",
+                        """
+                                "ECDH ServerKeyExchange": '{'
+                                  "parameters":  '{'
+                                    "named group": "{0}"
+                                    "ecdh public": '{'
+                                {1}
+                                    '}',
+                                  '}',
+                                  "signature": '{'
+                                {2}
+                                  '}'
+                                '}'""",
                     Locale.ENGLISH);
 
                 HexDumpEncoder hexEncoder = new HexDumpEncoder();
@@ -401,14 +409,15 @@ final class ECDHServerKeyExchange {
                 return messageFormat.format(messageFields);
             } else {    // anonymous
                 MessageFormat messageFormat = new MessageFormat(
-                    "\"ECDH ServerKeyExchange\": '{'\n" +
-                    "  \"parameters\":  '{'\n" +
-                    "    \"named group\": \"{0}\"\n" +
-                    "    \"ecdh public\": '{'\n" +
-                    "{1}\n" +
-                    "    '}',\n" +
-                    "  '}'\n" +
-                    "'}'",
+                        """
+                                "ECDH ServerKeyExchange": '{'
+                                  "parameters":  '{'
+                                    "named group": "{0}"
+                                    "ecdh public": '{'
+                                {1}
+                                    '}',
+                                  '}'
+                                '}'""",
                     Locale.ENGLISH);
 
                 HexDumpEncoder hexEncoder = new HexDumpEncoder();
@@ -424,10 +433,13 @@ final class ECDHServerKeyExchange {
 
         private static Signature getSignature(String keyAlgorithm,
                 Key key) throws NoSuchAlgorithmException, InvalidKeyException {
-            Signature signer = null;
+            Signature signer;
             switch (keyAlgorithm) {
                 case "EC":
                     signer = Signature.getInstance(JsseJce.SIGNATURE_ECDSA);
+                    break;
+                case "EdDSA":
+                    signer = Signature.getInstance(JsseJce.SIGNATURE_EDDSA);
                     break;
                 case "RSA":
                     signer = RSASignature.getInstance();
@@ -437,12 +449,10 @@ final class ECDHServerKeyExchange {
                         "neither an RSA or a EC key : " + keyAlgorithm);
             }
 
-            if (signer != null) {
-                if (key instanceof PublicKey) {
-                    signer.initVerify((PublicKey)(key));
-                } else {
-                    signer.initSign((PrivateKey)key);
-                }
+            if (key instanceof PublicKey) {
+                signer.initVerify((PublicKey)(key));
+            } else {
+                signer.initSign((PrivateKey)key);
             }
 
             return signer;

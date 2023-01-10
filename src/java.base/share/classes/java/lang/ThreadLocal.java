@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2013, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2023, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,12 +24,14 @@
  */
 
 package java.lang;
-import jdk.internal.misc.TerminatingThreadLocal;
 
-import java.lang.ref.*;
+import java.lang.ref.WeakReference;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
+
+import jdk.internal.misc.CarrierThreadLocal;
+import jdk.internal.misc.TerminatingThreadLocal;
 
 /**
  * This class provides thread-local variables.  These variables differ from
@@ -69,6 +71,7 @@ import java.util.function.Supplier;
  * instance is accessible; after a thread goes away, all of its copies of
  * thread-local instances are subject to garbage collection (unless other
  * references to these copies exist).
+ * @param <T> the type of the thread local's value
  *
  * @author  Josh Bloch and Doug Lea
  * @since   1.2
@@ -117,13 +120,16 @@ public class ThreadLocal<T> {
      * most once per thread, but it may be invoked again in case of
      * subsequent invocations of {@link #remove} followed by {@link #get}.
      *
-     * <p>This implementation simply returns {@code null}; if the
+     * @implSpec
+     * This implementation simply returns {@code null}; if the
      * programmer desires thread-local variables to have an initial
-     * value other than {@code null}, {@code ThreadLocal} must be
-     * subclassed, and this method overridden.  Typically, an
-     * anonymous inner class will be used.
+     * value other than {@code null}, then either {@code ThreadLocal}
+     * can be subclassed and this method overridden or the method
+     * {@link ThreadLocal#withInitial(Supplier)} can be used to
+     * construct a {@code ThreadLocal}.
      *
      * @return the initial value for this thread-local
+     * @see #withInitial(java.util.function.Supplier)
      */
     protected T initialValue() {
         return null;
@@ -155,34 +161,61 @@ public class ThreadLocal<T> {
      * thread-local variable.  If the variable has no value for the
      * current thread, it is first initialized to the value returned
      * by an invocation of the {@link #initialValue} method.
+     * If the current thread does not support thread locals then
+     * this method returns its {@link #initialValue}.
      *
      * @return the current thread's value of this thread-local
+     * @see Thread.Builder#allowSetThreadLocals(boolean)
      */
     public T get() {
-        Thread t = Thread.currentThread();
-        ThreadLocalMap map = getMap(t);
-        if (map != null) {
-            ThreadLocalMap.Entry e = map.getEntry(this);
-            if (e != null) {
-                @SuppressWarnings("unchecked")
-                T result = (T)e.value;
-                return result;
-            }
-        }
-        return setInitialValue();
+        return get(Thread.currentThread());
     }
 
     /**
-     * Returns {@code true} if there is a value in the current thread's copy of
+     * Returns the value in the current carrier thread's copy of this
+     * thread-local variable.
+     */
+    T getCarrierThreadLocal() {
+        assert this instanceof CarrierThreadLocal<T>;
+        return get(Thread.currentCarrierThread());
+    }
+
+    private T get(Thread t) {
+        ThreadLocalMap map = getMap(t);
+        if (map != null) {
+            if (map == ThreadLocalMap.NOT_SUPPORTED) {
+                return initialValue();
+            } else {
+                ThreadLocalMap.Entry e = map.getEntry(this);
+                if (e != null) {
+                    @SuppressWarnings("unchecked")
+                    T result = (T) e.value;
+                    return result;
+                }
+            }
+        }
+        return setInitialValue(t);
+    }
+
+    /**
+     * Returns {@code true} if there is a value in the current carrier thread's copy of
      * this thread-local variable, even if that values is {@code null}.
      *
-     * @return {@code true} if current thread has associated value in this
+     * @return {@code true} if current carrier thread has associated value in this
      *         thread-local variable; {@code false} if not
      */
-    boolean isPresent() {
-        Thread t = Thread.currentThread();
+    boolean isCarrierThreadLocalPresent() {
+        assert this instanceof CarrierThreadLocal<T>;
+        return isPresent(Thread.currentCarrierThread());
+    }
+
+    private boolean isPresent(Thread t) {
         ThreadLocalMap map = getMap(t);
-        return map != null && map.getEntry(this) != null;
+        if (map != null && map != ThreadLocalMap.NOT_SUPPORTED) {
+            return map.getEntry(this) != null;
+        } else {
+            return false;
+        }
     }
 
     /**
@@ -191,17 +224,17 @@ public class ThreadLocal<T> {
      *
      * @return the initial value
      */
-    private T setInitialValue() {
+    private T setInitialValue(Thread t) {
         T value = initialValue();
-        Thread t = Thread.currentThread();
         ThreadLocalMap map = getMap(t);
+        assert map != ThreadLocalMap.NOT_SUPPORTED;
         if (map != null) {
             map.set(this, value);
         } else {
             createMap(t, value);
         }
-        if (this instanceof TerminatingThreadLocal) {
-            TerminatingThreadLocal.register((TerminatingThreadLocal<?>) this);
+        if (this instanceof TerminatingThreadLocal<?> ttl) {
+            TerminatingThreadLocal.register(ttl);
         }
         return value;
     }
@@ -214,10 +247,26 @@ public class ThreadLocal<T> {
      *
      * @param value the value to be stored in the current thread's copy of
      *        this thread-local.
+     *
+     * @throws UnsupportedOperationException if the current thread is not
+     *         allowed to set its copy of thread-local variables
+     *
+     * @see Thread.Builder#allowSetThreadLocals(boolean)
      */
     public void set(T value) {
-        Thread t = Thread.currentThread();
+        set(Thread.currentThread(), value);
+    }
+
+    void setCarrierThreadLocal(T value) {
+        assert this instanceof CarrierThreadLocal<T>;
+        set(Thread.currentCarrierThread(), value);
+    }
+
+    private void set(Thread t, T value) {
         ThreadLocalMap map = getMap(t);
+        if (map == ThreadLocalMap.NOT_SUPPORTED) {
+            throw new UnsupportedOperationException();
+        }
         if (map != null) {
             map.set(this, value);
         } else {
@@ -237,8 +286,17 @@ public class ThreadLocal<T> {
      * @since 1.5
      */
      public void remove() {
-         ThreadLocalMap m = getMap(Thread.currentThread());
-         if (m != null) {
+         remove(Thread.currentThread());
+     }
+
+     void removeCarrierThreadLocal() {
+         assert this instanceof CarrierThreadLocal<T>;
+         remove(Thread.currentCarrierThread());
+     }
+
+     private void remove(Thread t) {
+         ThreadLocalMap m = getMap(t);
+         if (m != null && m != ThreadLocalMap.NOT_SUPPORTED) {
              m.remove(this);
          }
      }
@@ -336,6 +394,9 @@ public class ThreadLocal<T> {
             }
         }
 
+        // Placeholder when thread locals not supported
+        static final ThreadLocalMap NOT_SUPPORTED = new ThreadLocalMap();
+
         /**
          * The initial capacity -- MUST be a power of two.
          */
@@ -376,6 +437,12 @@ public class ThreadLocal<T> {
          */
         private static int prevIndex(int i, int len) {
             return ((i - 1 >= 0) ? i - 1 : len - 1);
+        }
+
+        /**
+         * Construct a new map without a table.
+         */
+        private ThreadLocalMap() {
         }
 
         /**
@@ -421,6 +488,13 @@ public class ThreadLocal<T> {
         }
 
         /**
+         * Returns the number of elements in the map.
+         */
+        int size() {
+            return size;
+        }
+
+        /**
          * Get the entry associated with key.  This method
          * itself handles only the fast path: a direct hit of existing
          * key. It otherwise relays to getEntryAfterMiss.  This is
@@ -433,7 +507,7 @@ public class ThreadLocal<T> {
         private Entry getEntry(ThreadLocal<?> key) {
             int i = key.threadLocalHashCode & (table.length - 1);
             Entry e = table[i];
-            if (e != null && e.get() == key)
+            if (e != null && e.refersTo(key))
                 return e;
             else
                 return getEntryAfterMiss(key, i, e);
@@ -453,10 +527,9 @@ public class ThreadLocal<T> {
             int len = tab.length;
 
             while (e != null) {
-                ThreadLocal<?> k = e.get();
-                if (k == key)
+                if (e.refersTo(key))
                     return e;
-                if (k == null)
+                if (e.refersTo(null))
                     expungeStaleEntry(i);
                 else
                     i = nextIndex(i, len);
@@ -485,14 +558,12 @@ public class ThreadLocal<T> {
             for (Entry e = tab[i];
                  e != null;
                  e = tab[i = nextIndex(i, len)]) {
-                ThreadLocal<?> k = e.get();
-
-                if (k == key) {
+                if (e.refersTo(key)) {
                     e.value = value;
                     return;
                 }
 
-                if (k == null) {
+                if (e.refersTo(null)) {
                     replaceStaleEntry(key, value, i);
                     return;
                 }
@@ -514,7 +585,7 @@ public class ThreadLocal<T> {
             for (Entry e = tab[i];
                  e != null;
                  e = tab[i = nextIndex(i, len)]) {
-                if (e.get() == key) {
+                if (e.refersTo(key)) {
                     e.clear();
                     expungeStaleEntry(i);
                     return;
@@ -551,7 +622,7 @@ public class ThreadLocal<T> {
             for (int i = prevIndex(staleSlot, len);
                  (e = tab[i]) != null;
                  i = prevIndex(i, len))
-                if (e.get() == null)
+                if (e.refersTo(null))
                     slotToExpunge = i;
 
             // Find either the key or trailing null slot of run, whichever
@@ -559,14 +630,12 @@ public class ThreadLocal<T> {
             for (int i = nextIndex(staleSlot, len);
                  (e = tab[i]) != null;
                  i = nextIndex(i, len)) {
-                ThreadLocal<?> k = e.get();
-
                 // If we find key, then we need to swap it
                 // with the stale entry to maintain hash table order.
                 // The newly stale slot, or any other stale slot
                 // encountered above it, can then be sent to expungeStaleEntry
                 // to remove or rehash all of the other entries in run.
-                if (k == key) {
+                if (e.refersTo(key)) {
                     e.value = value;
 
                     tab[i] = tab[staleSlot];
@@ -582,7 +651,7 @@ public class ThreadLocal<T> {
                 // If we didn't find stale entry on backward scan, the
                 // first stale entry seen while scanning for key is the
                 // first still present in the run.
-                if (k == null && slotToExpunge == staleSlot)
+                if (e.refersTo(null) && slotToExpunge == staleSlot)
                     slotToExpunge = i;
             }
 
@@ -673,7 +742,7 @@ public class ThreadLocal<T> {
             do {
                 i = nextIndex(i, len);
                 Entry e = tab[i];
-                if (e != null && e.get() == null) {
+                if (e != null && e.refersTo(null)) {
                     n = len;
                     removed = true;
                     i = expungeStaleEntry(i);
@@ -733,7 +802,7 @@ public class ThreadLocal<T> {
             int len = tab.length;
             for (int j = 0; j < len; j++) {
                 Entry e = tab[j];
-                if (e != null && e.get() == null)
+                if (e != null && e.refersTo(null))
                     expungeStaleEntry(j);
             }
         }

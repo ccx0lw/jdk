@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -32,10 +32,8 @@
  * @comment Don't run test in configurations where we can't reliably count number of metaspace triggered GCs
  * @requires vm.gc != null | !vm.opt.final.ClassUnloadingWithConcurrentMark
  * @requires vm.gc != "G1" | !vm.opt.final.ClassUnloadingWithConcurrentMark
- * @requires vm.gc != "ConcMarkSweep"
  * @requires vm.gc != "Z"
  * @library /vmTestbase /test/lib
- * @run driver jdk.test.lib.FileInstaller . .
  * @run main/othervm
  *      -Xmx1g
  *      -Xms150m

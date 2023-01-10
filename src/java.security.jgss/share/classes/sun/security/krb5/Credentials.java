@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -35,6 +35,8 @@ import sun.security.action.GetPropertyAction;
 import sun.security.krb5.internal.*;
 import sun.security.krb5.internal.ccache.CredentialsCache;
 import sun.security.krb5.internal.crypto.EType;
+import sun.security.util.SecurityProperties;
+
 import java.io.IOException;
 import java.util.Date;
 import java.util.Locale;
@@ -61,9 +63,12 @@ public class Credentials {
     HostAddresses cAddr;
     AuthorizationData authzData;
     private static boolean DEBUG = Krb5.DEBUG;
-    private static CredentialsCache cache;
     static boolean alreadyLoaded = false;
     private static boolean alreadyTried = false;
+
+    public static final boolean S4U2PROXY_ACCEPT_NON_FORWARDABLE
+            = "true".equalsIgnoreCase(SecurityProperties.privilegedGetOverridable(
+                    "jdk.security.krb5.s4u2proxy.acceptNonForwardableServiceTicket"));
 
     private Credentials proxy = null;
 
@@ -98,7 +103,7 @@ public class Credentials {
         this.authzData = authzData;
     }
 
-    // Warning: called by NativeCreds.c and nativeccache.c
+    // Warning: also called by NativeCreds.c and nativeccache.c
     public Credentials(Ticket new_ticket,
                        PrincipalName new_client,
                        PrincipalName new_client_alias,
@@ -235,12 +240,10 @@ public class Credentials {
         byte[] retVal = null;
         try {
             retVal = ticket.asn1Encode();
-        } catch (Asn1Exception e) {
-            if (DEBUG)
-            System.out.println(e);
-        } catch (IOException ioe) {
-            if (DEBUG)
-            System.out.println(ioe);
+        } catch (Asn1Exception | IOException e) {
+            if (DEBUG) {
+                System.out.println(e);
+            }
         }
         return retVal;
     }
@@ -330,20 +333,20 @@ public class Credentials {
                 Credentials creds = acquireDefaultCreds();
                 if (creds == null) {
                     if (DEBUG) {
-                        System.out.println(">>> Found no TGT's in LSA");
+                        System.out.println(">>> Found no TGT's in native ccache");
                     }
                     return null;
                 }
                 if (princ != null) {
                     if (creds.getClient().equals(princ)) {
                         if (DEBUG) {
-                            System.out.println(">>> Obtained TGT from LSA: "
+                            System.out.println(">>> Obtained TGT from native ccache: "
                                                + creds);
                         }
                         return creds;
                     } else {
                         if (DEBUG) {
-                            System.out.println(">>> LSA contains TGT for "
+                            System.out.println(">>> native ccache contains TGT for "
                                                + creds.getClient()
                                                + " not "
                                                + princ);
@@ -352,7 +355,7 @@ public class Credentials {
                     }
                 } else {
                     if (DEBUG) {
-                        System.out.println(">>> Obtained TGT from LSA: "
+                        System.out.println(">>> Obtained TGT from native ccache: "
                                            + creds);
                     }
                     return creds;
@@ -414,9 +417,8 @@ public class Credentials {
     public static synchronized Credentials acquireDefaultCreds() {
         Credentials result = null;
 
-        if (cache == null) {
-            cache = CredentialsCache.getInstance();
-        }
+        CredentialsCache cache = CredentialsCache.getInstance();
+
         if (cache != null) {
             Credentials temp = cache.getInitialCreds();
             if (temp != null) {
@@ -445,7 +447,7 @@ public class Credentials {
                     ensureLoaded();
                 } catch (Exception e) {
                     if (DEBUG) {
-                        System.out.println("Can not load credentials cache");
+                        System.out.println("Can not load native ccache library");
                         e.printStackTrace();
                     }
                     alreadyTried = true;
@@ -478,7 +480,7 @@ public class Credentials {
      *
      * @param service the name of service principal using format
      * components@realm
-     * @param ccreds client's initial credential.
+     * @param initCreds client's initial credential.
      * @exception IOException if an error occurs in reading the credentials
      * cache
      * @exception KrbException if an error occurs specific to Kerberos
@@ -486,25 +488,21 @@ public class Credentials {
      */
 
     public static Credentials acquireServiceCreds(String service,
-                                                  Credentials ccreds)
+                                                  Credentials initCreds)
         throws KrbException, IOException {
-        return CredentialsUtil.acquireServiceCreds(service, ccreds);
+        return CredentialsUtil.acquireServiceCreds(service, initCreds);
     }
 
     public static Credentials acquireS4U2selfCreds(PrincipalName user,
-            Credentials ccreds) throws KrbException, IOException {
-        return CredentialsUtil.acquireS4U2selfCreds(user, ccreds);
+            Credentials middleTGT) throws KrbException, IOException {
+        return CredentialsUtil.acquireS4U2selfCreds(user, middleTGT);
     }
 
     public static Credentials acquireS4U2proxyCreds(String service,
-            Ticket second, PrincipalName client, Credentials ccreds)
+            Credentials userCreds, PrincipalName client, Credentials middleTGT)
         throws KrbException, IOException {
         return CredentialsUtil.acquireS4U2proxyCreds(
-                service, second, client, ccreds);
-    }
-
-    public CredentialsCache getCache() {
-        return cache;
+                service, userCreds, client, middleTGT);
     }
 
     /*
@@ -527,6 +525,7 @@ public class Credentials {
     }
 
 
+    @SuppressWarnings("removal")
     static void ensureLoaded() {
         java.security.AccessController.doPrivileged(
                 new java.security.PrivilegedAction<Void> () {

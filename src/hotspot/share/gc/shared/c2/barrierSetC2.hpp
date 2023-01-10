@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -54,6 +54,8 @@ const DecoratorSet C2_READ_ACCESS            = DECORATOR_LAST << 8;
 const DecoratorSet C2_TIGHTLY_COUPLED_ALLOC  = DECORATOR_LAST << 9;
 // Loads and stores from an arraycopy being optimized
 const DecoratorSet C2_ARRAY_COPY             = DECORATOR_LAST << 10;
+// Loads from immutable memory
+const DecoratorSet C2_IMMUTABLE_MEMORY       = DECORATOR_LAST << 11;
 
 class Compile;
 class ConnectionGraph;
@@ -94,7 +96,7 @@ public:
   const TypePtr* type() const { return reinterpret_cast<const TypePtr*>(_type); }
 };
 
-// This class wraps a bunch of context parameters thare are passed around in the
+// This class wraps a bunch of context parameters that are passed around in the
 // BarrierSetC2 backend hierarchy, for loads and stores, to reduce boiler plate.
 class C2Access: public StackObj {
 protected:
@@ -103,6 +105,7 @@ protected:
   Node*             _base;
   C2AccessValuePtr& _addr;
   Node*             _raw_access;
+  uint8_t           _barrier_data;
 
   void fixup_decorators();
 
@@ -113,7 +116,8 @@ public:
     _type(type),
     _base(base),
     _addr(addr),
-    _raw_access(NULL)
+    _raw_access(NULL),
+    _barrier_data(0)
   {}
 
   DecoratorSet decorators() const { return _decorators; }
@@ -123,6 +127,9 @@ public:
   bool is_oop() const             { return is_reference_type(_type); }
   bool is_raw() const             { return (_decorators & AS_RAW) != 0; }
   Node* raw_access() const        { return _raw_access; }
+
+  uint8_t barrier_data() const        { return _barrier_data; }
+  void set_barrier_data(uint8_t data) { _barrier_data = data; }
 
   void set_raw_access(Node* raw_access) { _raw_access = raw_access; }
   virtual void set_memory() {} // no-op for normal accesses, but not for atomic accesses.
@@ -152,38 +159,28 @@ public:
 
   GraphKit* kit() const           { return _kit; }
 
-  template <typename T>
-  T barrier_set_state_as() const {
-    return reinterpret_cast<T>(barrier_set_state());
-  }
-
   virtual PhaseGVN& gvn() const;
   virtual bool is_parse_access() const { return true; }
 };
 
-// This class wraps a bunch of context parameters thare are passed around in the
+// This class wraps a bunch of context parameters that are passed around in the
 // BarrierSetC2 backend hierarchy, for atomic accesses, to reduce boiler plate.
 class C2AtomicParseAccess: public C2ParseAccess {
   Node* _memory;
   uint  _alias_idx;
-  bool  _needs_pinning;
 
 public:
   C2AtomicParseAccess(GraphKit* kit, DecoratorSet decorators, BasicType type,
                  Node* base, C2AccessValuePtr& addr, uint alias_idx) :
     C2ParseAccess(kit, decorators, type, base, addr),
     _memory(NULL),
-    _alias_idx(alias_idx),
-    _needs_pinning(true) {}
+    _alias_idx(alias_idx) {}
 
   // Set the memory node based on the current memory slice.
   virtual void set_memory();
 
   Node* memory() const       { return _memory; }
   uint alias_idx() const     { return _alias_idx; }
-  bool needs_pinning() const { return _needs_pinning; }
-
-  void set_needs_pinning(bool value)    { _needs_pinning = value; }
 };
 
 // C2Access for optimization time calls to the BarrierSetC2 backend.
@@ -200,11 +197,8 @@ public:
     fixup_decorators();
   }
 
-
   MergeMemNode* mem() const { return _mem; }
   Node* ctl() const { return _ctl; }
-  // void set_mem(Node* mem) { _mem = mem; }
-  void set_ctl(Node* ctl) { _ctl = ctl; }
 
   virtual PhaseGVN& gvn() const { return _gvn; }
   virtual bool is_opt_access() const { return true; }
@@ -243,15 +237,12 @@ public:
 
   virtual void clone(GraphKit* kit, Node* src, Node* dst, Node* size, bool is_array) const;
 
-  virtual Node* resolve(GraphKit* kit, Node* n, DecoratorSet decorators) const { return n; }
-
-  virtual Node* obj_allocate(PhaseMacroExpand* macro, Node* ctrl, Node* mem, Node* toobig_false, Node* size_in_bytes,
+  virtual Node* obj_allocate(PhaseMacroExpand* macro, Node* mem, Node* toobig_false, Node* size_in_bytes,
                              Node*& i_o, Node*& needgc_ctrl,
                              Node*& fast_oop_ctrl, Node*& fast_oop_rawmem,
                              intx prefetch_lines) const;
 
   virtual Node* ideal_node(PhaseGVN* phase, Node* n, bool can_reshape) const { return NULL; }
-  virtual Node* identity_node(PhaseGVN* phase, Node* n) const { return n; }
 
   // These are general helper methods used by C2
   enum ArrayCopyPhase {
@@ -260,14 +251,14 @@ public:
     Expansion
   };
 
-  virtual bool array_copy_requires_gc_barriers(bool tightly_coupled_alloc, BasicType type, bool is_clone, ArrayCopyPhase phase) const { return false; }
+  virtual bool array_copy_requires_gc_barriers(bool tightly_coupled_alloc, BasicType type, bool is_clone, bool is_clone_instance, ArrayCopyPhase phase) const { return false; }
   virtual void clone_at_expansion(PhaseMacroExpand* phase, ArrayCopyNode* ac) const;
 
   // Support for GC barriers emitted during parsing
   virtual bool has_load_barrier_nodes() const { return false; }
+  virtual bool is_gc_pre_barrier_node(Node* node) const { return false; }
   virtual bool is_gc_barrier_node(Node* node) const { return false; }
   virtual Node* step_over_gc_barrier(Node* c) const { return c; }
-  virtual Node* step_over_gc_barrier_ctrl(Node* c) const { return c; }
 
   // Support for macro expanded GC barriers
   virtual void register_potential_barrier_node(Node* node) const { }
@@ -286,40 +277,30 @@ public:
   virtual bool strip_mined_loops_expanded(LoopOptsMode mode) const { return false; }
   virtual bool is_gc_specific_loop_opts_pass(LoopOptsMode mode) const { return false; }
 
-  virtual bool has_special_unique_user(const Node* node) const { return false; }
-
   enum CompilePhase {
     BeforeOptimize,
     BeforeMacroExpand,
     BeforeCodeGen
   };
 
-  virtual bool flatten_gc_alias_type(const TypePtr*& adr_type) const { return false; }
 #ifdef ASSERT
-  virtual bool verify_gc_alias_type(const TypePtr* adr_type, int offset) const { return false; }
   virtual void verify_gc_barriers(Compile* compile, CompilePhase phase) const {}
 #endif
 
-  virtual bool final_graph_reshaping(Compile* compile, Node* n, uint opcode) const { return false; }
+  virtual bool final_graph_reshaping(Compile* compile, Node* n, uint opcode, Unique_Node_List& dead_nodes) const { return false; }
 
   virtual bool escape_add_to_con_graph(ConnectionGraph* conn_graph, PhaseGVN* gvn, Unique_Node_List* delayed_worklist, Node* n, uint opcode) const { return false; }
   virtual bool escape_add_final_edges(ConnectionGraph* conn_graph, PhaseGVN* gvn, Node* n, uint opcode) const { return false; }
   virtual bool escape_has_out_with_unsafe_object(Node* n) const { return false; }
 
-  virtual bool matcher_find_shared_visit(Matcher* matcher, Matcher::MStack& mstack, Node* n, uint opcode, bool& mem_op, int& mem_addr_idx) const { return false; };
   virtual bool matcher_find_shared_post_visit(Matcher* matcher, Node* n, uint opcode) const { return false; };
   virtual bool matcher_is_store_load_barrier(Node* x, uint xop) const { return false; }
-
-  virtual void igvn_add_users_to_worklist(PhaseIterGVN* igvn, Node* use) const { }
-  virtual void ccp_analyze(PhaseCCP* ccp, Unique_Node_List& worklist, Node* use) const { }
-
-  virtual Node* split_if_pre(PhaseIdealLoop* phase, Node* n) const { return NULL; }
-  virtual bool build_loop_late_post(PhaseIdealLoop* phase, Node* n) const { return false; }
-  virtual bool sink_node(PhaseIdealLoop* phase, Node* n, Node* x, Node* x_ctrl, Node* n_ctrl) const { return false; }
 
   virtual void late_barrier_analysis() const { }
   virtual int estimate_stub_size() const { return 0; }
   virtual void emit_stubs(CodeBuffer& cb) const { }
+
+  static int arraycopy_payload_base_offset(bool is_array);
 };
 
 #endif // SHARE_GC_SHARED_C2_BARRIERSETC2_HPP

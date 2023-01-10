@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,7 +26,6 @@
  * @bug      4835749
  * @summary  Make sure exception is not thrown if there is a bad source
  *           file in the same directory as the file being documented.
- * @author   jamieh
  * @library ../../lib
  * @modules jdk.javadoc/jdk.javadoc.internal.tool
  * @build    javadoc.tester.*
@@ -43,7 +42,7 @@ public class TestBadSourceFile extends JavadocTester {
      * @throws Exception if the test fails
      */
     public static void main(String... args) throws Exception {
-        TestBadSourceFile tester = new TestBadSourceFile();
+        var tester = new TestBadSourceFile();
         tester.runTests();
     }
 

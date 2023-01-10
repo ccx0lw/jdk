@@ -56,6 +56,7 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 package jdk.internal.org.objectweb.asm.tree;
 
 import java.util.ArrayList;
@@ -183,7 +184,7 @@ public class FrameNode extends AbstractInsnNode {
         FrameNode clone = new FrameNode();
         clone.type = type;
         if (local != null) {
-            clone.local = new ArrayList<Object>();
+            clone.local = new ArrayList<>();
             for (int i = 0, n = local.size(); i < n; ++i) {
                 Object localElement = local.get(i);
                 if (localElement instanceof LabelNode) {
@@ -193,7 +194,7 @@ public class FrameNode extends AbstractInsnNode {
             }
         }
         if (stack != null) {
-            clone.stack = new ArrayList<Object>();
+            clone.stack = new ArrayList<>();
             for (int i = 0, n = stack.size(); i < n; ++i) {
                 Object stackElement = stack.get(i);
                 if (stackElement instanceof LabelNode) {
@@ -217,3 +218,4 @@ public class FrameNode extends AbstractInsnNode {
         return array;
     }
 }
+

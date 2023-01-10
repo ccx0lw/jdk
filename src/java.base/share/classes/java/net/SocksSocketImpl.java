@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,6 +28,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.BufferedOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.security.AccessController;
 import java.util.Iterator;
 
@@ -56,8 +57,7 @@ class SocksSocketImpl extends DelegatingSocketImpl implements SocksConsts {
     SocksSocketImpl(Proxy proxy, SocketImpl delegate) {
         super(delegate);
         SocketAddress a = proxy.address();
-        if (a instanceof InetSocketAddress) {
-            InetSocketAddress ad = (InetSocketAddress) a;
+        if (a instanceof InetSocketAddress ad) {
             // Use getHostString() to avoid reverse lookups
             server = ad.getHostString();
             serverPort = ad.getPort();
@@ -73,6 +73,7 @@ class SocksSocketImpl extends DelegatingSocketImpl implements SocksConsts {
         return DefaultProxySelector.socksProxyVersion() == 4;
     }
 
+    @SuppressWarnings("removal")
     private synchronized void privilegedConnect(final String host,
                                               final int port,
                                               final int timeout)
@@ -148,6 +149,7 @@ class SocksSocketImpl extends DelegatingSocketImpl implements SocksConsts {
             String userName;
             String password = null;
             final InetAddress addr = InetAddress.getByName(server);
+            @SuppressWarnings("removal")
             PasswordAuthentication pw =
                 java.security.AccessController.doPrivileged(
                     new java.security.PrivilegedAction<>() {
@@ -166,18 +168,10 @@ class SocksSocketImpl extends DelegatingSocketImpl implements SocksConsts {
                 return false;
             out.write(1);
             out.write(userName.length());
-            try {
-                out.write(userName.getBytes("ISO-8859-1"));
-            } catch (java.io.UnsupportedEncodingException uee) {
-                assert false;
-            }
+            out.write(userName.getBytes(StandardCharsets.ISO_8859_1));
             if (password != null) {
                 out.write(password.length());
-                try {
-                    out.write(password.getBytes("ISO-8859-1"));
-                } catch (java.io.UnsupportedEncodingException uee) {
-                    assert false;
-                }
+                out.write(password.getBytes(StandardCharsets.ISO_8859_1));
             } else
                 out.write(0);
             out.flush();
@@ -208,11 +202,7 @@ class SocksSocketImpl extends DelegatingSocketImpl implements SocksConsts {
         out.write((endpoint.getPort() >> 0) & 0xff);
         out.write(endpoint.getAddress().getAddress());
         String userName = getUserName();
-        try {
-            out.write(userName.getBytes("ISO-8859-1"));
-        } catch (java.io.UnsupportedEncodingException uee) {
-            assert false;
-        }
+        out.write(userName.getBytes(StandardCharsets.ISO_8859_1));
         out.write(0);
         out.flush();
         byte[] data = new byte[8];
@@ -221,25 +211,17 @@ class SocksSocketImpl extends DelegatingSocketImpl implements SocksConsts {
             throw new SocketException("Reply from SOCKS server has bad length: " + n);
         if (data[0] != 0 && data[0] != 4)
             throw new SocketException("Reply from SOCKS server has bad version");
-        SocketException ex = null;
-        switch (data[1]) {
-        case 90:
-            // Success!
-            external_address = endpoint;
-            break;
-        case 91:
-            ex = new SocketException("SOCKS request rejected");
-            break;
-        case 92:
-            ex = new SocketException("SOCKS server couldn't reach destination");
-            break;
-        case 93:
-            ex = new SocketException("SOCKS authentication failed");
-            break;
-        default:
-            ex = new SocketException("Reply from SOCKS server contains bad status");
-            break;
-        }
+        SocketException ex = switch (data[1]) {
+            case 90 -> {
+                // Success!
+                external_address = endpoint;
+                yield null;
+            }
+            case 91 -> new SocketException("SOCKS request rejected");
+            case 92 -> new SocketException("SOCKS server couldn't reach destination");
+            case 93 -> new SocketException("SOCKS authentication failed");
+            default -> new SocketException("Reply from SOCKS server contains bad status");
+        };
         if (ex != null) {
             in.close();
             out.close();
@@ -282,10 +264,10 @@ class SocksSocketImpl extends DelegatingSocketImpl implements SocksConsts {
             deadlineMillis = finish < 0 ? Long.MAX_VALUE : finish;
         }
 
+        @SuppressWarnings("removal")
         SecurityManager security = System.getSecurityManager();
-        if (endpoint == null || !(endpoint instanceof InetSocketAddress))
+        if (!(endpoint instanceof InetSocketAddress epoint))
             throw new IllegalArgumentException("Unsupported address type");
-        InetSocketAddress epoint = (InetSocketAddress) endpoint;
         if (security != null) {
             if (epoint.isUnresolved())
                 security.checkConnect(epoint.getHostName(),
@@ -298,6 +280,7 @@ class SocksSocketImpl extends DelegatingSocketImpl implements SocksConsts {
             // This is the general case
             // server is not null only when the socket was created with a
             // specified proxy in which case it does bypass the ProxySelector
+            @SuppressWarnings("removal")
             ProxySelector sel = java.security.AccessController.doPrivileged(
                 new java.security.PrivilegedAction<>() {
                     public ProxySelector run() {
@@ -380,7 +363,7 @@ class SocksSocketImpl extends DelegatingSocketImpl implements SocksConsts {
             try {
                 privilegedConnect(server, serverPort, remainingMillis(deadlineMillis));
             } catch (IOException e) {
-                throw new SocketException(e.getMessage());
+                throw new SocketException(e.getMessage(), e);
             }
         }
 
@@ -427,11 +410,7 @@ class SocksSocketImpl extends DelegatingSocketImpl implements SocksConsts {
         if (epoint.isUnresolved()) {
             out.write(DOMAIN_NAME);
             out.write(epoint.getHostName().length());
-            try {
-                out.write(epoint.getHostName().getBytes("ISO-8859-1"));
-            } catch (java.io.UnsupportedEncodingException uee) {
-                assert false;
-            }
+            out.write(epoint.getHostName().getBytes(StandardCharsets.ISO_8859_1));
             out.write((epoint.getPort() >> 8) & 0xff);
             out.write((epoint.getPort() >> 0) & 0xff);
         } else if (epoint.getAddress() instanceof Inet6Address) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,7 +26,8 @@
 #include "classfile/symbolTable.hpp"
 #include "interpreter/bytecodeStream.hpp"
 #include "memory/universe.hpp"
-#include "oops/fieldStreams.hpp"
+#include "oops/fieldStreams.inline.hpp"
+#include "oops/recordComponent.hpp"
 #include "prims/jvmtiClassFileReconstituter.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/signature.hpp"
@@ -40,8 +41,8 @@ JvmtiConstantPoolReconstituter::JvmtiConstantPoolReconstituter(InstanceKlass* ik
   set_error(JVMTI_ERROR_NONE);
   _ik = ik;
   _cpool = constantPoolHandle(Thread::current(), ik->constants());
-  _symmap = new SymbolHashMap();
-  _classmap = new SymbolHashMap();
+  _symmap = new ConstantPool::SymbolHash();
+  _classmap = new ConstantPool::SymbolHash();
   _cpool_size = _cpool->hash_entries_to(_symmap, _classmap);
   if (_cpool_size == 0) {
     set_error(JVMTI_ERROR_OUT_OF_MEMORY);
@@ -286,6 +287,31 @@ void JvmtiClassFileReconstituter::write_exceptions_attribute(ConstMethod* const_
   }
 }
 
+// Write MethodParameters attribute
+// JVMSpec|   MethodParameters_attribute {
+// JVMSpec|     u2 attribute_name_index;
+// JVMSpec|     u4 attribute_length;
+// JVMSpec|     u1 parameters_count;
+// JVMSpec|     {   u2 name_index;
+// JVMSpec|         u2 access_flags;
+// JVMSpec|     } parameters[parameters_count];
+// JVMSpec|   }
+void JvmtiClassFileReconstituter::write_method_parameter_attribute(const ConstMethod* const_method) {
+  const MethodParametersElement *parameters = const_method->method_parameters_start();
+  int length = const_method->method_parameters_length();
+  assert(length <= max_jubyte, "must fit u1");
+  int size = 1                  // parameters_count
+           + (2 + 2) * length;  // parameters
+
+  write_attribute_name_index("MethodParameters");
+  write_u4(size);
+  write_u1(length);
+  for (int index = 0; index < length; index++) {
+    write_u2(parameters[index].name_cp_index);
+    write_u2(parameters[index].flags);
+  }
+}
+
 // Write SourceFile attribute
 // JVMSpec|   SourceFile_attribute {
 // JVMSpec|     u2 attribute_name_index;
@@ -337,7 +363,7 @@ u2 JvmtiClassFileReconstituter::inner_classes_attribute_length() {
 }
 
 // Write an annotation attribute.  The VM stores them in raw form, so all we need
-// to do is add the attrubute name and fill in the length.
+// to do is add the attribute name and fill in the length.
 // JSR202|   *Annotations_attribute {
 // JSR202|     u2 attribute_name_index;
 // JSR202|     u4 attribute_length;
@@ -423,6 +449,77 @@ void JvmtiClassFileReconstituter::write_nest_members_attribute() {
   }
 }
 
+//  PermittedSubclasses {
+//    u2 attribute_name_index;
+//    u4 attribute_length;
+//    u2 number_of_classes;
+//    u2 classes[number_of_classes];
+//  }
+void JvmtiClassFileReconstituter::write_permitted_subclasses_attribute() {
+  Array<u2>* permitted_subclasses = ik()->permitted_subclasses();
+  int number_of_classes = permitted_subclasses->length();
+  int length = sizeof(u2) * (1 + number_of_classes); // '1 +' is for number_of_classes field
+
+  write_attribute_name_index("PermittedSubclasses");
+  write_u4(length);
+  write_u2(number_of_classes);
+  for (int i = 0; i < number_of_classes; i++) {
+    u2 class_cp_index = permitted_subclasses->at(i);
+    write_u2(class_cp_index);
+  }
+}
+
+//  Record {
+//    u2 attribute_name_index;
+//    u4 attribute_length;
+//    u2 components_count;
+//    component_info components[components_count];
+//  }
+//  component_info {
+//    u2 name_index;
+//    u2 descriptor_index
+//    u2 attributes_count;
+//    attribute_info_attributes[attributes_count];
+//  }
+void JvmtiClassFileReconstituter::write_record_attribute() {
+  Array<RecordComponent*>* components = ik()->record_components();
+  int number_of_components = components->length();
+
+  // Each component has a u2 for name, descr, attribute count
+  int length = sizeof(u2) + (sizeof(u2) * 3 * number_of_components);
+  for (int x = 0; x < number_of_components; x++) {
+    RecordComponent* component = components->at(x);
+    if (component->generic_signature_index() != 0) {
+      length += 8; // Signature attribute size
+      assert(component->attributes_count() > 0, "Bad component attributes count");
+    }
+    if (component->annotations() != NULL) {
+      length += 6 + component->annotations()->length();
+    }
+    if (component->type_annotations() != NULL) {
+      length += 6 + component->type_annotations()->length();
+    }
+  }
+
+  write_attribute_name_index("Record");
+  write_u4(length);
+  write_u2(number_of_components);
+  for (int i = 0; i < number_of_components; i++) {
+    RecordComponent* component = components->at(i);
+    write_u2(component->name_index());
+    write_u2(component->descriptor_index());
+    write_u2(component->attributes_count());
+    if (component->generic_signature_index() != 0) {
+      write_signature_attribute(component->generic_signature_index());
+    }
+    if (component->annotations() != NULL) {
+      write_annotations_attribute("RuntimeVisibleAnnotations", component->annotations());
+    }
+    if (component->type_annotations() != NULL) {
+      write_annotations_attribute("RuntimeVisibleTypeAnnotations", component->type_annotations());
+    }
+  }
+}
 
 // Write InnerClasses attribute
 // JVMSpec|   InnerClasses_attribute {
@@ -617,6 +714,9 @@ void JvmtiClassFileReconstituter::write_method_info(const methodHandle& method) 
   if (default_anno != NULL) {
     ++attr_count;     // has AnnotationDefault attribute
   }
+  if (const_method->has_method_parameters()) {
+    ++attr_count;     // has MethodParameters attribute
+  }
   // Deprecated attribute would go here
   if (access_flags.is_synthetic()) { // FIXME
     // ++attr_count;
@@ -643,6 +743,9 @@ void JvmtiClassFileReconstituter::write_method_info(const methodHandle& method) 
   }
   if (default_anno != NULL) {
     write_annotations_attribute("AnnotationDefault", default_anno);
+  }
+  if (const_method->has_method_parameters()) {
+    write_method_parameter_attribute(const_method);
   }
   // Deprecated attribute would go here
   if (access_flags.is_synthetic()) {
@@ -699,6 +802,12 @@ void JvmtiClassFileReconstituter::write_class_attributes() {
   if (ik()->nest_members() != Universe::the_empty_short_array()) {
     ++attr_count;
   }
+  if (ik()->permitted_subclasses() != Universe::the_empty_short_array()) {
+    ++attr_count;
+  }
+  if (ik()->record_components() != NULL) {
+    ++attr_count;
+  }
 
   write_u2(attr_count);
 
@@ -711,23 +820,29 @@ void JvmtiClassFileReconstituter::write_class_attributes() {
   if (ik()->source_debug_extension() != NULL) {
     write_source_debug_extension_attribute();
   }
-  if (inner_classes_length > 0) {
-    write_inner_classes_attribute(inner_classes_length);
-  }
   if (anno != NULL) {
     write_annotations_attribute("RuntimeVisibleAnnotations", anno);
   }
   if (type_anno != NULL) {
     write_annotations_attribute("RuntimeVisibleTypeAnnotations", type_anno);
   }
-  if (cpool()->operands() != NULL) {
-    write_bootstrapmethod_attribute();
-  }
   if (ik()->nest_host_index() != 0) {
     write_nest_host_attribute();
   }
   if (ik()->nest_members() != Universe::the_empty_short_array()) {
     write_nest_members_attribute();
+  }
+  if (ik()->permitted_subclasses() != Universe::the_empty_short_array()) {
+    write_permitted_subclasses_attribute();
+  }
+  if (ik()->record_components() != NULL) {
+    write_record_attribute();
+  }
+  if (cpool()->operands() != NULL) {
+    write_bootstrapmethod_attribute();
+  }
+  if (inner_classes_length > 0) {
+    write_inner_classes_attribute(inner_classes_length);
   }
 }
 

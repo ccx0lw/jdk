@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,7 +26,6 @@
  * @bug 4914724
  * @summary Test to make sure that "see" tag and "serialField" tag handle supplementary
  *    characters correctly.  This test case needs to be run in en_US locale.
- * @author Naoto Sato
  * @library ../../lib
  * @modules jdk.javadoc/jdk.javadoc.internal.tool
  * @build javadoc.tester.*
@@ -42,7 +41,7 @@ public class TestSupplementary extends JavadocTester {
     public static void main(String... args) throws Exception {
         Locale saveLocale = Locale.getDefault();
         try {
-            TestSupplementary tester = new TestSupplementary();
+            var tester = new TestSupplementary();
             tester.runTests();
         } finally {
             Locale.setDefault(saveLocale);

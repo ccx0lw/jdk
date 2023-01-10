@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -21,22 +21,24 @@
  * questions.
  */
 
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.io.IOException;
-import java.net.URI;
-import java.net.InetSocketAddress;
-import java.net.http.HttpHeaders;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import javax.net.ssl.SSLSession;
 import jdk.internal.net.http.common.HttpHeadersBuilder;
 import jdk.internal.net.http.frame.HeaderFrame;
 import jdk.internal.net.http.frame.HeadersFrame;
 
+import javax.net.ssl.SSLSession;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpHeaders;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+
 public class Http2TestExchangeImpl implements Http2TestExchange {
 
+    static final String HEAD = "HEAD";
     final HttpHeaders reqheaders;
     final HttpHeadersBuilder rspheadersBuilder;
     final URI uri;
@@ -129,7 +131,7 @@ public class Http2TestExchangeImpl implements Http2TestExchange {
     @Override
     public void sendResponseHeaders(int rCode, long responseLength) throws IOException {
         this.responseLength = responseLength;
-        if (responseLength !=0 && rCode != 204) {
+        if (responseLength !=0 && rCode != 204 && !isHeadRequest()) {
                 long clen = responseLength > 0 ? responseLength : 0;
             rspheadersBuilder.setHeader("Content-length", Long.toString(clen));
         }
@@ -143,7 +145,7 @@ public class Http2TestExchangeImpl implements Http2TestExchange {
         response.setFlag(HeaderFrame.END_HEADERS);
 
 
-        if (responseLength < 0) {
+        if (responseLength < 0 || rCode == 204) {
             response.setFlag(HeadersFrame.END_STREAM);
             os.closeInternal();
         }
@@ -190,6 +192,7 @@ public class Http2TestExchangeImpl implements Http2TestExchange {
         }
         HttpHeaders combinedHeaders = headersBuilder.build();
         OutgoingPushPromise pp = new OutgoingPushPromise(streamid, uri, combinedHeaders, content);
+        pp.setFlag(HeaderFrame.END_HEADERS);
 
         try {
             conn.outputQ.put(pp);
@@ -197,5 +200,9 @@ public class Http2TestExchangeImpl implements Http2TestExchange {
         } catch (IOException ex) {
             System.err.println("TestServer: pushPromise exception: " + ex);
         }
+    }
+
+    private boolean isHeadRequest() {
+        return HEAD.equalsIgnoreCase(getRequestMethod());
     }
 }

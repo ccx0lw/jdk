@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -45,6 +45,7 @@
 #include "jni.h"
 #include "jni_util.h"
 #include "jlong.h"
+#include "jdk_util.h"
 #include "io_util.h"
 #include "io_util_md.h"
 #include "java_io_FileSystem.h"
@@ -60,10 +61,6 @@
   #define readdir readdir64
   #define closedir closedir64
   #define stat stat64
-#endif
-
-#if defined(__solaris__) && !defined(NAME_MAX)
-  #define NAME_MAX MAXNAMLEN
 #endif
 
 #if defined(_ALLBSD_SOURCE)
@@ -91,8 +88,6 @@ Java_java_io_UnixFileSystem_initIDs(JNIEnv *env, jclass cls)
 
 /* -- Path operations -- */
 
-extern int canonicalize(char *path, const char *out, int len);
-
 JNIEXPORT jstring JNICALL
 Java_java_io_UnixFileSystem_canonicalize0(JNIEnv *env, jobject this,
                                           jstring pathname)
@@ -101,7 +96,7 @@ Java_java_io_UnixFileSystem_canonicalize0(JNIEnv *env, jobject this,
 
     WITH_PLATFORM_STRING(env, pathname, path) {
         char canonicalPath[PATH_MAX];
-        if (canonicalize((char *)path,
+        if (JDK_Canonicalize((char *)path,
                          canonicalPath, PATH_MAX) < 0) {
             JNU_ThrowIOExceptionWithLastError(env, "Bad pathname");
         } else {
@@ -150,8 +145,8 @@ Java_java_io_UnixFileSystem_getBooleanAttributes0(JNIEnv *env, jobject this,
 }
 
 JNIEXPORT jboolean JNICALL
-Java_java_io_UnixFileSystem_checkAccess(JNIEnv *env, jobject this,
-                                        jobject file, jint a)
+Java_java_io_UnixFileSystem_checkAccess0(JNIEnv *env, jobject this,
+                                         jobject file, jint a)
 {
     jboolean rv = JNI_FALSE;
     int mode = 0;
@@ -179,11 +174,11 @@ Java_java_io_UnixFileSystem_checkAccess(JNIEnv *env, jobject this,
 
 
 JNIEXPORT jboolean JNICALL
-Java_java_io_UnixFileSystem_setPermission(JNIEnv *env, jobject this,
-                                          jobject file,
-                                          jint access,
-                                          jboolean enable,
-                                          jboolean owneronly)
+Java_java_io_UnixFileSystem_setPermission0(JNIEnv *env, jobject this,
+                                           jobject file,
+                                           jint access,
+                                           jboolean enable,
+                                           jboolean owneronly)
 {
     jboolean rv = JNI_FALSE;
 
@@ -228,8 +223,8 @@ Java_java_io_UnixFileSystem_setPermission(JNIEnv *env, jobject this,
 }
 
 JNIEXPORT jlong JNICALL
-Java_java_io_UnixFileSystem_getLastModifiedTime(JNIEnv *env, jobject this,
-                                                jobject file)
+Java_java_io_UnixFileSystem_getLastModifiedTime0(JNIEnv *env, jobject this,
+                                                 jobject file)
 {
     jlong rv = 0;
 
@@ -253,8 +248,8 @@ Java_java_io_UnixFileSystem_getLastModifiedTime(JNIEnv *env, jobject this,
 
 
 JNIEXPORT jlong JNICALL
-Java_java_io_UnixFileSystem_getLength(JNIEnv *env, jobject this,
-                                      jobject file)
+Java_java_io_UnixFileSystem_getLength0(JNIEnv *env, jobject this,
+                                       jobject file)
 {
     jlong rv = 0;
 
@@ -272,8 +267,8 @@ Java_java_io_UnixFileSystem_getLength(JNIEnv *env, jobject this,
 
 
 JNIEXPORT jboolean JNICALL
-Java_java_io_UnixFileSystem_createFileExclusively(JNIEnv *env, jclass cls,
-                                                  jstring pathname)
+Java_java_io_UnixFileSystem_createFileExclusively0(JNIEnv *env, jclass cls,
+                                                   jstring pathname)
 {
     jboolean rv = JNI_FALSE;
 
@@ -312,8 +307,7 @@ Java_java_io_UnixFileSystem_delete0(JNIEnv *env, jobject this,
 
 
 JNIEXPORT jobjectArray JNICALL
-Java_java_io_UnixFileSystem_list(JNIEnv *env, jobject this,
-                                 jobject file)
+Java_java_io_UnixFileSystem_list0(JNIEnv *env, jobject this, jobject file)
 {
     DIR *dir = NULL;
     struct dirent *ptr;
@@ -378,8 +372,8 @@ Java_java_io_UnixFileSystem_list(JNIEnv *env, jobject this,
 
 
 JNIEXPORT jboolean JNICALL
-Java_java_io_UnixFileSystem_createDirectory(JNIEnv *env, jobject this,
-                                            jobject file)
+Java_java_io_UnixFileSystem_createDirectory0(JNIEnv *env, jobject this,
+                                             jobject file)
 {
     jboolean rv = JNI_FALSE;
 
@@ -409,8 +403,8 @@ Java_java_io_UnixFileSystem_rename0(JNIEnv *env, jobject this,
 }
 
 JNIEXPORT jboolean JNICALL
-Java_java_io_UnixFileSystem_setLastModifiedTime(JNIEnv *env, jobject this,
-                                                jobject file, jlong time)
+Java_java_io_UnixFileSystem_setLastModifiedTime0(JNIEnv *env, jobject this,
+                                                 jobject file, jlong time)
 {
     jboolean rv = JNI_FALSE;
 
@@ -445,8 +439,8 @@ Java_java_io_UnixFileSystem_setLastModifiedTime(JNIEnv *env, jobject this,
 
 
 JNIEXPORT jboolean JNICALL
-Java_java_io_UnixFileSystem_setReadOnly(JNIEnv *env, jobject this,
-                                        jobject file)
+Java_java_io_UnixFileSystem_setReadOnly0(JNIEnv *env, jobject this,
+                                         jobject file)
 {
     jboolean rv = JNI_FALSE;
 
@@ -464,8 +458,8 @@ Java_java_io_UnixFileSystem_setReadOnly(JNIEnv *env, jobject this,
 }
 
 JNIEXPORT jlong JNICALL
-Java_java_io_UnixFileSystem_getSpace(JNIEnv *env, jobject this,
-                                     jobject file, jint t)
+Java_java_io_UnixFileSystem_getSpace0(JNIEnv *env, jobject this,
+                                      jobject file, jint t)
 {
     jlong rv = 0L;
 

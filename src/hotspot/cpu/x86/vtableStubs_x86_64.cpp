@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -69,7 +69,7 @@ VtableStub* VtableStubs::create_vtable_stub(int vtable_index) {
 
 #if (!defined(PRODUCT) && defined(COMPILER2))
   if (CountCompiledCalls) {
-    __ incrementl(ExternalAddress((address) SharedRuntime::nof_megamorphic_calls_addr()));
+    __ incrementq(ExternalAddress(SharedRuntime::nof_megamorphic_calls_addr()), rscratch1);
   }
 #endif
 
@@ -80,7 +80,7 @@ VtableStub* VtableStubs::create_vtable_stub(int vtable_index) {
 
   // get receiver klass
   address npe_addr = __ pc();
-  __ load_klass(rax, j_rarg0);
+  __ load_klass(rax, j_rarg0, rscratch1);
 
 #ifndef PRODUCT
   if (DebugVtables) {
@@ -97,7 +97,7 @@ VtableStub* VtableStubs::create_vtable_stub(int vtable_index) {
     // VTABLE TODO: find upper bound for call_VM length.
     start_pc = __ pc();
     __ call_VM(noreg, CAST_FROM_FN_PTR(address, bad_compiled_vtable_index), j_rarg0, rbx);
-    slop_delta  = 480 - (__ pc() - start_pc);
+    slop_delta  = 550 - (__ pc() - start_pc);
     slop_bytes += slop_delta;
     assert(slop_delta >= 0, "negative slop(%d) encountered, adjust code size estimate!", slop_delta);
     __ bind(L);
@@ -116,9 +116,9 @@ VtableStub* VtableStubs::create_vtable_stub(int vtable_index) {
 #ifndef PRODUCT
   if (DebugVtables) {
     Label L;
-    __ cmpptr(method, (int32_t)NULL_WORD);
+    __ cmpptr(method, NULL_WORD);
     __ jcc(Assembler::equal, L);
-    __ cmpptr(Address(method, Method::from_compiled_offset()), (int32_t)NULL_WORD);
+    __ cmpptr(Address(method, Method::from_compiled_offset()), NULL_WORD);
     __ jcc(Assembler::notZero, L);
     __ stop("Vtable entry is NULL");
     __ bind(L);
@@ -147,6 +147,7 @@ VtableStub* VtableStubs::create_itable_stub(int itable_index) {
   if (s == NULL) {
     return NULL;
   }
+
   // Count unused bytes in instruction sequences of variable size.
   // We add them to the computed buffer size in order to avoid
   // overflow in subsequently generated stubs.
@@ -162,7 +163,7 @@ VtableStub* VtableStubs::create_itable_stub(int itable_index) {
 
 #if (!defined(PRODUCT) && defined(COMPILER2))
   if (CountCompiledCalls) {
-    __ incrementl(ExternalAddress((address) SharedRuntime::nof_megamorphic_calls_addr()));
+    __ incrementq(ExternalAddress(SharedRuntime::nof_megamorphic_calls_addr()), rscratch1);
   }
 #endif // PRODUCT
 
@@ -186,7 +187,7 @@ VtableStub* VtableStubs::create_itable_stub(int itable_index) {
   // get receiver klass (also an implicit null-check)
   assert(VtableStub::receiver_location() == j_rarg0->as_VMReg(), "receiver expected in j_rarg0");
   address npe_addr = __ pc();
-  __ load_klass(recv_klass_reg, j_rarg0);
+  __ load_klass(recv_klass_reg, j_rarg0, temp_reg);
 
   start_pc = __ pc();
 
@@ -204,7 +205,7 @@ VtableStub* VtableStubs::create_itable_stub(int itable_index) {
 
   // Get selected method from declaring class and itable index
   const Register method = rbx;
-  __ load_klass(recv_klass_reg, j_rarg0);   // restore recv_klass_reg
+  __ load_klass(recv_klass_reg, j_rarg0, temp_reg);   // restore recv_klass_reg
   __ lookup_interface_method(// inputs: rec. class, interface, itable index
                              recv_klass_reg, holder_klass_reg, itable_index,
                              // outputs: method, scan temp. reg
@@ -233,9 +234,9 @@ VtableStub* VtableStubs::create_itable_stub(int itable_index) {
 #ifdef ASSERT
   if (DebugVtables) {
     Label L2;
-    __ cmpptr(method, (int32_t)NULL_WORD);
+    __ cmpptr(method, NULL_WORD);
     __ jcc(Assembler::equal, L2);
-    __ cmpptr(Address(method, Method::from_compiled_offset()), (int32_t)NULL_WORD);
+    __ cmpptr(Address(method, Method::from_compiled_offset()), NULL_WORD);
     __ jcc(Assembler::notZero, L2);
     __ stop("compiler entrypoint is null");
     __ bind(L2);

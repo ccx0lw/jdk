@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -46,12 +46,20 @@ import static sun.security.ec.ECOperations.IntermediateValueException;
  *   . "SHA256withECDSA"
  *   . "SHA384withECDSA"
  *   . "SHA512withECDSA"
+ *   . "SHA3-224withECDSA"
+ *   . "SHA3-256withECDSA"
+ *   . "SHA3-384withECDSA"
+ *   . "SHA3-512withECDSA"
  *   . "NONEwithECDSAinP1363Format"
  *   . "SHA1withECDSAinP1363Format"
  *   . "SHA224withECDSAinP1363Format"
  *   . "SHA256withECDSAinP1363Format"
  *   . "SHA384withECDSAinP1363Format"
  *   . "SHA512withECDSAinP1363Format"
+ *   . "SHA3-224withECDSAinP1363Format"
+ *   . "SHA3-256withECDSAinP1363Format"
+ *   . "SHA3-384withECDSAinP1363Format"
+ *   . "SHA3-512withECDSAinP1363Format"
  *
  * @since   1.7
  */
@@ -71,9 +79,6 @@ abstract class ECDSASignature extends SignatureSpi {
 
     // public key, if initialized for verifying
     private ECPublicKey publicKey;
-
-    // signature parameters
-    private ECParameterSpec sigParams = null;
 
     // The format. true for the IEEE P1363 format. false (default) for ASN.1
     private final boolean p1363Format;
@@ -278,15 +283,67 @@ abstract class ECDSASignature extends SignatureSpi {
         }
     }
 
+    // Nested class for SHA3_224withECDSA signatures
+    public static final class SHA3_224 extends ECDSASignature {
+        public SHA3_224() {
+           super("SHA3-224");
+        }
+    }
+
+    // Nested class for SHA3_224withECDSAinP1363Format signatures
+    public static final class SHA3_224inP1363Format extends ECDSASignature {
+        public SHA3_224inP1363Format() {
+            super("SHA3-224", true);
+        }
+    }
+
+    // Nested class for SHA3_256withECDSA signatures
+    public static final class SHA3_256 extends ECDSASignature {
+        public SHA3_256() {
+            super("SHA3-256");
+        }
+    }
+
+    // Nested class for SHA3_256withECDSAinP1363Format signatures
+    public static final class SHA3_256inP1363Format extends ECDSASignature {
+        public SHA3_256inP1363Format() {
+            super("SHA3-256", true);
+        }
+    }
+
+    // Nested class for SHA3_384withECDSA signatures
+    public static final class SHA3_384 extends ECDSASignature {
+        public SHA3_384() {
+            super("SHA3-384");
+        }
+    }
+
+    // Nested class for SHA3_384withECDSAinP1363Format signatures
+    public static final class SHA3_384inP1363Format extends ECDSASignature {
+        public SHA3_384inP1363Format() {
+            super("SHA3-384", true);
+        }
+    }
+
+    // Nested class for SHA3_512withECDSA signatures
+    public static final class SHA3_512 extends ECDSASignature {
+        public SHA3_512() {
+            super("SHA3-512");
+        }
+    }
+
+    // Nested class for SHA3_512withECDSAinP1363Format signatures
+    public static final class SHA3_512inP1363Format extends ECDSASignature {
+        public SHA3_512inP1363Format() {
+            super("SHA3-512", true);
+        }
+    }
+
     // initialize for verification. See JCA doc
     @Override
     protected void engineInitVerify(PublicKey publicKey)
     throws InvalidKeyException {
         ECPublicKey key = (ECPublicKey) ECKeyFactory.toECKey(publicKey);
-        if (!isCompatible(this.sigParams, key.getParams())) {
-            throw new InvalidKeyException("Key params does not match signature params");
-        }
-
         // Should check that the supplied key is appropriate for signature
         // algorithm (e.g. P-256 for SHA256withECDSA)
         this.publicKey = key;
@@ -306,10 +363,7 @@ abstract class ECDSASignature extends SignatureSpi {
     protected void engineInitSign(PrivateKey privateKey, SecureRandom random)
     throws InvalidKeyException {
         ECPrivateKey key = (ECPrivateKey) ECKeyFactory.toECKey(privateKey);
-        if (!isCompatible(this.sigParams, key.getParams())) {
-            throw new InvalidKeyException("Key params does not match signature params");
-        }
-
+        ECUtil.checkPrivateKey(key);
         // Should check that the supplied key is appropriate for signature
         // algorithm (e.g. P-256 for SHA256withECDSA)
         this.privateKey = key;
@@ -365,22 +419,14 @@ abstract class ECDSASignature extends SignatureSpi {
         needsReset = true;
     }
 
-    private static boolean isCompatible(ECParameterSpec sigParams,
-            ECParameterSpec keyParams) {
-        if (sigParams == null) {
-            // no restriction on key param
-            return true;
-        }
-        return ECUtil.equals(sigParams, keyParams);
-    }
-
-
     private byte[] signDigestImpl(ECDSAOperations ops, int seedBits,
-        byte[] digest, ECPrivateKeyImpl privImpl, SecureRandom random)
+        byte[] digest, ECPrivateKey priv, SecureRandom random)
         throws SignatureException {
 
         byte[] seedBytes = new byte[(seedBits + 7) / 8];
-        byte[] s = privImpl.getArrayS();
+        byte[] s = priv instanceof ECPrivateKeyImpl
+                ? ((ECPrivateKeyImpl)priv).getArrayS()
+                : ECUtil.sArray(priv.getS(), priv.getParams());
 
         // Attempt to create the signature in a loop that uses new random input
         // each time. The chance of failure is very small assuming the
@@ -401,57 +447,6 @@ abstract class ECDSASignature extends SignatureSpi {
     }
 
 
-    private Optional<byte[]> signDigestImpl(ECPrivateKey privateKey,
-        byte[] digest, SecureRandom random) throws SignatureException {
-
-        if (! (privateKey instanceof ECPrivateKeyImpl)) {
-            return Optional.empty();
-        }
-        ECPrivateKeyImpl privImpl = (ECPrivateKeyImpl) privateKey;
-        ECParameterSpec params = privateKey.getParams();
-
-        // seed is the key size + 64 bits
-        int seedBits = params.getOrder().bitLength() + 64;
-        Optional<ECDSAOperations> opsOpt =
-            ECDSAOperations.forParameters(params);
-        if (opsOpt.isEmpty()) {
-            return Optional.empty();
-        } else {
-            byte[] sig = signDigestImpl(opsOpt.get(), seedBits, digest,
-                privImpl, random);
-            return Optional.of(sig);
-        }
-    }
-
-    private byte[] signDigestNative(ECPrivateKey privateKey, byte[] digest,
-        SecureRandom random) throws SignatureException {
-
-        byte[] s = privateKey.getS().toByteArray();
-        ECParameterSpec params = privateKey.getParams();
-
-        // DER OID
-        byte[] encodedParams = ECUtil.encodeECParameterSpec(null, params);
-        int orderLength = params.getOrder().bitLength();
-
-        // seed is twice the order length (in bytes) plus 1
-        byte[] seed = new byte[(((orderLength + 7) >> 3) + 1) * 2];
-
-        random.nextBytes(seed);
-
-        // random bits needed for timing countermeasures
-        int timingArgument = random.nextInt();
-        // values must be non-zero to enable countermeasures
-        timingArgument |= 1;
-
-        try {
-            return signDigest(digest, s, encodedParams, seed,
-                timingArgument);
-        } catch (GeneralSecurityException e) {
-            throw new SignatureException("Could not sign data", e);
-        }
-
-    }
-
     // sign the data and return the signature. See JCA doc
     @Override
     protected byte[] engineSign() throws SignatureException {
@@ -461,13 +456,17 @@ abstract class ECDSASignature extends SignatureSpi {
         }
 
         byte[] digest = getDigestValue();
-        Optional<byte[]> sigOpt = signDigestImpl(privateKey, digest, random);
-        byte[] sig;
-        if (sigOpt.isPresent()) {
-            sig = sigOpt.get();
-        } else {
-            sig = signDigestNative(privateKey, digest, random);
+        ECParameterSpec params = privateKey.getParams();
+
+        // seed is the key size + 64 bits
+        int seedBits = params.getOrder().bitLength() + 64;
+        Optional<ECDSAOperations> opsOpt =
+            ECDSAOperations.forParameters(params);
+        if (opsOpt.isEmpty()) {
+            throw new SignatureException("Curve not supported: " + params);
         }
+        byte[] sig = signDigestImpl(opsOpt.get(), seedBits, digest, privateKey,
+            random);
 
         if (p1363Format) {
             return sig;
@@ -480,15 +479,24 @@ abstract class ECDSASignature extends SignatureSpi {
     @Override
     protected boolean engineVerify(byte[] signature) throws SignatureException {
 
-        byte[] w;
+        ECPoint w = publicKey.getW();
         ECParameterSpec params = publicKey.getParams();
-        // DER OID
-        byte[] encodedParams = ECUtil.encodeECParameterSpec(null, params);
 
-        if (publicKey instanceof ECPublicKeyImpl) {
-            w = ((ECPublicKeyImpl) publicKey).getEncodedPublicValue();
-        } else { // instanceof ECPublicKey
-            w = ECUtil.encodePoint(publicKey.getW(), params.getCurve());
+        // Partial public key validation
+        try {
+            ECUtil.validatePublicKey(w, params);
+        } catch (InvalidKeyException e) {
+            return false;
+        }
+
+        ECDSAOperations ops = ECDSAOperations.forParameters(params)
+                .orElseThrow(() -> new SignatureException("Curve not supported: " + params));
+
+        // Full public key validation, only necessary when h != 1.
+        if (params.getCofactor() != 1) {
+            if (!ops.getEcOperations().checkOrder(w)) {
+                return false;
+            }
         }
 
         byte[] sig;
@@ -497,12 +505,7 @@ abstract class ECDSASignature extends SignatureSpi {
         } else {
             sig = ECUtil.decodeSignature(signature);
         }
-
-        try {
-            return verifySignedDigest(sig, getDigestValue(), w, encodedParams);
-        } catch (GeneralSecurityException e) {
-            throw new SignatureException("Could not verify signature", e);
-        }
+        return ops.verifySignedDigest(getDigestValue(), sig, w);
     }
 
     // set parameter, not supported. See JCA doc
@@ -515,17 +518,21 @@ abstract class ECDSASignature extends SignatureSpi {
 
     @Override
     protected void engineSetParameter(AlgorithmParameterSpec params)
-    throws InvalidAlgorithmParameterException {
-        if (params != null && !(params instanceof ECParameterSpec)) {
-            throw new InvalidAlgorithmParameterException("No parameter accepted");
+            throws InvalidAlgorithmParameterException {
+        // Interop: some certificates include parameters in an ECDSA
+        // algorithm identifier. We only accept one matching the key.
+        if (params == null) {
+            return;
+        }
+        if (!(params instanceof ECParameterSpec ecparams)) {
+            throw new InvalidAlgorithmParameterException(
+                    "Parameters must be of type ECParameterSpec");
         }
         ECKey key = (this.privateKey == null? this.publicKey : this.privateKey);
-        if ((key != null) && !isCompatible((ECParameterSpec)params, key.getParams())) {
+        if ((key != null) && !ECUtil.equals(ecparams, key.getParams())) {
             throw new InvalidAlgorithmParameterException
                 ("Signature params does not match key params");
         }
-
-        sigParams = (ECParameterSpec) params;
     }
 
     // get parameter, not supported. See JCA doc
@@ -538,52 +545,9 @@ abstract class ECDSASignature extends SignatureSpi {
 
     @Override
     protected AlgorithmParameters engineGetParameters() {
-        if (sigParams == null) {
-            return null;
-        }
-        try {
-            AlgorithmParameters ap = AlgorithmParameters.getInstance("EC");
-            ap.init(sigParams);
-            return ap;
-        } catch (Exception e) {
-            // should never happen
-            throw new ProviderException("Error retrieving EC parameters", e);
-        }
+        // Always return null even if setParameter is called before.
+        // According to RFC 3279 2.2.3 and RFC 5758 3.2, no parameters is
+        // defined for ECDSA AlgorithmIdentifiers.
+        return null;
     }
-
-    /**
-     * Signs the digest using the private key.
-     *
-     * @param digest the digest to be signed.
-     * @param s the private key's S value.
-     * @param encodedParams the curve's DER encoded object identifier.
-     * @param seed the random seed.
-     * @param timing When non-zero, the implmentation will use timing
-     *     countermeasures to hide secrets from timing channels. The EC
-     *     implementation will disable the countermeasures when this value is
-     *     zero, because the underlying EC functions are shared by several
-     *     crypto operations, some of which do not use the countermeasures.
-     *     The high-order 31 bits must be uniformly random. The entropy from
-     *     these bits is used by the countermeasures.
-     *
-     * @return byte[] the signature.
-     */
-    private static native byte[] signDigest(byte[] digest, byte[] s,
-                                            byte[] encodedParams, byte[] seed, int timing)
-        throws GeneralSecurityException;
-
-    /**
-     * Verifies the signed digest using the public key.
-     *
-     * @param signature the signature to be verified. It is encoded
-     *        as a concatenation of the key's R and S values.
-     * @param digest the digest to be used.
-     * @param w the public key's W point (in uncompressed form).
-     * @param encodedParams the curve's DER encoded object identifier.
-     *
-     * @return boolean true if the signature is successfully verified.
-     */
-    private static native boolean verifySignedDigest(byte[] signature,
-                                                     byte[] digest, byte[] w, byte[] encodedParams)
-        throws GeneralSecurityException;
 }

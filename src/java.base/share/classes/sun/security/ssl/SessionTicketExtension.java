@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,13 +25,12 @@
 
 package sun.security.ssl;
 
-import sun.security.action.GetPropertyAction;
-import sun.security.ssl.SSLExtension.ExtensionConsumer;
-import sun.security.ssl.SSLExtension.SSLExtensionSpec;
-import sun.security.ssl.SSLHandshake.HandshakeMessage;
-import sun.security.ssl.SupportedGroupsExtension.SupportedGroups;
-import sun.security.util.HexDumpEncoder;
-
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.text.MessageFormat;
+import java.util.Locale;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
@@ -41,12 +40,11 @@ import javax.net.ssl.SSLProtocolException;
 import static sun.security.ssl.SSLExtension.CH_SESSION_TICKET;
 import static sun.security.ssl.SSLExtension.SH_SESSION_TICKET;
 
-import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
-import java.text.MessageFormat;
-import java.util.Locale;
+import sun.security.action.GetPropertyAction;
+import sun.security.ssl.SSLExtension.ExtensionConsumer;
+import sun.security.ssl.SSLExtension.SSLExtensionSpec;
+import sun.security.ssl.SSLHandshake.HandshakeMessage;
+import sun.security.util.HexDumpEncoder;
 
 /**
  * SessionTicketExtension is an implementation of RFC 5077 with some internals
@@ -112,7 +110,7 @@ final class SessionTicketExtension {
     }
 
     // Crypto key context for session state.  Used with stateless operation.
-    final static class StatelessKey {
+    static final class StatelessKey {
         final long timeout;
         final SecretKey key;
         final int num;
@@ -176,7 +174,7 @@ final class SessionTicketExtension {
 
             synchronized (hc.sslContext.keyHashMap) {
                 // If the current key is no longer expired, it was already
-                // updated by a previous operation and we can return.
+                // updated by a previous operation, and we can return.
                 ssk = hc.sslContext.keyHashMap.get(currentKeyID);
                 if (ssk != null && !ssk.isExpired()) {
                     return ssk;
@@ -237,18 +235,21 @@ final class SessionTicketExtension {
             data = zero;
         }
 
-        SessionTicketSpec(byte[] b) throws IOException {
-            this(ByteBuffer.wrap(b));
+        SessionTicketSpec(HandshakeContext hc, byte[] b) throws IOException {
+            this(hc, ByteBuffer.wrap(b));
         }
 
-        SessionTicketSpec(ByteBuffer buf) throws IOException {
+        SessionTicketSpec(HandshakeContext hc,
+                ByteBuffer buf) throws IOException {
             if (buf == null) {
-                throw new SSLProtocolException(
-                        "SessionTicket buffer too small");
+                throw hc.conContext.fatal(Alert.DECODE_ERROR,
+                        new SSLProtocolException(
+                    "SessionTicket buffer too small"));
             }
             if (buf.remaining() > 65536) {
-                throw new SSLProtocolException(
-                        "SessionTicket buffer too large. " + buf.remaining());
+                throw hc.conContext.fatal(Alert.DECODE_ERROR,
+                        new SSLProtocolException(
+                    "SessionTicket buffer too large. " + buf.remaining()));
             }
 
             data = buf;
@@ -257,7 +258,8 @@ final class SessionTicketExtension {
         public byte[] encrypt(HandshakeContext hc, SSLSessionImpl session) {
             byte[] encrypted;
 
-            if (!hc.handshakeSession.isStatelessable(hc)) {
+            if (!hc.statelessResumption ||
+                    !hc.handshakeSession.isStatelessable()) {
                 return new byte[0];
             }
 
@@ -350,9 +352,10 @@ final class SessionTicketExtension {
             }
 
             MessageFormat messageFormat = new MessageFormat(
-                    "  \"ticket\" : '{'\n" +
-                            "{0}\n" +
-                            "  '}'",
+                    """
+                              "ticket" : '{'
+                            {0}
+                              '}'""",
                     Locale.ENGLISH);
             HexDumpEncoder hexEncoder = new HexDumpEncoder();
 
@@ -366,12 +369,10 @@ final class SessionTicketExtension {
     }
 
     static final class SessionTicketStringizer implements SSLStringizer {
-        SessionTicketStringizer() {}
-
         @Override
-        public String toString(ByteBuffer buffer) {
+        public String toString(HandshakeContext hc, ByteBuffer buffer) {
             try {
-                return new SessionTicketSpec(buffer).toString();
+                return new SessionTicketSpec(hc, buffer).toString();
             } catch (IOException e) {
                 return e.getMessage();
             }
@@ -379,7 +380,7 @@ final class SessionTicketExtension {
     }
 
     private static final class T12CHSessionTicketProducer
-            extends SupportedGroups implements HandshakeProducer {
+            implements HandshakeProducer {
         T12CHSessionTicketProducer() {
         }
 
@@ -401,16 +402,19 @@ final class SessionTicketExtension {
             chc.statelessResumption = true;
 
             // If resumption is not in progress, return an empty value
-            if (!chc.isResumption || chc.resumingSession == null) {
+            if (!chc.isResumption || chc.resumingSession == null
+                    || chc.resumingSession.getPskIdentity() == null
+                    || chc.resumingSession.getProtocolVersion().useTLS13PlusSpec()) {
                 if (SSLLogger.isOn && SSLLogger.isOn("ssl,handshake")) {
                     SSLLogger.fine("Stateless resumption supported");
                 }
-                return new SessionTicketSpec().getEncoded();
+                return new byte[0];
             }
 
             if (chc.localSupportedSignAlgs == null) {
                 chc.localSupportedSignAlgs =
                         SignatureScheme.getSupportedAlgorithms(
+                                chc.sslConfig,
                                 chc.algorithmConstraints, chc.activeProtocols);
             }
 
@@ -446,8 +450,10 @@ final class SessionTicketExtension {
                 return;
             }
 
+            // Regardless of session ticket contents, client allows stateless
+            shc.statelessResumption = true;
+
             if (buffer.remaining() == 0) {
-                shc.statelessResumption = true;
                 if (SSLLogger.isOn && SSLLogger.isOn("ssl,handshake")) {
                     SSLLogger.fine("Client accepts session tickets.");
                 }
@@ -455,23 +461,17 @@ final class SessionTicketExtension {
             }
 
             // Parse the extension.
-            SessionTicketSpec spec;
-            try {
-                 spec = new SessionTicketSpec(buffer);
-            } catch (IOException | RuntimeException e) {
-                if (SSLLogger.isOn && SSLLogger.isOn("ssl,handshake")) {
-                    SSLLogger.fine("SessionTicket data invalid. Doing full " +
-                            "handshake.");
-                }
-                return;
-            }
+            SessionTicketSpec spec = new SessionTicketSpec(shc, buffer);
             ByteBuffer b = spec.decrypt(shc);
             if (b != null) {
                 shc.resumingSession = new SSLSessionImpl(shc, b);
                 shc.isResumption = true;
-                shc.statelessResumption = true;
                 if (SSLLogger.isOn && SSLLogger.isOn("ssl,handshake")) {
                     SSLLogger.fine("Valid stateless session ticket found");
+                }
+            } else {
+                if (SSLLogger.isOn && SSLLogger.isOn("ssl,handshake")) {
+                    SSLLogger.fine("Invalid stateless session ticket found");
                 }
             }
         }
@@ -479,7 +479,7 @@ final class SessionTicketExtension {
 
 
     private static final class T12SHSessionTicketProducer
-            extends SupportedGroups implements HandshakeProducer {
+            implements HandshakeProducer {
         T12SHSessionTicketProducer() {
         }
 
@@ -531,14 +531,8 @@ final class SessionTicketExtension {
                 return;
             }
 
-            try {
-                if (new SessionTicketSpec(buffer) == null) {
-                    return;
-                }
-                chc.statelessResumption = true;
-            } catch (IOException e) {
-                throw chc.conContext.fatal(Alert.UNEXPECTED_MESSAGE, e);
-            }
+            SessionTicketSpec spec = new SessionTicketSpec(chc, buffer);
+            chc.statelessResumption = true;
         }
     }
 }

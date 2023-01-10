@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,11 +27,11 @@
  * @summary Similar to GCDuringDumping.java, this test adds the -XX:SharedArchiveConfigFile
  *          option for testing the interaction with GC and shared strings.
  * @library /test/lib /test/hotspot/jtreg/runtime/cds/appcds /test/hotspot/jtreg/runtime/cds/appcds/test-classes
- * @requires vm.cds.archived.java.heap
- * @modules jdk.jartool/sun.tools.jar
- * @build sun.hotspot.WhiteBox GCDuringDumpTransformer GCSharedStringsDuringDumpWb
- * @run driver ClassFileInstaller sun.hotspot.WhiteBox
- * @run main/othervm/timeout=480 GCSharedStringsDuringDump
+ * @requires vm.cds.write.archived.java.heap
+ * @requires vm.jvmti
+ * @build jdk.test.whitebox.WhiteBox
+ * @run driver jdk.test.lib.helpers.ClassFileInstaller jdk.test.whitebox.WhiteBox
+ * @run driver/timeout=480 GCSharedStringsDuringDump
  */
 
 import java.io.File;
@@ -39,16 +39,21 @@ import java.io.FileOutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import jdk.test.lib.cds.CDSOptions;
+import jdk.test.lib.cds.CDSTestUtils;
 import jdk.test.lib.process.OutputAnalyzer;
 import jdk.test.lib.process.ProcessTools;
-import sun.hotspot.WhiteBox;
+import jdk.test.lib.helpers.ClassFileInstaller;
 
 public class GCSharedStringsDuringDump {
+    static {
+        // EpsilonGC will run out of memory.
+        CDSOptions.disableRuntimePrefixForEpsilonGC();
+    }
     public static String appClasses[] = {
-        "GCSharedStringsDuringDumpWb",
+        GCSharedStringsDuringDumpWb.class.getName(),
     };
     public static String agentClasses[] = {
-        "GCDuringDumpTransformer",
+        GCDuringDumpTransformer.class.getName(),
     };
 
     public static void main(String[] args) throws Throwable {
@@ -64,7 +69,7 @@ public class GCSharedStringsDuringDump {
             "-Xlog:gc*=info,gc+region=trace,gc+alloc+region=debug" : "-showversion";
 
         String sharedArchiveCfgFile =
-            System.getProperty("user.dir") + File.separator + "GCSharedStringDuringDump_gen.txt";
+            CDSTestUtils.getOutputDir() + File.separator + "GCSharedStringDuringDump_gen.txt";
         try (FileOutputStream fos = new FileOutputStream(sharedArchiveCfgFile)) {
             PrintWriter out = new PrintWriter(new OutputStreamWriter(fos));
             out.println("VERSION: 1.0");
@@ -77,7 +82,7 @@ public class GCSharedStringsDuringDump {
             out.close();
         }
 
-        JarBuilder.build(true, "WhiteBox", "sun/hotspot/WhiteBox");
+        JarBuilder.build(true, "WhiteBox", "jdk/test/whitebox/WhiteBox");
         String whiteBoxJar = TestCommon.getTestJar("WhiteBox.jar");
         String bootClassPath = "-Xbootclasspath/a:" + whiteBoxJar;
 
@@ -88,7 +93,7 @@ public class GCSharedStringsDuringDump {
             String extraArg = (i == 0) ? "-showversion" : "-javaagent:" + agentJar;
             String extraOption = (i == 0) ? "-showversion" : "-XX:+AllowArchivingWithJavaAgent";
             OutputAnalyzer output = TestCommon.dump(
-                                appJar, TestCommon.list("GCSharedStringsDuringDumpWb"),
+                                appJar, TestCommon.list(GCSharedStringsDuringDumpWb.class.getName()),
                                 bootClassPath, extraArg, "-Xmx32m", gcLog,
                                 "-XX:SharedArchiveConfigFile=" + sharedArchiveCfgFile,
                                 "-XX:+UnlockDiagnosticVMOptions", extraOption);
@@ -101,7 +106,7 @@ public class GCSharedStringsDuringDump {
                 // Try again with larger heap and NewSize, this should increase the
                 // G1 heap region size to 2M
                 TestCommon.testDump(
-                    appJar, TestCommon.list("GCSharedStringsDuringDumpWb"),
+                    appJar, TestCommon.list(GCSharedStringsDuringDumpWb.class.getName()),
                     bootClassPath, extraArg, "-Xmx8g", "-XX:NewSize=8m", gcLog,
                     "-XX:SharedArchiveConfigFile=" + sharedArchiveCfgFile,
                     "-XX:+UnlockDiagnosticVMOptions", extraOption);
@@ -113,15 +118,13 @@ public class GCSharedStringsDuringDump {
                 extraArg,
                 "-Xlog:cds=info,class+path=info",
                 "-Xmx32m",
-                "-XX:+PrintSharedSpaces",
+                "-Xlog:cds=info",
                 "-XX:+UnlockDiagnosticVMOptions",
                 extraOption,
                 "-XX:+WhiteBoxAPI",
-                "-XX:SharedReadOnlySize=30m",
                 gcLog,
-                "GCSharedStringsDuringDumpWb")
+                GCSharedStringsDuringDumpWb.class.getName())
               .assertNormalExit();
         }
     }
 }
-

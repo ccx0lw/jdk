@@ -56,6 +56,7 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 package jdk.internal.org.objectweb.asm.tree;
 
 import java.util.Map;
@@ -96,9 +97,7 @@ public class MethodInsnNode extends AbstractInsnNode {
       *     jdk.internal.org.objectweb.asm.Type#getInternalName()}).
       * @param name the method's name.
       * @param descriptor the method's descriptor (see {@link jdk.internal.org.objectweb.asm.Type}).
-      * @deprecated use {@link #MethodInsnNode(int, String, String, String, boolean)} instead.
       */
-    @Deprecated
     public MethodInsnNode(
             final int opcode, final String owner, final String name, final String descriptor) {
         this(opcode, owner, name, descriptor, opcode == Opcodes.INVOKEINTERFACE);
@@ -154,3 +153,4 @@ public class MethodInsnNode extends AbstractInsnNode {
         return new MethodInsnNode(opcode, owner, name, desc, itf).cloneAnnotations(this);
     }
 }
+

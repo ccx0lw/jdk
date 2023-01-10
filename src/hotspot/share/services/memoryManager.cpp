@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,13 +23,16 @@
  */
 
 #include "precompiled.hpp"
-#include "classfile/systemDictionary.hpp"
+#include "classfile/javaClasses.hpp"
 #include "classfile/vmSymbols.hpp"
 #include "memory/allocation.inline.hpp"
+#include "memory/universe.hpp"
 #include "oops/oop.inline.hpp"
+#include "oops/oopHandle.inline.hpp"
+#include "runtime/atomic.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/javaCalls.hpp"
-#include "runtime/orderAccess.hpp"
+#include "runtime/mutexLocker.hpp"
 #include "services/lowMemoryDetector.hpp"
 #include "services/management.hpp"
 #include "services/memoryManager.hpp"
@@ -38,10 +41,8 @@
 #include "services/gcNotifier.hpp"
 #include "utilities/dtrace.hpp"
 
-MemoryManager::MemoryManager(const char* name) : _name(name) {
-  _num_pools = 0;
-  (void)const_cast<instanceOop&>(_memory_mgr_obj = instanceOop(NULL));
-}
+MemoryManager::MemoryManager(const char* name) :
+  _num_pools(0), _name(name) {}
 
 int MemoryManager::add_pool(MemoryPool* pool) {
   int index = _num_pools;
@@ -52,6 +53,10 @@ int MemoryManager::add_pool(MemoryPool* pool) {
   }
   pool->add_manager(this);
   return index;
+}
+
+bool MemoryManager::is_manager(instanceHandle mh) const {
+  return mh() == Atomic::load(&_memory_mgr_obj).resolve();
 }
 
 MemoryManager* MemoryManager::get_code_cache_memory_manager() {
@@ -65,13 +70,13 @@ MemoryManager* MemoryManager::get_metaspace_memory_manager() {
 instanceOop MemoryManager::get_memory_manager_instance(TRAPS) {
   // Must do an acquire so as to force ordering of subsequent
   // loads from anything _memory_mgr_obj points to or implies.
-  instanceOop mgr_obj = OrderAccess::load_acquire(&_memory_mgr_obj);
+  oop mgr_obj = Atomic::load_acquire(&_memory_mgr_obj).resolve();
   if (mgr_obj == NULL) {
     // It's ok for more than one thread to execute the code up to the locked region.
     // Extra manager instances will just be gc'ed.
-    Klass* k = Management::sun_management_ManagementFactoryHelper_klass(CHECK_0);
+    Klass* k = Management::sun_management_ManagementFactoryHelper_klass(CHECK_NULL);
 
-    Handle mgr_name = java_lang_String::create_from_str(name(), CHECK_0);
+    Handle mgr_name = java_lang_String::create_from_str(name(), CHECK_NULL);
 
     JavaValue result(T_OBJECT);
     JavaCallArguments args;
@@ -80,7 +85,7 @@ instanceOop MemoryManager::get_memory_manager_instance(TRAPS) {
     Symbol* method_name = NULL;
     Symbol* signature = NULL;
     if (is_gc_memory_manager()) {
-      Klass* extKlass = Management::com_sun_management_internal_GarbageCollectorExtImpl_klass(CHECK_0);
+      Klass* extKlass = Management::com_sun_management_internal_GarbageCollectorExtImpl_klass(CHECK_NULL);
       // com.sun.management.GarbageCollectorMXBean is in jdk.management module which may not be present.
       if (extKlass != NULL) {
         k = extKlass;
@@ -95,6 +100,11 @@ instanceOop MemoryManager::get_memory_manager_instance(TRAPS) {
       signature = vmSymbols::createMemoryManager_signature();
     }
 
+    if (k == nullptr) {
+      fatal("Should have the ManagementFactoryHelper or GarbageCollectorExtImpl class");
+      return nullptr; // silence the compiler
+    }
+
     InstanceKlass* ik = InstanceKlass::cast(k);
 
     JavaCalls::call_static(&result,
@@ -102,25 +112,22 @@ instanceOop MemoryManager::get_memory_manager_instance(TRAPS) {
                            method_name,
                            signature,
                            &args,
-                           CHECK_0);
+                           CHECK_NULL);
 
-    instanceOop m = (instanceOop) result.get_jobject();
+    instanceOop m = (instanceOop) result.get_oop();
     instanceHandle mgr(THREAD, m);
 
     {
       // Get lock before setting _memory_mgr_obj
       // since another thread may have created the instance
-      MutexLocker ml(Management_lock);
+      MutexLocker ml(THREAD, Management_lock);
 
       // Check if another thread has created the management object.  We reload
       // _memory_mgr_obj here because some other thread may have initialized
       // it while we were executing the code before the lock.
-      //
-      // The lock has done an acquire, so the load can't float above it, but
-      // we need to do a load_acquire as above.
-      mgr_obj = OrderAccess::load_acquire(&_memory_mgr_obj);
+      mgr_obj = Atomic::load(&_memory_mgr_obj).resolve();
       if (mgr_obj != NULL) {
-         return mgr_obj;
+         return (instanceOop)mgr_obj;
       }
 
       // Get the address of the object we created via call_special.
@@ -130,15 +137,11 @@ instanceOop MemoryManager::get_memory_manager_instance(TRAPS) {
       // with creating the management object are visible before publishing
       // its address.  The unlock will publish the store to _memory_mgr_obj
       // because it does a release first.
-      OrderAccess::release_store(&_memory_mgr_obj, mgr_obj);
+      Atomic::release_store(&_memory_mgr_obj, OopHandle(Universe::vm_global(), mgr_obj));
     }
   }
 
-  return mgr_obj;
-}
-
-void MemoryManager::oops_do(OopClosure* f) {
-  f->do_oop((oop*) &_memory_mgr_obj);
+  return (instanceOop)mgr_obj;
 }
 
 GCStatInfo::GCStatInfo(int num_pools) {
@@ -177,8 +180,7 @@ GCMemoryManager::GCMemoryManager(const char* name, const char* gc_end_message) :
   MemoryManager(name), _gc_end_message(gc_end_message) {
   _num_collections = 0;
   _last_gc_stat = NULL;
-  _last_gc_lock = new Mutex(Mutex::leaf, "_last_gc_lock", true,
-                            Mutex::_safepoint_check_never);
+  _last_gc_lock = new Mutex(Mutex::nosafepoint, "GCMemoryManager_lock");
   _current_gc_stat = NULL;
   _num_gc_threads = 1;
   _notification_enabled = false;
@@ -201,8 +203,8 @@ void GCMemoryManager::add_pool(MemoryPool* pool, bool always_affected_by_gc) {
 
 void GCMemoryManager::initialize_gc_stat_info() {
   assert(MemoryService::num_memory_pools() > 0, "should have one or more memory pools");
-  _last_gc_stat = new(ResourceObj::C_HEAP, mtGC) GCStatInfo(MemoryService::num_memory_pools());
-  _current_gc_stat = new(ResourceObj::C_HEAP, mtGC) GCStatInfo(MemoryService::num_memory_pools());
+  _last_gc_stat = new GCStatInfo(MemoryService::num_memory_pools());
+  _current_gc_stat = new GCStatInfo(MemoryService::num_memory_pools());
   // tracking concurrent collections we need two objects: one to update, and one to
   // hold the publicly available "last (completed) gc" information.
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -41,19 +41,11 @@
 //
 // Generation                      - abstract base class
 // - DefNewGeneration              - allocation area (copy collected)
-//   - ParNewGeneration            - a DefNewGeneration that is collected by
-//                                   several threads
-// - CardGeneration                 - abstract class adding offset array behavior
-//   - TenuredGeneration             - tenured (old object) space (markSweepCompact)
-//   - ConcurrentMarkSweepGeneration - Mostly Concurrent Mark Sweep Generation
-//                                       (Detlefs-Printezis refinement of
-//                                       Boehm-Demers-Schenker)
+// - TenuredGeneration             - tenured (old object) space (markSweepCompact)
 //
-// The system configurations currently allowed are:
+// The system configuration currently allowed is:
 //
 //   DefNewGeneration + TenuredGeneration
-//
-//   ParNewGeneration + ConcurrentMarkSweepGeneration
 //
 
 class DefNewGeneration;
@@ -62,10 +54,7 @@ class GenerationSpec;
 class CompactibleSpace;
 class ContiguousSpace;
 class CompactPoint;
-class OopsInGenClosure;
 class OopClosure;
-class ScanClosure;
-class FastScanClosure;
 class GenCollectedHeap;
 class GCStats;
 
@@ -82,7 +71,6 @@ struct ScratchBlock {
 class Generation: public CHeapObj<mtGC> {
   friend class VMStructs;
  private:
-  jlong _time_of_last_gc; // time when last gc on this generation happened (ms)
   MemRegion _prev_used_region; // for collectors that want to "remember" a value for
                                // used region at some specific point during collection.
 
@@ -111,20 +99,11 @@ class Generation: public CHeapObj<mtGC> {
   // Initialize the generation.
   Generation(ReservedSpace rs, size_t initial_byte_size);
 
-  // Apply "cl->do_oop" to (the address of) (exactly) all the ref fields in
-  // "sp" that point into younger generations.
-  // The iteration is only over objects allocated at the start of the
-  // iterations; objects allocated as a result of applying the closure are
-  // not included.
-  void younger_refs_in_space_iterate(Space* sp, OopsInGenClosure* cl, uint n_threads);
-
  public:
   // The set of possible generation kinds.
   enum Name {
     DefNew,
-    ParNew,
     MarkSweepCompact,
-    ConcurrentMarkSweep,
     Other
   };
 
@@ -138,7 +117,7 @@ class Generation: public CHeapObj<mtGC> {
   };
 
   // allocate and initialize ("weak") refs processing support
-  virtual void ref_processor_init();
+  void ref_processor_init();
   void set_ref_processor(ReferenceProcessor* rp) {
     assert(_ref_processor == NULL, "clobbering existing _ref_processor");
     _ref_processor = rp;
@@ -146,17 +125,11 @@ class Generation: public CHeapObj<mtGC> {
 
   virtual Generation::Name kind() { return Generation::Other; }
 
-  // This properly belongs in the collector, but for now this
-  // will do.
-  virtual bool refs_discovery_is_atomic() const { return true;  }
-  virtual bool refs_discovery_is_mt()     const { return false; }
-
   // Space inquiries (results in bytes)
   size_t initial_size();
   virtual size_t capacity() const = 0;  // The maximum number of object bytes the
                                         // generation can currently hold.
   virtual size_t used() const = 0;      // The number of used bytes in the gen.
-  virtual size_t used_stable() const;   // The number of used bytes for memory monitoring tools.
   virtual size_t free() const = 0;      // The number of free bytes in the gen.
 
   // Support for java.lang.Runtime.maxMemory(); see CollectedHeap.
@@ -252,24 +225,6 @@ class Generation: public CHeapObj<mtGC> {
   // Like "allocate", but performs any necessary locking internally.
   virtual HeapWord* par_allocate(size_t word_size, bool is_tlab) = 0;
 
-  // Some generation may offer a region for shared, contiguous allocation,
-  // via inlined code (by exporting the address of the top and end fields
-  // defining the extent of the contiguous allocation region.)
-
-  // This function returns "true" iff the heap supports this kind of
-  // allocation.  (More precisely, this means the style of allocation that
-  // increments *top_addr()" with a CAS.) (Default is "no".)
-  // A generation that supports this allocation style must use lock-free
-  // allocation for *all* allocation, since there are times when lock free
-  // allocation will be concurrent with plain "allocate" calls.
-  virtual bool supports_inline_contig_alloc() const { return false; }
-
-  // These functions return the addresses of the fields that define the
-  // boundaries of the contiguous allocation area.  (These fields should be
-  // physically near to one another.)
-  virtual HeapWord* volatile* top_addr() const { return NULL; }
-  virtual HeapWord** end_addr() const { return NULL; }
-
   // Thread-local allocation buffers
   virtual bool supports_tlab_allocation() const { return false; }
   virtual size_t tlab_capacity() const {
@@ -293,26 +248,6 @@ class Generation: public CHeapObj<mtGC> {
   // The "obj_size" argument is just obj->size(), passed along so the caller can
   // avoid repeating the virtual call to retrieve it.
   virtual oop promote(oop obj, size_t obj_size);
-
-  // Thread "thread_num" (0 <= i < ParalleGCThreads) wants to promote
-  // object "obj", whose original mark word was "m", and whose size is
-  // "word_sz".  If possible, allocate space for "obj", copy obj into it
-  // (taking care to copy "m" into the mark word when done, since the mark
-  // word of "obj" may have been overwritten with a forwarding pointer, and
-  // also taking care to copy the klass pointer *last*.  Returns the new
-  // object if successful, or else NULL.
-  virtual oop par_promote(int thread_num, oop obj, markWord m, size_t word_sz);
-
-  // Informs the current generation that all par_promote_alloc's in the
-  // collection have been completed; any supporting data structures can be
-  // reset.  Default is to do nothing.
-  virtual void par_promote_alloc_done(int thread_num) {}
-
-  // Informs the current generation that all oop_since_save_marks_iterates
-  // performed by "thread_num" in the current collection, if any, have been
-  // completed; any supporting data structures can be reset.  Default is to
-  // do nothing.
-  virtual void par_oop_since_save_marks_iterate_done(int thread_num) {}
 
   // Returns "true" iff collect() should subsequently be called on this
   // this generation. See comment below.
@@ -354,9 +289,7 @@ class Generation: public CHeapObj<mtGC> {
   // successful, perform the allocation and return the resulting
   // "oop" (initializing the allocated block). If the allocation is
   // still unsuccessful, return "NULL".
-  virtual HeapWord* expand_and_allocate(size_t word_size,
-                                        bool is_tlab,
-                                        bool parallel = false) = 0;
+  virtual HeapWord* expand_and_allocate(size_t word_size, bool is_tlab) = 0;
 
   // Some generations may require some cleanup or preparation actions before
   // allowing a collection.  The default is to do nothing.
@@ -372,25 +305,6 @@ class Generation: public CHeapObj<mtGC> {
   // Some generations may need to be "fixed-up" after some allocation
   // activity to make them parsable again. The default is to do nothing.
   virtual void ensure_parsability() {}
-
-  // Time (in ms) when we were last collected or now if a collection is
-  // in progress.
-  virtual jlong time_of_last_gc(jlong now) {
-    // Both _time_of_last_gc and now are set using a time source
-    // that guarantees monotonically non-decreasing values provided
-    // the underlying platform provides such a source. So we still
-    // have to guard against non-monotonicity.
-    NOT_PRODUCT(
-      if (now < _time_of_last_gc) {
-        log_warning(gc)("time warp: " JLONG_FORMAT " to " JLONG_FORMAT, _time_of_last_gc, now);
-      }
-    )
-    return _time_of_last_gc;
-  }
-
-  virtual void update_time_of_last_gc(jlong now)  {
-    _time_of_last_gc = now;
-  }
 
   // Generations may keep statistics about collection. This method
   // updates those statistics. current_generation is the generation
@@ -410,21 +324,6 @@ class Generation: public CHeapObj<mtGC> {
   virtual void compact();
   virtual void post_compact() { ShouldNotReachHere(); }
 #endif
-
-  // Support for CMS's rescan. In this general form we return a pointer
-  // to an abstract object that can be used, based on specific previously
-  // decided protocols, to exchange information between generations,
-  // information that may be useful for speeding up certain types of
-  // garbage collectors. A NULL value indicates to the client that
-  // no data recording is expected by the provider. The data-recorder is
-  // expected to be GC worker thread-local, with the worker index
-  // indicated by "thr_num".
-  virtual void* get_data_recorder(int thr_num) { return NULL; }
-  virtual void sample_eden_chunk() {}
-
-  // Some generations may require some cleanup actions before allowing
-  // a verification.
-  virtual void prepare_for_verify() {}
 
   // Accessing "marks".
 
@@ -480,22 +379,6 @@ class Generation: public CHeapObj<mtGC> {
   // each.
   virtual void object_iterate(ObjectClosure* cl);
 
-  // Iterate over all safe objects in the generation, calling "cl.do_object" on
-  // each.  An object is safe if its references point to other objects in
-  // the heap.  This defaults to object_iterate() unless overridden.
-  virtual void safe_object_iterate(ObjectClosure* cl);
-
-  // Apply "cl->do_oop" to (the address of) all and only all the ref fields
-  // in the current generation that contain pointers to objects in younger
-  // generations. Objects allocated since the last "save_marks" call are
-  // excluded.
-  virtual void younger_refs_iterate(OopsInGenClosure* cl, uint n_threads) = 0;
-
-  // Inform a generation that it longer contains references to objects
-  // in any younger generation.    [e.g. Because younger gens are empty,
-  // clear the card table.]
-  virtual void clear_remembered_set() { }
-
   // Inform a generation that some of its objects have moved.  [e.g. The
   // generation's spaces were compacted, invalidating the card table.]
   virtual void invalidate_remembered_set() { }
@@ -516,8 +399,6 @@ class Generation: public CHeapObj<mtGC> {
   // Requires "addr" to be the start of a block, and returns "TRUE" iff
   // the block is an object.
   virtual bool block_is_obj(const HeapWord* addr) const;
-
-  void print_heap_change(size_t prev_used) const;
 
   virtual void print() const;
   virtual void print_on(outputStream* st) const;

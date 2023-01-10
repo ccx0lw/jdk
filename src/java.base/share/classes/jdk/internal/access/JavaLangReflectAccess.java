@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -96,7 +96,17 @@ public interface JavaLangReflectAccess {
     /** Gets the root of the given AccessibleObject object; null if arg is the root */
     public <T extends AccessibleObject> T getRoot(T obj);
 
+    /** Tests if this is a trusted final field */
+    public boolean isTrustedFinalField(Field f);
+
     /** Returns a new instance created by the given constructor with access check */
     public <T> T newInstance(Constructor<T> ctor, Object[] args, Class<?> caller)
         throws IllegalAccessException, InstantiationException, InvocationTargetException;
+
+    /** Invokes the given default method if the method's declaring interface is
+     *  accessible to the given caller.  Otherwise, IllegalAccessException will
+     *  be thrown.  If the caller is null, no access check is performed.
+     */
+    public Object invokeDefault(Object proxy, Method method, Object[] args, Class<?> caller)
+        throws Throwable;
 }

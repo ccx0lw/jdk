@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1995, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1995, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -46,8 +46,7 @@ package java.io;
  * @see     java.io.DataOutputStream
  * @since   1.0
  */
-public
-interface DataOutput {
+public interface DataOutput {
     /**
      * Writes to the output stream the eight
      * low-order bits of the argument {@code b}.
@@ -72,7 +71,7 @@ interface DataOutput {
      * @param      b   the data.
      * @throws     IOException  if an I/O error occurs.
      */
-    void write(byte b[]) throws IOException;
+    void write(byte[] b) throws IOException;
 
     /**
      * Writes {@code len} bytes from array
@@ -93,8 +92,11 @@ interface DataOutput {
      * @param      off   the start offset in the data.
      * @param      len   the number of bytes to write.
      * @throws     IOException  if an I/O error occurs.
+     * @throws     IndexOutOfBoundsException If {@code off} is negative,
+     *             {@code len} is negative, or {@code len} is greater than
+     *             {@code b.length - off}
      */
-    void write(byte b[], int off, int len) throws IOException;
+    void write(byte[] b, int off, int len) throws IOException;
 
     /**
      * Writes a {@code boolean} value to this output stream.
@@ -114,8 +116,8 @@ interface DataOutput {
     void writeBoolean(boolean v) throws IOException;
 
     /**
-     * Writes to the output stream the eight low-
-     * order bits of the argument {@code v}.
+     * Writes to the output stream the eight low-order
+     * bits of the argument {@code v}.
      * The 24 high-order bits of {@code v}
      * are ignored. (This means  that {@code writeByte}
      * does exactly the same thing as {@code write}
@@ -141,7 +143,7 @@ interface DataOutput {
      * }</pre> <p>
      * The bytes written by this method may be
      * read by the {@code readShort} method
-     * of interface {@code DataInput} , which
+     * of interface {@code DataInput}, which
      * will then return a {@code short} equal
      * to {@code (short)v}.
      *
@@ -162,7 +164,7 @@ interface DataOutput {
      * }</pre><p>
      * The bytes written by this method may be
      * read by the {@code readChar} method
-     * of interface {@code DataInput} , which
+     * of interface {@code DataInput}, which
      * will then return a {@code char} equal
      * to {@code (char)v}.
      *
@@ -184,7 +186,7 @@ interface DataOutput {
      * }</pre><p>
      * The bytes written by this method may be read
      * by the {@code readInt} method of interface
-     * {@code DataInput} , which will then
+     * {@code DataInput}, which will then
      * return an {@code int} equal to {@code v}.
      *
      * @param      v   the {@code int} value to be written.
@@ -209,7 +211,7 @@ interface DataOutput {
      * }</pre><p>
      * The bytes written by this method may be
      * read by the {@code readLong} method
-     * of interface {@code DataInput} , which
+     * of interface {@code DataInput}, which
      * will then return a {@code long} equal
      * to {@code v}.
      *
@@ -344,7 +346,7 @@ interface DataOutput {
      * string {@code s} is written.<p>  The
      * bytes written by this method may be read
      * by the {@code readUTF} method of interface
-     * {@code DataInput} , which will then
+     * {@code DataInput}, which will then
      * return a {@code String} equal to {@code s}.
      *
      * @param      s   the string value to be written.

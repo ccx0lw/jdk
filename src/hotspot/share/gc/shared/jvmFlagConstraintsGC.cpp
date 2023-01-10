@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -30,15 +30,14 @@
 #include "gc/shared/jvmFlagConstraintsGC.hpp"
 #include "gc/shared/plab.hpp"
 #include "gc/shared/threadLocalAllocBuffer.hpp"
+#include "gc/shared/tlab_globals.hpp"
 #include "runtime/arguments.hpp"
 #include "runtime/globals.hpp"
 #include "runtime/globals_extension.hpp"
-#include "runtime/thread.inline.hpp"
+#include "runtime/javaThread.hpp"
 #include "utilities/align.hpp"
 #include "utilities/macros.hpp"
-#if INCLUDE_CMSGC
-#include "gc/cms/jvmFlagConstraintsCMS.hpp"
-#endif
+#include "utilities/powerOfTwo.hpp"
 #if INCLUDE_G1GC
 #include "gc/g1/jvmFlagConstraintsG1.hpp"
 #endif
@@ -65,36 +64,12 @@ JVMFlag::Error ParallelGCThreadsConstraintFunc(uint value, bool verbose) {
   }
 #endif
 
-#if INCLUDE_CMSGC
-  status = ParallelGCThreadsConstraintFuncCMS(value, verbose);
-  if (status != JVMFlag::SUCCESS) {
-    return status;
-  }
-#endif
-
   return status;
 }
 
-// As ConcGCThreads should be smaller than ParallelGCThreads,
-// we need constraint function.
-JVMFlag::Error ConcGCThreadsConstraintFunc(uint value, bool verbose) {
-  // CMS and G1 GCs use ConcGCThreads.
-  if ((GCConfig::is_gc_selected(CollectedHeap::CMS) ||
-       GCConfig::is_gc_selected(CollectedHeap::G1)) && (value > ParallelGCThreads)) {
-    JVMFlag::printError(verbose,
-                        "ConcGCThreads (" UINT32_FORMAT ") must be "
-                        "less than or equal to ParallelGCThreads (" UINT32_FORMAT ")\n",
-                        value, ParallelGCThreads);
-    return JVMFlag::VIOLATES_CONSTRAINT;
-  }
-
-  return JVMFlag::SUCCESS;
-}
-
 static JVMFlag::Error MinPLABSizeBounds(const char* name, size_t value, bool verbose) {
-  if ((GCConfig::is_gc_selected(CollectedHeap::CMS) ||
-       GCConfig::is_gc_selected(CollectedHeap::G1)  ||
-       GCConfig::is_gc_selected(CollectedHeap::Parallel)) && (value < PLAB::min_size())) {
+  if ((GCConfig::is_gc_selected(CollectedHeap::G1) || GCConfig::is_gc_selected(CollectedHeap::Parallel)) &&
+      (value < PLAB::min_size())) {
     JVMFlag::printError(verbose,
                         "%s (" SIZE_FORMAT ") must be "
                         "greater than or equal to ergonomic PLAB minimum size (" SIZE_FORMAT ")\n",
@@ -106,8 +81,7 @@ static JVMFlag::Error MinPLABSizeBounds(const char* name, size_t value, bool ver
 }
 
 JVMFlag::Error MaxPLABSizeBounds(const char* name, size_t value, bool verbose) {
-  if ((GCConfig::is_gc_selected(CollectedHeap::CMS) ||
-       GCConfig::is_gc_selected(CollectedHeap::G1)  ||
+  if ((GCConfig::is_gc_selected(CollectedHeap::G1) ||
        GCConfig::is_gc_selected(CollectedHeap::Parallel)) && (value > PLAB::max_size())) {
     JVMFlag::printError(verbose,
                         "%s (" SIZE_FORMAT ") must be "
@@ -135,11 +109,6 @@ JVMFlag::Error YoungPLABSizeConstraintFunc(size_t value, bool verbose) {
 JVMFlag::Error OldPLABSizeConstraintFunc(size_t value, bool verbose) {
   JVMFlag::Error status = JVMFlag::SUCCESS;
 
-#if INCLUDE_CMSGC
-  if (UseConcMarkSweepGC) {
-    return OldPLABSizeConstraintFuncCMS(value, verbose);
-  } else
-#endif
   {
     status = MinMaxPLABSizeBounds("OldPLABSize", value, verbose);
   }
@@ -189,6 +158,7 @@ JVMFlag::Error SoftRefLRUPolicyMSPerMBConstraintFunc(intx value, bool verbose) {
 }
 
 JVMFlag::Error MarkStackSizeConstraintFunc(size_t value, bool verbose) {
+  // value == 0 is handled by the range constraint.
   if (value > MarkStackSizeMax) {
     JVMFlag::printError(verbose,
                         "MarkStackSize (" SIZE_FORMAT ") must be "
@@ -275,18 +245,6 @@ JVMFlag::Error GCPauseIntervalMillisConstraintFunc(uintx value, bool verbose) {
   }
 #endif
 
-  return JVMFlag::SUCCESS;
-}
-
-JVMFlag::Error InitialBootClassLoaderMetaspaceSizeConstraintFunc(size_t value, bool verbose) {
-  size_t aligned_max = align_down(max_uintx/2, Metaspace::reserve_alignment_words());
-  if (value > aligned_max) {
-    JVMFlag::printError(verbose,
-                        "InitialBootClassLoaderMetaspaceSize (" SIZE_FORMAT ") must be "
-                        "less than or equal to aligned maximum value (" SIZE_FORMAT ")\n",
-                        value, aligned_max);
-    return JVMFlag::VIOLATES_CONSTRAINT;
-  }
   return JVMFlag::SUCCESS;
 }
 
@@ -466,22 +424,15 @@ JVMFlag::Error MaxMetaspaceSizeConstraintFunc(size_t value, bool verbose) {
   }
 }
 
-JVMFlag::Error SurvivorAlignmentInBytesConstraintFunc(intx value, bool verbose) {
-  if (value != 0) {
-    if (!is_power_of_2(value)) {
-      JVMFlag::printError(verbose,
-                          "SurvivorAlignmentInBytes (" INTX_FORMAT ") must be "
-                          "power of 2\n",
-                          value);
-      return JVMFlag::VIOLATES_CONSTRAINT;
-    }
-    if (value < ObjectAlignmentInBytes) {
-      JVMFlag::printError(verbose,
-                          "SurvivorAlignmentInBytes (" INTX_FORMAT ") must be "
-                          "greater than or equal to ObjectAlignmentInBytes (" INTX_FORMAT ")\n",
-                          value, ObjectAlignmentInBytes);
-      return JVMFlag::VIOLATES_CONSTRAINT;
-    }
+JVMFlag::Error GCCardSizeInBytesConstraintFunc(uint value, bool verbose) {
+  if (!is_power_of_2(value)) {
+    JVMFlag::printError(verbose,
+                        "GCCardSizeInBytes ( %u ) must be "
+                        "a power of 2\n",
+                        value);
+    return JVMFlag::VIOLATES_CONSTRAINT;
+  } else {
+    return JVMFlag::SUCCESS;
   }
-  return JVMFlag::SUCCESS;
 }
+

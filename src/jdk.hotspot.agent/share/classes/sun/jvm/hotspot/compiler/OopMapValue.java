@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2008, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -30,6 +30,8 @@ import sun.jvm.hotspot.code.*;
 import sun.jvm.hotspot.runtime.*;
 import sun.jvm.hotspot.types.*;
 import sun.jvm.hotspot.utilities.*;
+import sun.jvm.hotspot.utilities.Observable;
+import sun.jvm.hotspot.utilities.Observer;
 
 public class OopMapValue {
   private short value;
@@ -75,7 +77,7 @@ public class OopMapValue {
     DERIVED_OOP_VALUE      = db.lookupIntConstant("OopMapValue::derived_oop_value").intValue();
   }
 
-  public static abstract class OopTypes {
+  public abstract static class OopTypes {
     public static final OopTypes OOP_VALUE          = new OopTypes() { int getValue() { return OopMapValue.OOP_VALUE;          }};
     public static final OopTypes NARROWOOP_VALUE    = new OopTypes() { int getValue() { return OopMapValue.NARROWOOP_VALUE;         }};
     public static final OopTypes CALLEE_SAVED_VALUE = new OopTypes() { int getValue() { return OopMapValue.CALLEE_SAVED_VALUE; }};

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,27 +28,33 @@ package jdk.jfr.internal;
 import java.security.AccessControlContext;
 import java.security.AccessController;
 import java.security.PrivilegedAction;
-import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
 import jdk.jfr.Event;
 import jdk.jfr.EventType;
 
 public final class RequestEngine {
+    enum PeriodicType {
+        BEGIN_CHUNK, INTERVAL, END_CHUNK
+    }
 
-    private final static JVM jvm = JVM.getJVM();
+    private static final JVM jvm = JVM.getJVM();
+    private static final ReentrantLock lock = new ReentrantLock();
 
-    final static class RequestHook {
+    static final class RequestHook {
         private final Runnable hook;
         private final PlatformEventType type;
+        @SuppressWarnings("removal")
         private final AccessControlContext accessControllerContext;
         private long delta;
 
         // Java events
-        private RequestHook(AccessControlContext acc, PlatformEventType eventType, Runnable hook) {
+        private RequestHook(@SuppressWarnings("removal") AccessControlContext acc, PlatformEventType eventType, Runnable hook) {
             this.hook = hook;
             this.type = eventType;
             this.accessControllerContext = acc;
@@ -59,34 +65,51 @@ public final class RequestEngine {
             this(null, eventType, null);
         }
 
-        private void execute() {
+        private void execute(long timestamp, PeriodicType periodicType) {
             try {
                 if (accessControllerContext == null) { // native
                     if (type.isJDK()) {
                         hook.run();
                     } else {
-                        jvm.emitEvent(type.getId(), JVM.counterTime(), 0);
+                        emitJVMEvent(type, timestamp, periodicType);
                     }
-                    Logger.log(LogTag.JFR_SYSTEM_EVENT, LogLevel.DEBUG, ()-> "Executed periodic hook for " + type.getLogName());
+                    if (Logger.shouldLog(LogTag.JFR_SYSTEM, LogLevel.DEBUG)) {
+                        Logger.log(LogTag.JFR_SYSTEM, LogLevel.DEBUG, "Executed periodic hook for " + type.getLogName());
+                    }
                 } else {
                     executeSecure();
                 }
             } catch (Throwable e) {
                 // Prevent malicious user to propagate exception callback in the wrong context
-                Logger.log(LogTag.JFR_SYSTEM_EVENT, LogLevel.WARN, "Exception occured during execution of period hook for " + type.getLogName());
+                Logger.log(LogTag.JFR_SYSTEM, LogLevel.WARN, "Exception occurred during execution of period hook for " + type.getLogName());
             }
         }
 
+        private void emitJVMEvent(PlatformEventType type, long timestamp, PeriodicType periodicType) {
+            try {
+                // There should only be one thread in native at a time.
+                // ReentrantLock is used to avoid JavaMonitorBlocked event
+                // from synchronized block.
+                lock.lock();
+                jvm.emitEvent(type.getId(), timestamp, periodicType.ordinal());
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        @SuppressWarnings("removal")
         private void executeSecure() {
             AccessController.doPrivileged(new PrivilegedAction<Void>() {
                 @Override
                 public Void run() {
                     try {
                         hook.run();
-                        Logger.log(LogTag.JFR_EVENT, LogLevel.DEBUG, ()-> "Executed periodic hook for " + type.getLogName());
+                        if (Logger.shouldLog(LogTag.JFR_EVENT, LogLevel.DEBUG)) {
+                            Logger.log(LogTag.JFR_EVENT, LogLevel.DEBUG, "Executed periodic hook for " + type.getLogName());
+                        }
                     } catch (Throwable t) {
                         // Prevent malicious user to propagate exception callback in the wrong context
-                        Logger.log(LogTag.JFR_EVENT, LogLevel.WARN, "Exception occured during execution of period hook for " + type.getLogName());
+                        Logger.log(LogTag.JFR_EVENT, LogLevel.WARN, "Exception occurred during execution of period hook for " + type.getLogName());
                     }
                     return null;
                 }
@@ -94,15 +117,17 @@ public final class RequestEngine {
         }
     }
 
-    private final static List<RequestHook> entries = new CopyOnWriteArrayList<>();
+    private static final List<RequestHook> entries = new CopyOnWriteArrayList<>();
     private static long lastTimeMillis;
+    private static long flushInterval = Long.MAX_VALUE;
+    private static long streamDelta;
 
-    public static void addHook(AccessControlContext acc, PlatformEventType type, Runnable hook) {
+    public static void addHook(@SuppressWarnings("removal") AccessControlContext acc, PlatformEventType type, Runnable hook) {
         Objects.requireNonNull(acc);
         addHookInternal(acc, type, hook);
     }
 
-    private static void addHookInternal(AccessControlContext acc, PlatformEventType type, Runnable hook) {
+    private static void addHookInternal(@SuppressWarnings("removal") AccessControlContext acc, PlatformEventType type, Runnable hook) {
         RequestHook he = new RequestHook(acc, type, hook);
         for (RequestHook e : entries) {
             if (e.hook == hook) {
@@ -130,10 +155,10 @@ public final class RequestEngine {
     }
 
     private static void logHook(String action, PlatformEventType type) {
-        if (type.isJDK() || type.isJVM()) {
-            Logger.log(LogTag.JFR_SYSTEM_EVENT, LogLevel.INFO, action + " periodic hook for " + type.getLogName());
+        if (type.isSystem()) {
+            Logger.log(LogTag.JFR_SYSTEM, LogLevel.INFO, action + " periodic hook for " + type.getLogName());
         } else {
-            Logger.log(LogTag.JFR_EVENT, LogLevel.INFO, action + " periodic hook for " + type.getLogName());
+            Logger.log(LogTag.JFR, LogLevel.INFO, action + " periodic hook for " + type.getLogName());
         }
     }
 
@@ -153,45 +178,41 @@ public final class RequestEngine {
     // Only to be used for JVM events. No access control contest
     // or check if hook already exists
     static void addHooks(List<RequestHook> newEntries) {
-        List<RequestHook> addEntries = new ArrayList<>();
         for (RequestHook rh : newEntries) {
             rh.type.setEventHook(true);
-            addEntries.add(rh);
             logHook("Added", rh.type);
         }
         entries.addAll(newEntries);
     }
 
     static void doChunkEnd() {
-        doChunk(x -> x.isEndChunk());
+        doChunk(x -> x.isEndChunk(), PeriodicType.END_CHUNK);
     }
 
     static void doChunkBegin() {
-        doChunk(x -> x.isBeginChunk());
+        doChunk(x -> x.isBeginChunk(), PeriodicType.BEGIN_CHUNK);
     }
 
-    private static void doChunk(Predicate<PlatformEventType> predicate) {
+    private static void doChunk(Predicate<PlatformEventType> predicate, PeriodicType type) {
+        long timestamp = JVM.counterTime();
         for (RequestHook requestHook : entries) {
             PlatformEventType s = requestHook.type;
             if (s.isEnabled() && predicate.test(s)) {
-                requestHook.execute();
+                requestHook.execute(timestamp, type);
             }
         }
     }
 
     static long doPeriodic() {
-        return run_requests(entries);
+        return run_requests(entries, JVM.counterTime());
     }
 
     // code copied from native impl.
-    private static long run_requests(Collection<RequestHook> entries) {
+    private static long run_requests(Collection<RequestHook> entries, long eventTimestamp) {
         long last = lastTimeMillis;
-        // Bug 9000556 - current time millis has rather lame resolution
-        // The use of os::elapsed_counter() is deliberate here, we don't
-        // want it exchanged for os::ft_elapsed_counter().
-        // Keeping direct call os::elapsed_counter() here for reliable
-        // real time values in order to decide when registered requestable
-        // events are due.
+        // The interval for periodic events is typically at least 1 s, so
+        // System.currentTimeMillis() is sufficient. JVM.counterTime() lacks
+        // unit and has in the past been more unreliable.
         long now = System.currentTimeMillis();
         long min = 0;
         long delta = 0;
@@ -209,11 +230,13 @@ public final class RequestEngine {
             lastTimeMillis = now;
             return 0;
         }
-        for (RequestHook he : entries) {
+        Iterator<RequestHook> hookIterator = entries.iterator();
+        while(hookIterator.hasNext()) {
+            RequestHook he = hookIterator.next();
             long left = 0;
             PlatformEventType es = he.type;
             // Not enabled, skip.
-            if (!es.isEnabled() || es.isEveryChunk()) {
+            if (!es.isEnabled() || es.isChunkTime()) {
                 continue;
             }
             long r_period = es.getPeriod();
@@ -227,14 +250,13 @@ public final class RequestEngine {
                 // Bug 9000556 - don't try to compensate
                 // for wait > period
                 r_delta = 0;
-                he.execute();
-                ;
+                he.execute(eventTimestamp, PeriodicType.INTERVAL);
             }
 
             // calculate time left
             left = (r_period - r_delta);
 
-            /**
+            /*
              * nothing outside checks that a period is >= 0, so left can end up
              * negative here. ex. (r_period =(-1)) - (r_delta = 0) if it is,
              * handle it.
@@ -250,7 +272,40 @@ public final class RequestEngine {
                 min = left;
             }
         }
+        // Flush should happen after all periodic events has been emitted
+        // Repeat of the above algorithm, but using the stream interval.
+        if (flushInterval != Long.MAX_VALUE) {
+            long r_period = flushInterval;
+            long r_delta = streamDelta;
+            r_delta += delta;
+            if (r_delta >= r_period) {
+                r_delta = 0;
+                MetadataRepository.getInstance().flush();
+                Utils.notifyFlush();
+            }
+            long left = (r_period - r_delta);
+            if (left < 0) {
+                left = 0;
+            }
+            streamDelta = r_delta;
+            if (min == 0 || left < min) {
+                min = left;
+            }
+        }
+
         lastTimeMillis = now;
         return min;
+    }
+
+    static void setFlushInterval(long millis) {
+        // Don't accept shorter interval than 1 s.
+        long interval = millis < 1000 ? 1000 : millis;
+        boolean needNotify = interval < flushInterval;
+        flushInterval = interval;
+        if (needNotify) {
+            synchronized (JVM.CHUNK_ROTATION_MONITOR) {
+                JVM.CHUNK_ROTATION_MONITOR.notifyAll();
+            }
+        }
     }
 }

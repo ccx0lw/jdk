@@ -34,19 +34,26 @@ template <class T>
 class WorkerDataArray  : public CHeapObj<mtGC> {
   friend class WDAPrinter;
 public:
-  static const uint MaxThreadWorkItems = 6;
+  static const uint MaxThreadWorkItems = 9;
 private:
   T*          _data;
   uint        _length;
-  const char* _title;
+  const char* _short_name; // Short name for JFR
+  const char* _title; // Title for logging.
+
+  bool _is_serial;
 
   WorkerDataArray<size_t>* _thread_work_items[MaxThreadWorkItems];
 
  public:
-  WorkerDataArray(uint length, const char* title);
+  WorkerDataArray(const char* short_name, const char* title, uint length);
   ~WorkerDataArray();
 
-  void link_thread_work_items(WorkerDataArray<size_t>* thread_work_items, uint index = 0);
+  // Create an integer sub-item at the given index to this WorkerDataArray. If length_override
+  // is zero, use the same number of elements as this array, otherwise use the given
+  // number.
+  void create_thread_work_items(const char* title, uint index = 0, uint length_override = 0);
+
   void set_thread_work_item(uint worker_i, size_t value, uint index = 0);
   void add_thread_work_item(uint worker_i, size_t value, uint index = 0);
   void set_or_add_thread_work_item(uint worker_i, size_t value, uint index = 0);
@@ -60,6 +67,7 @@ private:
   static T uninitialized();
 
   void set(uint worker_i, T value);
+  void set_or_add(uint worker_i, T value);
   T get(uint worker_i) const;
 
   void add(uint worker_i, T value);
@@ -70,6 +78,10 @@ private:
 
   const char* title() const {
     return _title;
+  }
+
+  const char* short_name() const {
+    return _short_name;
   }
 
   void reset();

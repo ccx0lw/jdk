@@ -56,6 +56,7 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 package jdk.internal.org.objectweb.asm.tree.analysis;
 
 import java.util.ArrayList;
@@ -124,7 +125,8 @@ public class Analyzer<V extends Value> implements Opcodes {
       * Analyzes the given method.
       *
       * @param owner the internal name of the class to which 'method' belongs.
-      * @param method the method to be analyzed.
+      * @param method the method to be analyzed. The maxStack and maxLocals fields must have correct
+      *     values.
       * @return the symbolic state of the execution stack frame at each bytecode instruction of the
       *     method. The size of the returned array is equal to the number of instructions (and labels)
       *     of the method. A given frame is {@literal null} if and only if the corresponding
@@ -155,7 +157,7 @@ public class Analyzer<V extends Value> implements Opcodes {
             for (int j = startIndex; j < endIndex; ++j) {
                 List<TryCatchBlockNode> insnHandlers = handlers[j];
                 if (insnHandlers == null) {
-                    insnHandlers = new ArrayList<TryCatchBlockNode>();
+                    insnHandlers = new ArrayList<>();
                     handlers[j] = insnHandlers;
                 }
                 insnHandlers.add(tryCatchBlock);
@@ -165,11 +167,11 @@ public class Analyzer<V extends Value> implements Opcodes {
         // For each instruction, compute the subroutine to which it belongs.
         // Follow the main 'subroutine', and collect the jsr instructions to nested subroutines.
         Subroutine main = new Subroutine(null, method.maxLocals, null);
-        List<AbstractInsnNode> jsrInsns = new ArrayList<AbstractInsnNode>();
+        List<AbstractInsnNode> jsrInsns = new ArrayList<>();
         findSubroutine(0, main, jsrInsns);
         // Follow the nested subroutines, and collect their own nested subroutines, until all
         // subroutines are found.
-        Map<LabelNode, Subroutine> jsrSubroutines = new HashMap<LabelNode, Subroutine>();
+        Map<LabelNode, Subroutine> jsrSubroutines = new HashMap<>();
         while (!jsrInsns.isEmpty()) {
             JumpInsnNode jsrInsn = (JumpInsnNode) jsrInsns.remove(0);
             Subroutine subroutine = jsrSubroutines.get(jsrInsn.label);
@@ -264,7 +266,7 @@ public class Analyzer<V extends Value> implements Opcodes {
                         }
                     } else if (insnOpcode == RET) {
                         if (subroutine == null) {
-                            throw new AnalyzerException(insnNode, "RET instruction outside of a sub routine");
+                            throw new AnalyzerException(insnNode, "RET instruction outside of a subroutine");
                         }
                         for (int i = 0; i < subroutine.callers.size(); ++i) {
                             JumpInsnNode caller = subroutine.callers.get(i);
@@ -282,17 +284,17 @@ public class Analyzer<V extends Value> implements Opcodes {
                     } else if (insnOpcode != ATHROW && (insnOpcode < IRETURN || insnOpcode > RETURN)) {
                         if (subroutine != null) {
                             if (insnNode instanceof VarInsnNode) {
-                                int var = ((VarInsnNode) insnNode).var;
-                                subroutine.localsUsed[var] = true;
+                                int varIndex = ((VarInsnNode) insnNode).var;
+                                subroutine.localsUsed[varIndex] = true;
                                 if (insnOpcode == LLOAD
                                         || insnOpcode == DLOAD
                                         || insnOpcode == LSTORE
                                         || insnOpcode == DSTORE) {
-                                    subroutine.localsUsed[var + 1] = true;
+                                    subroutine.localsUsed[varIndex + 1] = true;
                                 }
                             } else if (insnNode instanceof IincInsnNode) {
-                                int var = ((IincInsnNode) insnNode).var;
-                                subroutine.localsUsed[var] = true;
+                                int varIndex = ((IincInsnNode) insnNode).var;
+                                subroutine.localsUsed[varIndex] = true;
                             }
                         }
                         merge(insnIndex + 1, currentFrame, subroutine);
@@ -331,6 +333,74 @@ public class Analyzer<V extends Value> implements Opcodes {
     }
 
     /**
+      * Analyzes the given method and computes and sets its maximum stack size and maximum number of
+      * local variables.
+      *
+      * @param owner the internal name of the class to which 'method' belongs.
+      * @param method the method to be analyzed.
+      * @return the symbolic state of the execution stack frame at each bytecode instruction of the
+      *     method. The size of the returned array is equal to the number of instructions (and labels)
+      *     of the method. A given frame is {@literal null} if and only if the corresponding
+      *     instruction cannot be reached (dead code).
+      * @throws AnalyzerException if a problem occurs during the analysis.
+      */
+    public Frame<V>[] analyzeAndComputeMaxs(final String owner, final MethodNode method)
+            throws AnalyzerException {
+        method.maxLocals = computeMaxLocals(method);
+        method.maxStack = -1;
+        analyze(owner, method);
+        method.maxStack = computeMaxStack(frames);
+        return frames;
+    }
+
+    /**
+      * Computes and returns the maximum number of local variables used in the given method.
+      *
+      * @param method a method.
+      * @return the maximum number of local variables used in the given method.
+      */
+    private static int computeMaxLocals(final MethodNode method) {
+        int maxLocals = Type.getArgumentsAndReturnSizes(method.desc) >> 2;
+        for (AbstractInsnNode insnNode : method.instructions) {
+            if (insnNode instanceof VarInsnNode) {
+                int local = ((VarInsnNode) insnNode).var;
+                int size =
+                        (insnNode.getOpcode() == Opcodes.LLOAD
+                                        || insnNode.getOpcode() == Opcodes.DLOAD
+                                        || insnNode.getOpcode() == Opcodes.LSTORE
+                                        || insnNode.getOpcode() == Opcodes.DSTORE)
+                                ? 2
+                                : 1;
+                maxLocals = Math.max(maxLocals, local + size);
+            } else if (insnNode instanceof IincInsnNode) {
+                int local = ((IincInsnNode) insnNode).var;
+                maxLocals = Math.max(maxLocals, local + 1);
+            }
+        }
+        return maxLocals;
+    }
+
+    /**
+      * Computes and returns the maximum stack size of a method, given its stack map frames.
+      *
+      * @param frames the stack map frames of a method.
+      * @return the maximum stack size of the given method.
+      */
+    private static int computeMaxStack(final Frame<?>[] frames) {
+        int maxStack = 0;
+        for (Frame<?> frame : frames) {
+            if (frame != null) {
+                int stackSize = 0;
+                for (int i = 0; i < frame.getStackSize(); ++i) {
+                    stackSize += frame.getStack(i).getSize();
+                }
+                maxStack = Math.max(maxStack, stackSize);
+            }
+        }
+        return maxStack;
+    }
+
+    /**
       * Follows the control flow graph of the currently analyzed method, starting at the given
       * instruction index, and stores a copy of the given subroutine in {@link #subroutines} for each
       * encountered instruction. Jumps to nested subroutines are <i>not</i> followed: instead, the
@@ -344,7 +414,7 @@ public class Analyzer<V extends Value> implements Opcodes {
     private void findSubroutine(
             final int insnIndex, final Subroutine subroutine, final List<AbstractInsnNode> jsrInsns)
             throws AnalyzerException {
-        ArrayList<Integer> instructionIndicesToProcess = new ArrayList<Integer>();
+        ArrayList<Integer> instructionIndicesToProcess = new ArrayList<>();
         instructionIndicesToProcess.add(insnIndex);
         while (!instructionIndicesToProcess.isEmpty()) {
             int currentInsnIndex =
@@ -490,7 +560,7 @@ public class Analyzer<V extends Value> implements Opcodes {
       * @return the created frame.
       */
     protected Frame<V> newFrame(final int numLocals, final int numStack) {
-        return new Frame<V>(numLocals, numStack);
+        return new Frame<>(numLocals, numStack);
     }
 
     /**
@@ -500,7 +570,7 @@ public class Analyzer<V extends Value> implements Opcodes {
       * @return the created frame.
       */
     protected Frame<V> newFrame(final Frame<? extends V> frame) {
-        return new Frame<V>(frame);
+        return new Frame<>(frame);
     }
 
     /**
@@ -632,3 +702,4 @@ public class Analyzer<V extends Value> implements Opcodes {
         }
     }
 }
+

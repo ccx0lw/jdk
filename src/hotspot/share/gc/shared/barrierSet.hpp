@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -37,6 +37,7 @@ class BarrierSetAssembler;
 class BarrierSetC1;
 class BarrierSetC2;
 class BarrierSetNMethod;
+class BarrierSetStackChunk;
 class JavaThread;
 
 // This class provides the interface between a barrier implementation and
@@ -74,6 +75,7 @@ private:
   BarrierSetC1* _barrier_set_c1;
   BarrierSetC2* _barrier_set_c2;
   BarrierSetNMethod* _barrier_set_nmethod;
+  BarrierSetStackChunk* _barrier_set_stack_chunk;
 
 public:
   // Metafunction mapping a class derived from BarrierSet to the
@@ -98,12 +100,8 @@ protected:
              BarrierSetC1* barrier_set_c1,
              BarrierSetC2* barrier_set_c2,
              BarrierSetNMethod* barrier_set_nmethod,
-             const FakeRtti& fake_rtti) :
-    _fake_rtti(fake_rtti),
-    _barrier_set_assembler(barrier_set_assembler),
-    _barrier_set_c1(barrier_set_c1),
-    _barrier_set_c2(barrier_set_c2),
-    _barrier_set_nmethod(barrier_set_nmethod) {}
+             BarrierSetStackChunk* barrier_set_stack_chunk,
+             const FakeRtti& fake_rtti);
   ~BarrierSet() { }
 
   template <class BarrierSetAssemblerT>
@@ -139,7 +137,7 @@ public:
   // caller. That locking ensures the operation is "atomic" with the list
   // modification wrto operations that hold the NJTList_lock and either also
   // hold the Threads_lock or are at a safepoint.
-  virtual void on_thread_attach(Thread* thread) {}
+  virtual void on_thread_attach(Thread* thread);
   virtual void on_thread_detach(Thread* thread) {}
 
   virtual void make_parsable(JavaThread* thread) {}
@@ -168,6 +166,11 @@ public:
 
   BarrierSetNMethod* barrier_set_nmethod() {
     return _barrier_set_nmethod;
+  }
+
+  BarrierSetStackChunk* barrier_set_stack_chunk() {
+    assert(_barrier_set_stack_chunk != NULL, "should be set");
+    return _barrier_set_stack_chunk;
   }
 
   // The AccessBarrier of a BarrierSet subclass is called by the Access API
@@ -211,23 +214,23 @@ public:
     }
 
     template <typename T>
-    static T atomic_cmpxchg_in_heap(T new_value, T* addr, T compare_value) {
-      return Raw::atomic_cmpxchg(new_value, addr, compare_value);
+    static T atomic_cmpxchg_in_heap(T* addr, T compare_value, T new_value) {
+      return Raw::atomic_cmpxchg(addr, compare_value, new_value);
     }
 
     template <typename T>
-    static T atomic_cmpxchg_in_heap_at(T new_value, oop base, ptrdiff_t offset, T compare_value) {
-      return Raw::atomic_cmpxchg_at(new_value, base, offset, compare_value);
+    static T atomic_cmpxchg_in_heap_at(oop base, ptrdiff_t offset, T compare_value, T new_value) {
+      return Raw::atomic_cmpxchg_at(base, offset, compare_value, new_value);
     }
 
     template <typename T>
-    static T atomic_xchg_in_heap(T new_value, T* addr) {
-      return Raw::atomic_xchg(new_value, addr);
+    static T atomic_xchg_in_heap(T* addr, T new_value) {
+      return Raw::atomic_xchg(addr, new_value);
     }
 
     template <typename T>
-    static T atomic_xchg_in_heap_at(T new_value, oop base, ptrdiff_t offset) {
-      return Raw::atomic_xchg_at(new_value, base, offset);
+    static T atomic_xchg_in_heap_at(oop base, ptrdiff_t offset, T new_value) {
+      return Raw::atomic_xchg_at(base, offset, new_value);
     }
 
     template <typename T>
@@ -261,21 +264,21 @@ public:
     }
 
     template <typename T>
-    static oop oop_atomic_cmpxchg_in_heap(oop new_value, T* addr, oop compare_value) {
-      return Raw::oop_atomic_cmpxchg(new_value, addr, compare_value);
+    static oop oop_atomic_cmpxchg_in_heap(T* addr, oop compare_value, oop new_value) {
+      return Raw::oop_atomic_cmpxchg(addr, compare_value, new_value);
     }
 
-    static oop oop_atomic_cmpxchg_in_heap_at(oop new_value, oop base, ptrdiff_t offset, oop compare_value) {
-      return Raw::oop_atomic_cmpxchg_at(new_value, base, offset, compare_value);
+    static oop oop_atomic_cmpxchg_in_heap_at(oop base, ptrdiff_t offset, oop compare_value, oop new_value) {
+      return Raw::oop_atomic_cmpxchg_at(base, offset, compare_value, new_value);
     }
 
     template <typename T>
-    static oop oop_atomic_xchg_in_heap(oop new_value, T* addr) {
-      return Raw::oop_atomic_xchg(new_value, addr);
+    static oop oop_atomic_xchg_in_heap(T* addr, oop new_value) {
+      return Raw::oop_atomic_xchg(addr, new_value);
     }
 
-    static oop oop_atomic_xchg_in_heap_at(oop new_value, oop base, ptrdiff_t offset) {
-      return Raw::oop_atomic_xchg_at(new_value, base, offset);
+    static oop oop_atomic_xchg_in_heap_at(oop base, ptrdiff_t offset, oop new_value) {
+      return Raw::oop_atomic_xchg_at(base, offset, new_value);
     }
 
     template <typename T>
@@ -297,22 +300,18 @@ public:
     }
 
     template <typename T>
-    static oop oop_atomic_cmpxchg_not_in_heap(oop new_value, T* addr, oop compare_value) {
-      return Raw::oop_atomic_cmpxchg(new_value, addr, compare_value);
+    static oop oop_atomic_cmpxchg_not_in_heap(T* addr, oop compare_value, oop new_value) {
+      return Raw::oop_atomic_cmpxchg(addr, compare_value, new_value);
     }
 
     template <typename T>
-    static oop oop_atomic_xchg_not_in_heap(oop new_value, T* addr) {
-      return Raw::oop_atomic_xchg(new_value, addr);
+    static oop oop_atomic_xchg_not_in_heap(T* addr, oop new_value) {
+      return Raw::oop_atomic_xchg(addr, new_value);
     }
 
     // Clone barrier support
     static void clone_in_heap(oop src, oop dst, size_t size) {
       Raw::clone(src, dst, size);
-    }
-
-    static oop resolve(oop obj) {
-      return Raw::resolve(obj);
     }
   };
 };

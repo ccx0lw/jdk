@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -60,9 +60,12 @@ class IndexSet : public ResourceObj {
   // membership of the element in the set.
 
   // The lengths of the index bitfields
-  enum { bit_index_length = 5,
-         word_index_length = 3,
-         block_index_length = 8 // not used
+  enum {
+         // Each block consists of 256 bits
+         block_index_length = 8,
+         // Split over 4 or 8 words depending on bitness
+         word_index_length  = block_index_length - LogBitsPerWord,
+         bit_index_length   = block_index_length - word_index_length,
   };
 
   // Derived constants used for manipulating the index bitfields
@@ -88,7 +91,7 @@ class IndexSet : public ResourceObj {
     return mask_bits(element >> word_index_offset,word_index_mask);
   }
   static uint get_bit_index(uint element) {
-    return mask_bits(element,bit_index_mask);
+    return mask_bits(element, bit_index_mask);
   }
 
   //------------------------------ class BitBlock ----------------------------
@@ -102,17 +105,17 @@ class IndexSet : public ResourceObj {
     // All of BitBlocks fields and methods are declared private.  We limit
     // access to IndexSet and IndexSetIterator.
 
-    // A BitBlock is composed of some number of 32 bit words.  When a BitBlock
+    // A BitBlock is composed of some number of 32- or 64-bit words.  When a BitBlock
     // is not in use by any IndexSet, it is stored on a free list.  The next field
-    // is used by IndexSet to mainting this free list.
+    // is used by IndexSet to maintain this free list.
 
     union {
-      uint32_t _words[words_per_block];
+      uintptr_t _words[words_per_block];
       BitBlock *_next;
     } _data;
 
     // accessors
-    uint32_t* words() { return _data._words; }
+    uintptr_t* words() { return _data._words; }
     void set_next(BitBlock *next) { _data._next = next; }
     BitBlock *next() { return _data._next; }
 
@@ -121,32 +124,32 @@ class IndexSet : public ResourceObj {
     // not assume that the block index has been masked out.
 
     void clear() {
-      memset(words(), 0, sizeof(uint32_t) * words_per_block);
+      memset(words(), 0, sizeof(uintptr_t) * words_per_block);
     }
 
     bool member(uint element) {
       uint word_index = IndexSet::get_word_index(element);
-      uint bit_index = IndexSet::get_bit_index(element);
+      uintptr_t bit_index = IndexSet::get_bit_index(element);
 
-      return ((words()[word_index] & (uint32_t)(0x1 << bit_index)) != 0);
+      return ((words()[word_index] & (uintptr_t(1) << bit_index)) != 0);
     }
 
     bool insert(uint element) {
       uint word_index = IndexSet::get_word_index(element);
-      uint bit_index = IndexSet::get_bit_index(element);
+      uintptr_t bit_index = IndexSet::get_bit_index(element);
 
-      uint32_t bit = (0x1 << bit_index);
-      uint32_t before = words()[word_index];
+      uintptr_t bit = uintptr_t(1) << bit_index;
+      uintptr_t before = words()[word_index];
       words()[word_index] = before | bit;
       return ((before & bit) != 0);
     }
 
     bool remove(uint element) {
       uint word_index = IndexSet::get_word_index(element);
-      uint bit_index = IndexSet::get_bit_index(element);
+      uintptr_t bit_index = IndexSet::get_bit_index(element);
 
-      uint32_t bit = (0x1 << bit_index);
-      uint32_t before = words()[word_index];
+      uintptr_t bit = uintptr_t(1) << bit_index;
+      uintptr_t before = words()[word_index];
       words()[word_index] = before & ~bit;
       return ((before & bit) != 0);
     }
@@ -189,6 +192,9 @@ class IndexSet : public ResourceObj {
 
   // The number of elements in the set
   uint      _count;
+
+  // The current upper limit of blocks that has been allocated and might be in use
+  uint      _current_block_limit;
 
   // Our top level array of bitvector segments
   BitBlock **_blocks;
@@ -246,12 +252,13 @@ class IndexSet : public ResourceObj {
 
   void clear() {
     _count = 0;
-    for (uint i = 0; i < _max_blocks; i++) {
+    for (uint i = 0; i < _current_block_limit; i++) {
       BitBlock *block = _blocks[i];
       if (block != &_empty_block) {
         free_block(i);
       }
     }
+    _current_block_limit = 0;
   }
 
   uint count() const { return _count; }
@@ -372,7 +379,7 @@ class IndexSetIterator {
 
  private:
   // The current word we are inspecting
-  uint32_t              _current;
+  uintptr_t             _current;
 
   // What element number are we currently on?
   uint                  _value;
@@ -380,17 +387,17 @@ class IndexSetIterator {
   // The index of the next word we will inspect
   uint                  _next_word;
 
-  // A pointer to the contents of the current block
-  uint32_t             *_words;
-
   // The index of the next block we will inspect
   uint                  _next_block;
 
-  // A pointer to the blocks in our set
-  IndexSet::BitBlock **_blocks;
-
   // The number of blocks in the set
   uint                  _max_blocks;
+
+  // A pointer to the contents of the current block
+  uintptr_t*            _words;
+
+  // A pointer to the blocks in our set
+  IndexSet::BitBlock **_blocks;
 
   // If the iterator was created from a non-const set, we replace
   // non-canonical empty blocks with the _empty_block pointer.  If
@@ -405,22 +412,64 @@ class IndexSetIterator {
 
   // If an iterator is built from a constant set then empty blocks
   // are not canonicalized.
-  IndexSetIterator(IndexSet *set);
-  IndexSetIterator(const IndexSet *set);
+  IndexSetIterator(IndexSet *set) :
+    _current(0),
+    _value(0),
+    _next_word(IndexSet::words_per_block),
+    _next_block(0),
+    _max_blocks(set->is_empty() ? 0 : set->_current_block_limit),
+    _words(NULL),
+    _blocks(set->_blocks),
+    _set(set) {
+  #ifdef ASSERT
+    if (CollectIndexSetStatistics) {
+      set->tally_iteration_statistics();
+    }
+    set->check_watch("traversed", set->count());
+  #endif
+  }
+
+  IndexSetIterator(const IndexSet *set) :
+    _current(0),
+    _value(0),
+    _next_word(IndexSet::words_per_block),
+    _next_block(0),
+    _max_blocks(set->is_empty() ? 0 : set->_current_block_limit),
+    _words(NULL),
+    _blocks(set->_blocks),
+    _set(NULL)
+  {
+  #ifdef ASSERT
+    if (CollectIndexSetStatistics) {
+      set->tally_iteration_statistics();
+    }
+    // We don't call check_watch from here to avoid bad recursion.
+    //   set->check_watch("traversed const", set->count());
+  #endif
+  }
+
+  // Return the next element of the set.
+  uint next_value() {
+    uintptr_t current = _current;
+    assert(current != 0, "sanity");
+    uint advance = count_trailing_zeros(current);
+    assert(((current >> advance) & 0x1) == 1, "sanity");
+    _current = (current >> advance) - 1;
+    _value += advance;
+    return _value;
+  }
 
   // Return the next element of the set.  Return 0 when done.
   uint next() {
-    uint current = _current;
-    if (current != 0) {
-      uint advance = count_trailing_zeros(current);
-      assert(((current >> advance) & 0x1) == 1, "sanity");
-      _current = (current >> advance) - 1;
-      _value += advance;
-      return _value;
-    } else {
+    if (_current != 0) {
+      return next_value();
+    } else if (_next_word < IndexSet::words_per_block || _next_block < _max_blocks) {
       return advance_and_next();
+    } else {
+      return 0;
     }
   }
+
 };
 
 #endif // SHARE_OPTO_INDEXSET_HPP

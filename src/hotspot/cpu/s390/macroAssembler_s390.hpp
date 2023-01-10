@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2016, 2019, SAP SE. All rights reserved.
+ * Copyright (c) 2016, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2022 SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -248,8 +248,9 @@ class MacroAssembler: public Assembler {
   // Crypto instructions.
   // Being interruptible, these instructions need a retry-loop.
   void cksm(Register crcBuff, Register srcBuff);
-  void km( Register dstBuff, Register srcBuff);
-  void kmc(Register dstBuff, Register srcBuff);
+  void km(   Register dstBuff, Register srcBuff);
+  void kmc(  Register dstBuff, Register srcBuff);
+  void kmctr(Register dstBuff, Register ctrBuff, Register srcBuff);
   void kimd(Register srcBuff);
   void klmd(Register srcBuff);
   void kmac(Register srcBuff);
@@ -350,9 +351,6 @@ class MacroAssembler: public Assembler {
   // Uses constant_metadata_address.
   inline bool set_metadata_constant(Metadata* md, Register d);
 
-  virtual RegisterOrConstant delayed_value_impl(intptr_t* delayed_value_addr,
-                                                Register tmp,
-                                                int offset);
   //
   // branch, jump
   //
@@ -721,26 +719,9 @@ class MacroAssembler: public Assembler {
   // Increment a counter at counter_address when the eq condition code is set.
   // Kills registers tmp1_reg and tmp2_reg and preserves the condition code.
   void increment_counter_eq(address counter_address, Register tmp1_reg, Register tmp2_reg);
-  // Biased locking support
-  // Upon entry,obj_reg must contain the target object, and mark_reg
-  // must contain the target object's header.
-  // Destroys mark_reg if an attempt is made to bias an anonymously
-  // biased lock. In this case a failure will go either to the slow
-  // case or fall through with the notEqual condition code set with
-  // the expectation that the slow case in the runtime will be called.
-  // In the fall-through case where the CAS-based lock is done,
-  // mark_reg is not destroyed.
-  void biased_locking_enter(Register obj_reg, Register mark_reg, Register temp_reg,
-                            Register temp2_reg, Label& done, Label* slow_case = NULL);
-  // Upon entry, the base register of mark_addr must contain the oop.
-  // Destroys temp_reg.
-  // If allow_delay_slot_filling is set to true, the next instruction
-  // emitted after this one will go in an annulled delay slot if the
-  // biased locking exit case failed.
-  void biased_locking_exit(Register mark_addr, Register temp_reg, Label& done);
 
-  void compiler_fast_lock_object(Register oop, Register box, Register temp1, Register temp2, bool try_bias = UseBiasedLocking);
-  void compiler_fast_unlock_object(Register oop, Register box, Register temp1, Register temp2, bool try_bias = UseBiasedLocking);
+  void compiler_fast_lock_object(Register oop, Register box, Register temp1, Register temp2);
+  void compiler_fast_unlock_object(Register oop, Register box, Register temp1, Register temp2);
 
   void resolve_jobject(Register value, Register tmp1, Register tmp2);
 
@@ -785,7 +766,6 @@ class MacroAssembler: public Assembler {
   void decode_klass_not_null(Register dst);
   void load_klass(Register klass, Address mem);
   void load_klass(Register klass, Register src_oop);
-  void load_prototype_header(Register Rheader, Register Rsrc_oop);
   void store_klass(Register klass, Register dst_oop, Register ck = noreg); // Klass will get compressed if ck not provided.
   void store_klass_gap(Register s, Register dst_oop);
 
@@ -841,50 +821,6 @@ class MacroAssembler: public Assembler {
                                              Register cnt_reg,
                                              Register tmp1_reg, Register tmp2_reg);
 
-  //-------------------------------------------
-  // Special String Intrinsics Implementation.
-  //-------------------------------------------
-  // Intrinsics for CompactStrings
-  //   Restores: src, dst
-  //   Uses:     cnt
-  //   Kills:    tmp, Z_R0, Z_R1.
-  //   Early clobber: result.
-  //   Boolean precise controls accuracy of result value.
-  unsigned int string_compress(Register result, Register src, Register dst, Register cnt,
-                               Register tmp,    bool precise);
-
-  // Inflate byte[] to char[].
-  unsigned int string_inflate_trot(Register src, Register dst, Register cnt, Register tmp);
-
-  // Inflate byte[] to char[].
-  //   Restores: src, dst
-  //   Uses:     cnt
-  //   Kills:    tmp, Z_R0, Z_R1.
-  unsigned int string_inflate(Register src, Register dst, Register cnt, Register tmp);
-
-  // Inflate byte[] to char[], length known at compile time.
-  //   Restores: src, dst
-  //   Kills:    tmp, Z_R0, Z_R1.
-  // Note:
-  //   len is signed int. Counts # characters, not bytes.
-  unsigned int string_inflate_const(Register src, Register dst, Register tmp, int len);
-
-  // Kills src.
-  unsigned int has_negatives(Register result, Register src, Register cnt,
-                             Register odd_reg, Register even_reg, Register tmp);
-
-  unsigned int string_compare(Register str1, Register str2, Register cnt1, Register cnt2,
-                              Register odd_reg, Register even_reg, Register result, int ae);
-
-  unsigned int array_equals(bool is_array_equ, Register ary1, Register ary2, Register limit,
-                            Register odd_reg, Register even_reg, Register result, bool is_byte);
-
-  unsigned int string_indexof(Register result, Register haystack, Register haycnt,
-                              Register needle, Register needlecnt, int needlecntval,
-                              Register odd_reg, Register even_reg, int ae);
-
-  unsigned int string_indexof_char(Register result, Register haystack, Register haycnt,
-                                   Register needle, jchar needleChar, Register odd_reg, Register even_reg, bool is_byte);
 
   // Emit an oop const to the constant pool and set a relocation info
   // with address current_pc. Return the TOC offset of the constant.
@@ -917,13 +853,6 @@ class MacroAssembler: public Assembler {
   static int load_const_from_toc_call_size() { return load_const_from_toc_size() + call_byregister_size(); }
   // Offset is +/- 2**32 -> use long.
   static long get_load_const_from_toc_offset(address a);
-
-
-  void generate_type_profiling(const Register Rdata,
-                               const Register Rreceiver_klass,
-                               const Register Rwanted_receiver_klass,
-                               const Register Rmatching_row,
-                               bool is_virtual_call);
 
   // Bit operations for single register operands.
   inline void lshift(Register r, int places, bool doubl = true);   // <<
@@ -978,8 +907,15 @@ class MacroAssembler: public Assembler {
   // Verify Z_thread contents.
   void verify_thread();
 
+  // Save and restore functions: Exclude Z_R0.
+  void save_volatile_regs(   Register dst, int offset, bool include_fp, bool include_flags);
+  void restore_volatile_regs(Register src, int offset, bool include_fp, bool include_flags);
+
   // Only if +VerifyOops.
+  // Kills Z_R0.
   void verify_oop(Register reg, const char* s = "broken oop");
+  // Kills Z_R0, condition code.
+  void verify_oop_addr(Address addr, const char* msg = "contains broken oop");
 
   // TODO: verify_method and klass metadata (compare against vptr?).
   void _verify_method_ptr(Register reg, const char * msg, const char * file, int line) {}

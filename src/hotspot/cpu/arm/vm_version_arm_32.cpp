@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2008, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,13 +23,15 @@
  */
 
 #include "precompiled.hpp"
-#include "jvm.h"
 #include "asm/macroAssembler.inline.hpp"
+#include "jvm.h"
 #include "memory/resourceArea.hpp"
+#include "runtime/arguments.hpp"
+#include "runtime/globals_extension.hpp"
 #include "runtime/java.hpp"
 #include "runtime/os.inline.hpp"
 #include "runtime/stubCodeGenerator.hpp"
-#include "vm_version_arm.hpp"
+#include "runtime/vm_version.hpp"
 
 int  VM_Version::_stored_pc_adjustment = 4;
 int  VM_Version::_arm_arch             = 5;
@@ -209,6 +211,11 @@ void VM_Version::initialize() {
     FLAG_SET_DEFAULT(UseFMA, false);
   }
 
+  if (UseMD5Intrinsics) {
+    warning("MD5 intrinsics are not available on this CPU");
+    FLAG_SET_DEFAULT(UseMD5Intrinsics, false);
+  }
+
   if (UseSHA) {
     warning("SHA instructions are not available on this CPU");
     FLAG_SET_DEFAULT(UseSHA, false);
@@ -227,6 +234,11 @@ void VM_Version::initialize() {
   if (UseSHA512Intrinsics) {
     warning("Intrinsics for SHA-384 and SHA-512 crypto hash functions not available on this CPU.");
     FLAG_SET_DEFAULT(UseSHA512Intrinsics, false);
+  }
+
+  if (UseSHA3Intrinsics) {
+    warning("Intrinsics for SHA3-224, SHA3-256, SHA3-384 and SHA3-512 crypto hash functions not available on this CPU.");
+    FLAG_SET_DEFAULT(UseSHA3Intrinsics, false);
   }
 
   if (UseCRC32Intrinsics) {
@@ -323,7 +335,6 @@ void VM_Version::initialize() {
   }
 
   UNSUPPORTED_OPTION(TypeProfileLevel);
-  UNSUPPORTED_OPTION(CriticalJNINatives);
 
   FLAG_SET_DEFAULT(TypeProfileLevel, 0); // unsupported
 
@@ -337,15 +348,16 @@ void VM_Version::initialize() {
   _is_initialized = true;
 }
 
-bool VM_Version::use_biased_locking() {
-  get_os_cpu_info();
-  // The cost of CAS on uniprocessor ARM v6 and later is low compared to the
-  // overhead related to slightly longer Biased Locking execution path.
-  // Testing shows no improvement when running with Biased Locking enabled
-  // on an ARMv6 and higher uniprocessor systems.  The situation is different on
-  // ARMv5 and MP systems.
-  //
-  // Therefore the Biased Locking is enabled on ARMv5 and ARM MP only.
-  //
-  return (!os::is_MP() && (arm_arch() > 5)) ? false : true;
+void VM_Version::initialize_cpu_information(void) {
+  // do nothing if cpu info has been initialized
+  if (_initialized) {
+    return;
+  }
+
+  _no_of_cores  = os::processor_count();
+  _no_of_threads = _no_of_cores;
+  _no_of_sockets = _no_of_cores;
+  snprintf(_cpu_name, CPU_TYPE_DESC_BUF_SIZE - 1, "ARM%d", _arm_arch);
+  snprintf(_cpu_desc, CPU_DETAILED_DESC_BUF_SIZE, "%s", _features_string);
+  _initialized = true;
 }

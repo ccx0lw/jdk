@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,6 +27,7 @@
 #include "ci/ciInstance.hpp"
 #include "ci/ciMetadata.hpp"
 #include "code/oopRecorder.inline.hpp"
+#include "gc/shared/collectedHeap.hpp"
 #include "memory/allocation.inline.hpp"
 #include "oops/oop.inline.hpp"
 #include "runtime/jniHandles.inline.hpp"
@@ -201,4 +202,12 @@ int ObjectLookup::find_index(jobject handle, OopRecorder* oop_recorder) {
     return r.index();
   }
   return _values.at(location).index();
+}
+
+OopRecorder::OopRecorder(Arena* arena, bool deduplicate): _oops(arena), _metadata(arena) {
+  if (deduplicate) {
+    _object_lookup = new ObjectLookup();
+  } else {
+    _object_lookup = NULL;
+  }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,16 +23,18 @@
  */
 
 #include "precompiled.hpp"
-#include "jvm.h"
 #include "gc/shared/ageTable.inline.hpp"
 #include "gc/shared/ageTableTracer.hpp"
 #include "gc/shared/collectedHeap.hpp"
-#include "memory/resourceArea.hpp"
+#include "gc/shared/gc_globals.hpp"
+#include "jvm.h"
 #include "logging/log.hpp"
+#include "memory/resourceArea.hpp"
 #include "oops/oop.inline.hpp"
+#include "runtime/perfData.hpp"
 #include "utilities/copy.hpp"
 
-/* Copyright (c) 1992, 2016, Oracle and/or its affiliates, and Stanford University.
+/* Copyright (c) 1992, 2021, Oracle and/or its affiliates, and Stanford University.
    See the LICENSE file for license information. */
 
 AgeTable::AgeTable(bool global) {

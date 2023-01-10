@@ -4,7 +4,7 @@
  * This software is distributable under the BSD license. See the terms of the
  * BSD license in the documentation provided with this software.
  *
- * http://www.opensource.org/licenses/bsd-license.php
+ * https://opensource.org/licenses/BSD-3-Clause
  */
 package jdk.internal.org.jline.utils;
 
@@ -101,6 +101,20 @@ public class NonBlockingPumpInputStream extends NonBlockingInputStream {
         int res = wait(readBuffer, timeout);
         if (res >= 0) {
             res = readBuffer.get() & 0x00FF;
+        }
+        rewind(readBuffer, writeBuffer);
+        return res;
+    }
+
+    @Override
+    public synchronized int readBuffered(byte[] b) throws IOException {
+        checkIoException();
+        int res = wait(readBuffer, 0L);
+        if (res >= 0) {
+            res = 0;
+            while (res < b.length && readBuffer.hasRemaining()) {
+                b[res++] = (byte) (readBuffer.get() & 0x00FF);
+            }
         }
         rewind(readBuffer, writeBuffer);
         return res;

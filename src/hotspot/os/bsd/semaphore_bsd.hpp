@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,21 +25,21 @@
 #ifndef OS_BSD_SEMAPHORE_BSD_HPP
 #define OS_BSD_SEMAPHORE_BSD_HPP
 
+#include "utilities/globalDefinitions.hpp"
+
 #ifndef __APPLE__
 // Use POSIX semaphores.
 # include "semaphore_posix.hpp"
 
 #else
-// OS X doesn't support unamed POSIX semaphores, so the implementation in os_posix.cpp can't be used.
+// OS X doesn't support unnamed POSIX semaphores, so the implementation in os_posix.cpp can't be used.
 # include "memory/allocation.hpp"
 # include <mach/semaphore.h>
 
 class OSXSemaphore : public CHeapObj<mtInternal>{
   semaphore_t _semaphore;
 
-  // Prevent copying and assignment.
-  OSXSemaphore(const OSXSemaphore&);
-  OSXSemaphore& operator=(const OSXSemaphore&);
+  NONCOPYABLE(OSXSemaphore);
 
  public:
   OSXSemaphore(uint value = 0);

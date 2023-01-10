@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -30,7 +30,6 @@ public class JimageClassProtDomain {
         //     sun.tools.javac.Main (testcase 1),
         //     jdk.nio.zipfs.ZipInfo (testcase 2),
         //     java.net.URL (testcase 3),
-        //     sun.rmi.rmic.Main (testcase 4),
         //     com.sun.jndi.dns.DnsName (testcase 5)
         String testcases[][] =
             {{"Loading shared boot module class first",
@@ -46,7 +45,7 @@ public class JimageClassProtDomain {
               "java.net.HttpCookie", "java.net.URL"},
 
              {"Loading non-shared app module class first",
-              "com.sun.tools.sjavac.Util", "com.sun.tools.sjavac.Main"},
+              "com.sun.tools.jdeps.JdepsTask", "com.sun.tools.jdeps.Main"},
 
              {"Loading non-shared ext module class first",
               "com.sun.jndi.dns.Resolver", "com.sun.jndi.dns.DnsName"}};

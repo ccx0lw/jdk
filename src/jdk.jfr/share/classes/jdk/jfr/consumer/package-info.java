@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,31 +27,8 @@
  * This package contains classes for consuming Flight Recorder data.
  * <p>
  * In the following example, the program prints a histogram of all method samples in a recording.
- * <pre>
- * <code>
- * public static void main(String[] args) throws IOException {
- *     if (args.length != 1) {
- *         System.err.println("Must specify a recording file.");
- *         return;
- *     }
  *
- *     RecordingFile.readAllEvents(Path.of(args[0])).stream()
- *         .filter(e -> e.getEventType().getName().equals("jdk.ExecutionSample"))
- *         .map(e -> e.getStackTrace())
- *         .filter(s -> s != null)
- *         .map(s -> s.getFrames().get(0))
- *         .filter(f -> f.isJavaFrame())
- *         .map(f -> f.getMethod())
- *         .collect(
- *             Collectors.groupingBy(m -> m.getType().getName() + "." + m.getName() + " " + m.getDescriptor(),
- *             Collectors.counting()))
- *         .entrySet()
- *         .stream()
- *         .sorted((a, b) -> b.getValue().compareTo(a.getValue()))
- *         .forEach(e -> System.out.printf("%8d %s\n", e.getValue(), e.getKey()));
- * }
- * </code>
- * </pre>
+ * {@snippet class="Snippets" region="PackageOverview"}
  * <p>
  * <b>Null-handling</b>
  * <p>

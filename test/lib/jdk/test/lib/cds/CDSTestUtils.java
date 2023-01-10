@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,6 +26,13 @@ import java.io.IOException;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.PrintStream;
+import java.nio.file.Files;
+import java.nio.file.CopyOption;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import static java.nio.file.StandardCopyOption.COPY_ATTRIBUTES;
+import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -40,9 +47,8 @@ public class CDSTestUtils {
         "UseSharedSpaces: Unable to allocate region, range is not within java heap.";
     public static final String MSG_RANGE_ALREADT_IN_USE =
         "Unable to allocate region, java heap range is already in use.";
-    public static final String MSG_COMPRESSION_MUST_BE_USED =
-        "Unable to use shared archive: UseCompressedOops and UseCompressedClassPointers must be on for UseSharedSpaces.";
-
+    public static final String MSG_DYNAMIC_NOT_SUPPORTED =
+        "-XX:ArchiveClassesAtExit is unsupported when base CDS archive is not loaded";
     public static final boolean DYNAMIC_DUMP = Boolean.getBoolean("test.dynamic.cds.archive");
 
     public interface Checker {
@@ -258,7 +264,7 @@ public class CDSTestUtils {
         for (String s : opts.suffix) cmd.add(s);
 
         String[] cmdLine = cmd.toArray(new String[cmd.size()]);
-        ProcessBuilder pb = ProcessTools.createJavaProcessBuilder(true, cmdLine);
+        ProcessBuilder pb = ProcessTools.createTestJvm(cmdLine);
         return executeAndLog(pb, "dump");
     }
 
@@ -273,8 +279,7 @@ public class CDSTestUtils {
         if (!DYNAMIC_DUMP) {
             output.shouldContain("Loading classes to share");
         } else {
-            output.shouldContain("Buffer-space to target-space delta")
-                  .shouldContain("Written dynamic archive 0x");
+            output.shouldContain("Written dynamic archive 0x");
         }
         output.shouldHaveExitValue(0);
 
@@ -285,6 +290,12 @@ public class CDSTestUtils {
         return output;
     }
 
+    // check result of dumping base archive
+    public static OutputAnalyzer checkBaseDump(OutputAnalyzer output) throws Exception {
+        output.shouldContain("Loading classes to share");
+        output.shouldHaveExitValue(0);
+        return output;
+    }
 
     // A commonly used convenience methods to create an archive and check the results
     // Creates an archive and checks for errors
@@ -309,7 +320,7 @@ public class CDSTestUtils {
     // exceptions match. Pass null if you wish not to re-throw any exception.
     public static void checkCommonExecExceptions(OutputAnalyzer output, Exception e)
         throws Exception {
-        if (output.getStdout().contains("http://bugreport.java.com/bugreport/crash.jsp")) {
+        if (output.getStdout().contains("https://bugreport.java.com/bugreport/crash.jsp")) {
             throw new RuntimeException("Hotspot crashed");
         }
         if (output.getStdout().contains("TEST FAILED")) {
@@ -322,9 +333,7 @@ public class CDSTestUtils {
         // Special case -- sometimes Xshare:on fails because it failed to map
         // at given address. This behavior is platform-specific, machine config-specific
         // and can be random (see ASLR).
-        if (isUnableToMap(output)) {
-            throw new SkippedException(UnableToMapMsg);
-        }
+        checkMappingFailure(output);
 
         if (e != null) {
             throw e;
@@ -347,28 +356,28 @@ public class CDSTestUtils {
     //    instead of utilizing multiple messages.
     // These are suggestions to improve testibility of the VM. However, implementing them
     // could also improve usability in the field.
-    public static boolean isUnableToMap(OutputAnalyzer output) {
+    private static String hasUnableToMapMessage(OutputAnalyzer output) {
         String outStr = output.getOutput();
-        if ((output.getExitValue() == 1) && (
-            outStr.contains("Unable to reserve shared space at required address") ||
-            outStr.contains("Unable to map ReadOnly shared space at required address") ||
-            outStr.contains("Unable to map ReadWrite shared space at required address") ||
-            outStr.contains("Unable to map MiscData shared space at required address") ||
-            outStr.contains("Unable to map MiscCode shared space at required address") ||
-            outStr.contains("Unable to map OptionalData shared space at required address") ||
-            outStr.contains("Could not allocate metaspace at a compatible address") ||
-            outStr.contains("UseSharedSpaces: Unable to allocate region, range is not within java heap") ||
-            outStr.contains("DynamicDumpSharedSpaces is unsupported when base CDS archive is not loaded") ))
-        {
-            return true;
+        if ((output.getExitValue() == 1)) {
+            if (outStr.contains(MSG_RANGE_NOT_WITHIN_HEAP)) {
+                return MSG_RANGE_NOT_WITHIN_HEAP;
+            }
+            if (outStr.contains(MSG_DYNAMIC_NOT_SUPPORTED)) {
+                return MSG_DYNAMIC_NOT_SUPPORTED;
+            }
         }
 
-        return false;
+        return null;
+    }
+
+    public static boolean isUnableToMap(OutputAnalyzer output) {
+        return hasUnableToMapMessage(output) != null;
     }
 
     public static void checkMappingFailure(OutputAnalyzer out) throws SkippedException {
-        if (isUnableToMap(out)) {
-            throw new SkippedException(UnableToMapMsg);
+        String match = hasUnableToMapMessage(out);
+        if (match != null) {
+            throw new SkippedException(UnableToMapMsg + ": " + match);
         }
     }
 
@@ -383,6 +392,18 @@ public class CDSTestUtils {
         return new Result(opts, runWithArchive(opts));
     }
 
+    // Dump a classlist using the -XX:DumpLoadedClassList option.
+    public static Result dumpClassList(String classListName, String... cli)
+        throws Exception {
+        CDSOptions opts = (new CDSOptions())
+            .setUseVersion(false)
+            .setXShareMode("auto")
+            .addPrefix("-XX:DumpLoadedClassList=" + classListName)
+            .addSuffix(cli);
+        Result res = run(opts).assertNormalExit();
+        return res;
+    }
+
     // Execute JVM with CDS archive, specify command line args suffix
     public static OutputAnalyzer runWithArchive(String... cliPrefix)
         throws Exception {
@@ -392,15 +413,18 @@ public class CDSTestUtils {
                                .addPrefix(cliPrefix) );
     }
 
+    // Enable basic verification (VerifyArchivedFields=1, no side effects) for all CDS
+    // tests to make sure the archived heap objects are mapped/loaded properly.
+    public static void addVerifyArchivedFields(ArrayList<String> cmd) {
+        cmd.add("-XX:+UnlockDiagnosticVMOptions");
+        cmd.add("-XX:VerifyArchivedFields=1");
+    }
 
     // Execute JVM with CDS archive, specify CDSOptions
     public static OutputAnalyzer runWithArchive(CDSOptions opts)
         throws Exception {
 
-        ArrayList<String> cmd = new ArrayList<String>();
-
-        for (String p : opts.prefix) cmd.add(p);
-
+        ArrayList<String> cmd = opts.getRuntimePrefix();
         cmd.add("-Xshare:" + opts.xShareMode);
         cmd.add("-Dtest.timeout.factor=" + TestTimeoutFactor);
 
@@ -409,6 +433,7 @@ public class CDSTestUtils {
                 opts.archiveName = getDefaultArchiveName();
             cmd.add("-XX:SharedArchiveFile=" + opts.archiveName);
         }
+        addVerifyArchivedFields(cmd);
 
         if (opts.useVersion)
             cmd.add("-version");
@@ -416,7 +441,7 @@ public class CDSTestUtils {
         for (String s : opts.suffix) cmd.add(s);
 
         String[] cmdLine = cmd.toArray(new String[cmd.size()]);
-        ProcessBuilder pb = ProcessTools.createJavaProcessBuilder(true, cmdLine);
+        ProcessBuilder pb = ProcessTools.createTestJvm(cmdLine);
         return executeAndLog(pb, "exec");
     }
 
@@ -461,10 +486,7 @@ public class CDSTestUtils {
     public static OutputAnalyzer checkExecExpectError(OutputAnalyzer output,
                                              int expectedExitValue,
                                              String... extraMatches) throws Exception {
-        if (isUnableToMap(output)) {
-            throw new SkippedException(UnableToMapMsg);
-        }
-
+        checkMappingFailure(output);
         output.shouldHaveExitValue(expectedExitValue);
         checkMatches(output, extraMatches);
         return output;
@@ -478,11 +500,25 @@ public class CDSTestUtils {
         return output;
     }
 
+    private static final String outputDir;
+    private static final File outputDirAsFile;
+
+    static {
+        outputDir = System.getProperty("user.dir", ".");
+        outputDirAsFile = new File(outputDir);
+    }
+
+    public static String getOutputDir() {
+        return outputDir;
+    }
+
+    public static File getOutputDirAsFile() {
+        return outputDirAsFile;
+    }
 
     // get the file object for the test artifact
     public static File getTestArtifact(String name, boolean checkExistence) {
-        File dir = new File(System.getProperty("test.classes", "."));
-        File file = new File(dir, name);
+        File file = new File(outputDirAsFile, name);
 
         if (checkExistence && !file.exists()) {
             throw new RuntimeException("Cannot find " + file.getPath());
@@ -495,7 +531,7 @@ public class CDSTestUtils {
     // create file containing the specified class list
     public static File makeClassList(String classes[])
         throws Exception {
-        return makeClassList(getTestName() + "-", classes);
+        return makeClassList(testName + "-", classes);
     }
 
     // create file containing the specified class list
@@ -525,18 +561,7 @@ public class CDSTestUtils {
         }
     }
 
-
-    // Optimization for getting a test name.
-    // Test name does not change during execution of the test,
-    // but getTestName() uses stack walking hence it is expensive.
-    // Therefore cache it and reuse it.
-    private static String testName;
-    public static String getTestName() {
-        if (testName == null) {
-            testName = Utils.getTestName();
-        }
-        return testName;
-    }
+    private static String testName = Utils.TEST_NAME.replace('/', '.');
 
     private static final SimpleDateFormat timeStampFormat =
         new SimpleDateFormat("HH'h'mm'm'ss's'SSS");
@@ -545,7 +570,7 @@ public class CDSTestUtils {
 
     // Call this method to start new archive with new unique name
     public static void startNewArchiveName() {
-        defaultArchiveName = getTestName() +
+        defaultArchiveName = testName +
             timeStampFormat.format(new Date()) + ".jsa";
     }
 
@@ -556,14 +581,16 @@ public class CDSTestUtils {
 
     // ===================== FILE ACCESS convenience methods
     public static File getOutputFile(String name) {
-        File dir = new File(System.getProperty("test.classes", "."));
-        return new File(dir, getTestName() + "-" + name);
+        return new File(outputDirAsFile, testName + "-" + name);
+    }
+
+    public static String getOutputFileName(String name) {
+        return getOutputFile(name).getName();
     }
 
 
     public static File getOutputSourceFile(String name) {
-        File dir = new File(System.getProperty("test.classes", "."));
-        return new File(dir, name);
+        return new File(outputDirAsFile, name);
     }
 
 
@@ -577,14 +604,17 @@ public class CDSTestUtils {
     public static OutputAnalyzer executeAndLog(ProcessBuilder pb, String logName) throws Exception {
         long started = System.currentTimeMillis();
         OutputAnalyzer output = new OutputAnalyzer(pb.start());
-        String outputFileNamePrefix =
-            getTestName() + "-" + String.format("%04d", getNextLogCounter()) + "-" + logName;
+        String logFileNameStem =
+            String.format("%04d", getNextLogCounter()) + "-" + logName;
 
-        writeFile(getOutputFile(outputFileNamePrefix + ".stdout"), output.getStdout());
-        writeFile(getOutputFile(outputFileNamePrefix + ".stderr"), output.getStderr());
+        File stdout = getOutputFile(logFileNameStem + ".stdout");
+        File stderr = getOutputFile(logFileNameStem + ".stderr");
+
+        writeFile(stdout, output.getStdout());
+        writeFile(stderr, output.getStderr());
         System.out.println("[ELAPSED: " + (System.currentTimeMillis() - started) + " ms]");
-        System.out.println("[logging stdout to " + outputFileNamePrefix + ".stdout]");
-        System.out.println("[logging stderr to " + outputFileNamePrefix + ".stderr]");
+        System.out.println("[logging stdout to " + stdout + "]");
+        System.out.println("[logging stderr to " + stderr + "]");
         System.out.println("[STDERR]\n" + output.getStderr());
 
         if (copyChildStdoutToMainStdout)
@@ -600,5 +630,155 @@ public class CDSTestUtils {
         ps.print(content);
         ps.close();
         fos.close();
+    }
+
+    // Format a line that defines an extra symbol in the file specify by -XX:SharedArchiveConfigFile=<file>
+    public static String formatArchiveConfigSymbol(String symbol) {
+        int refCount = -1; // This is always -1 in the current HotSpot implementation.
+        if (isAsciiPrintable(symbol)) {
+            return symbol.length() + " " + refCount + ": " + symbol;
+        } else {
+            StringBuilder sb = new StringBuilder();
+            int utf8_length = escapeArchiveConfigString(sb, symbol);
+            return utf8_length + " " + refCount + ": " + sb.toString();
+        }
+    }
+
+    // This method generates the same format as HashtableTextDump::put_utf8() in HotSpot,
+    // to be used by -XX:SharedArchiveConfigFile=<file>.
+    private static int escapeArchiveConfigString(StringBuilder sb, String s) {
+        byte arr[];
+        try {
+            arr = s.getBytes("UTF8");
+        } catch (java.io.UnsupportedEncodingException e) {
+            throw new RuntimeException("Unexpected", e);
+        }
+        for (int i = 0; i < arr.length; i++) {
+            char ch = (char)(arr[i] & 0xff);
+            if (isAsciiPrintable(ch)) {
+                sb.append(ch);
+            } else if (ch == '\t') {
+                sb.append("\\t");
+            } else if (ch == '\r') {
+                sb.append("\\r");
+            } else if (ch == '\n') {
+                sb.append("\\n");
+            } else if (ch == '\\') {
+                sb.append("\\\\");
+            } else {
+                String hex = Integer.toHexString(ch);
+                if (ch < 16) {
+                    sb.append("\\x0");
+                } else {
+                    sb.append("\\x");
+                }
+                sb.append(hex);
+            }
+        }
+
+        return arr.length;
+    }
+
+    private static boolean isAsciiPrintable(String s) {
+        for (int i = 0; i < s.length(); i++) {
+            if (!isAsciiPrintable(s.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isAsciiPrintable(char ch) {
+        return ch >= 32 && ch < 127;
+    }
+
+    // JDK utility
+
+    // Do a cheap clone of the JDK. Most files can be sym-linked. However, $JAVA_HOME/bin/java and $JAVA_HOME/lib/.../libjvm.so"
+    // must be copied, because the java.home property is derived from the canonicalized paths of these 2 files.
+    // Set a list of {jvm, "java"} which will be physically copied. If a file needs copied physically, add it to the list.
+    private static String[] phCopied = {System.mapLibraryName("jvm"), "java"};
+    public static void clone(File src, File dst) throws Exception {
+        if (dst.exists()) {
+            if (!dst.isDirectory()) {
+                throw new RuntimeException("Not a directory :" + dst);
+            }
+        } else {
+            if (!dst.mkdir()) {
+                throw new RuntimeException("Cannot create directory: " + dst);
+            }
+        }
+        // final String jvmLib = System.mapLibraryName("jvm");
+        for (String child : src.list()) {
+            if (child.equals(".") || child.equals("..")) {
+                continue;
+            }
+
+            File child_src = new File(src, child);
+            File child_dst = new File(dst, child);
+            if (child_dst.exists()) {
+                throw new RuntimeException("Already exists: " + child_dst);
+            }
+            if (child_src.isFile()) {
+                boolean needPhCopy = false;
+                for (String target : phCopied) {
+                    if (child.equals(target)) {
+                        needPhCopy = true;
+                        break;
+                    }
+                }
+                if (needPhCopy) {
+                    Files.copy(child_src.toPath(), /* copy data to -> */ child_dst.toPath(),
+                               new CopyOption[] { StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES});
+                } else {
+                    Files.createSymbolicLink(child_dst.toPath(),  /* link to -> */ child_src.toPath());
+                }
+            } else {
+                clone(child_src, child_dst);
+            }
+        }
+    }
+
+    // modulesDir, like $JDK/lib
+    // oldName, module name under modulesDir
+    // newName, new name for oldName
+    public static void rename(File fromFile, File toFile) throws Exception {
+        if (!fromFile.exists()) {
+            throw new RuntimeException(fromFile.getName() + " does not exist");
+        }
+
+        if (toFile.exists()) {
+            throw new RuntimeException(toFile.getName() + " already exists");
+        }
+
+        boolean success = fromFile.renameTo(toFile);
+        if (!success) {
+            throw new RuntimeException("rename file " + fromFile.getName()+ " to " + toFile.getName() + " failed");
+        }
+    }
+
+    public static ProcessBuilder makeBuilder(String... args) throws Exception {
+        System.out.print("[");
+        for (String s : args) {
+            System.out.print(" " + s);
+        }
+        System.out.println(" ]");
+        return new ProcessBuilder(args);
+    }
+
+    public static Path copyFile(String srcFile, String destDir) throws Exception {
+        int idx = srcFile.lastIndexOf(File.separator);
+        String jarName = srcFile.substring(idx + 1);
+        Path srcPath = Paths.get(jarName);
+        Path newPath = Paths.get(destDir);
+        Path newDir;
+        if (!Files.exists(newPath)) {
+            newDir = Files.createDirectories(newPath);
+        } else {
+            newDir = newPath;
+        }
+        Path destPath = newDir.resolve(jarName);
+        Files.copy(srcPath, destPath, REPLACE_EXISTING, COPY_ATTRIBUTES);
+        return destPath;
     }
 }

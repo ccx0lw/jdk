@@ -56,6 +56,7 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 package jdk.internal.org.objectweb.asm;
 
 /**
@@ -96,6 +97,12 @@ public class ClassWriter extends ClassVisitor {
       */
     public static final int COMPUTE_FRAMES = 2;
 
+    /**
+      * The flags passed to the constructor. Must be zero or more of {@link #COMPUTE_MAXS} and {@link
+      * #COMPUTE_FRAMES}.
+      */
+    private final int flags;
+
     // Note: fields are ordered as in the ClassFile structure, and those related to attributes are
     // ordered as in Section 4.7 of the JVMS.
 
@@ -110,8 +117,8 @@ public class ClassWriter extends ClassVisitor {
 
     /**
       * The access_flags field of the JVMS ClassFile structure. This field can contain ASM specific
-      * access flags, such as {@link Opcodes#ACC_DEPRECATED}, which are removed when generating the
-      * ClassFile structure.
+      * access flags, such as {@link Opcodes#ACC_DEPRECATED} or {@link Opcodes#ACC_RECORD}, which are
+      * removed when generating the ClassFile structure.
       */
     private int accessFlags;
 
@@ -208,6 +215,26 @@ public class ClassWriter extends ClassVisitor {
     /** The 'classes' array of the NestMembers attribute, or {@literal null}. */
     private ByteVector nestMemberClasses;
 
+    /** The number_of_classes field of the PermittedSubclasses attribute, or 0. */
+    private int numberOfPermittedSubclasses;
+
+    /** The 'classes' array of the PermittedSubclasses attribute, or {@literal null}. */
+    private ByteVector permittedSubclasses;
+
+    /**
+      * The record components of this class, stored in a linked list of {@link RecordComponentWriter}
+      * linked via their {@link RecordComponentWriter#delegate} field. This field stores the first
+      * element of this list.
+      */
+    private RecordComponentWriter firstRecordComponent;
+
+    /**
+      * The record components of this class, stored in a linked list of {@link RecordComponentWriter}
+      * linked via their {@link RecordComponentWriter#delegate} field. This field stores the last
+      * element of this list.
+      */
+    private RecordComponentWriter lastRecordComponent;
+
     /**
       * The first non standard attribute of this class. The next ones can be accessed with the {@link
       * Attribute#nextAttribute} field. May be {@literal null}.
@@ -259,21 +286,37 @@ public class ClassWriter extends ClassVisitor {
       * @param classReader the {@link ClassReader} used to read the original class. It will be used to
       *     copy the entire constant pool and bootstrap methods from the original class and also to
       *     copy other fragments of original bytecode where applicable.
-      * @param flags option flags that can be used to modify the default behavior of this class.Must be
-      *     zero or more of {@link #COMPUTE_MAXS} and {@link #COMPUTE_FRAMES}. <i>These option flags do
-      *     not affect methods that are copied as is in the new class. This means that neither the
+      * @param flags option flags that can be used to modify the default behavior of this class. Must
+      *     be zero or more of {@link #COMPUTE_MAXS} and {@link #COMPUTE_FRAMES}. <i>These option flags
+      *     do not affect methods that are copied as is in the new class. This means that neither the
       *     maximum stack size nor the stack frames will be computed for these methods</i>.
       */
     public ClassWriter(final ClassReader classReader, final int flags) {
-        super(Opcodes.ASM7);
+        super(/* latest api = */ Opcodes.ASM9);
+        this.flags = flags;
         symbolTable = classReader == null ? new SymbolTable(this) : new SymbolTable(this, classReader);
         if ((flags & COMPUTE_FRAMES) != 0) {
-            this.compute = MethodWriter.COMPUTE_ALL_FRAMES;
+            compute = MethodWriter.COMPUTE_ALL_FRAMES;
         } else if ((flags & COMPUTE_MAXS) != 0) {
-            this.compute = MethodWriter.COMPUTE_MAX_STACK_AND_LOCAL;
+            compute = MethodWriter.COMPUTE_MAX_STACK_AND_LOCAL;
         } else {
-            this.compute = MethodWriter.COMPUTE_NOTHING;
+            compute = MethodWriter.COMPUTE_NOTHING;
         }
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Accessors
+    // -----------------------------------------------------------------------------------------------
+
+    /**
+      * Returns true if all the given flags were passed to the constructor.
+      *
+      * @param flags some option flags. Must be zero or more of {@link #COMPUTE_MAXS} and {@link
+      *     #COMPUTE_FRAMES}.
+      * @return true if all the given flags, or more, were passed to the constructor.
+      */
+    public boolean hasFlags(final int flags) {
+        return (this.flags & flags) == flags;
     }
 
     // -----------------------------------------------------------------------------------------------
@@ -329,7 +372,7 @@ public class ClassWriter extends ClassVisitor {
     }
 
     @Override
-    public void visitNestHost(final String nestHost) {
+    public final void visitNestHost(final String nestHost) {
         nestHostClassIndex = symbolTable.addConstantClass(nestHost).index;
     }
 
@@ -344,37 +387,26 @@ public class ClassWriter extends ClassVisitor {
 
     @Override
     public final AnnotationVisitor visitAnnotation(final String descriptor, final boolean visible) {
-        // Create a ByteVector to hold an 'annotation' JVMS structure.
-        // See https://docs.oracle.com/javase/specs/jvms/se9/html/jvms-4.html#jvms-4.7.16.
-        ByteVector annotation = new ByteVector();
-        // Write type_index and reserve space for num_element_value_pairs.
-        annotation.putShort(symbolTable.addConstantUtf8(descriptor)).putShort(0);
         if (visible) {
             return lastRuntimeVisibleAnnotation =
-                    new AnnotationWriter(symbolTable, annotation, lastRuntimeVisibleAnnotation);
+                    AnnotationWriter.create(symbolTable, descriptor, lastRuntimeVisibleAnnotation);
         } else {
             return lastRuntimeInvisibleAnnotation =
-                    new AnnotationWriter(symbolTable, annotation, lastRuntimeInvisibleAnnotation);
+                    AnnotationWriter.create(symbolTable, descriptor, lastRuntimeInvisibleAnnotation);
         }
     }
 
     @Override
     public final AnnotationVisitor visitTypeAnnotation(
             final int typeRef, final TypePath typePath, final String descriptor, final boolean visible) {
-        // Create a ByteVector to hold a 'type_annotation' JVMS structure.
-        // See https://docs.oracle.com/javase/specs/jvms/se9/html/jvms-4.html#jvms-4.7.20.
-        ByteVector typeAnnotation = new ByteVector();
-        // Write target_type, target_info, and target_path.
-        TypeReference.putTarget(typeRef, typeAnnotation);
-        TypePath.put(typePath, typeAnnotation);
-        // Write type_index and reserve space for num_element_value_pairs.
-        typeAnnotation.putShort(symbolTable.addConstantUtf8(descriptor)).putShort(0);
         if (visible) {
             return lastRuntimeVisibleTypeAnnotation =
-                    new AnnotationWriter(symbolTable, typeAnnotation, lastRuntimeVisibleTypeAnnotation);
+                    AnnotationWriter.create(
+                            symbolTable, typeRef, typePath, descriptor, lastRuntimeVisibleTypeAnnotation);
         } else {
             return lastRuntimeInvisibleTypeAnnotation =
-                    new AnnotationWriter(symbolTable, typeAnnotation, lastRuntimeInvisibleTypeAnnotation);
+                    AnnotationWriter.create(
+                            symbolTable, typeRef, typePath, descriptor, lastRuntimeInvisibleTypeAnnotation);
         }
     }
 
@@ -386,12 +418,21 @@ public class ClassWriter extends ClassVisitor {
     }
 
     @Override
-    public void visitNestMember(final String nestMember) {
+    public final void visitNestMember(final String nestMember) {
         if (nestMemberClasses == null) {
             nestMemberClasses = new ByteVector();
         }
         ++numberOfNestMemberClasses;
         nestMemberClasses.putShort(symbolTable.addConstantClass(nestMember).index);
+    }
+
+    @Override
+    public final void visitPermittedSubclass(final String permittedSubclass) {
+        if (permittedSubclasses == null) {
+            permittedSubclasses = new ByteVector();
+        }
+        ++numberOfPermittedSubclasses;
+        permittedSubclasses.putShort(symbolTable.addConstantClass(permittedSubclass).index);
     }
 
     @Override
@@ -417,6 +458,19 @@ public class ClassWriter extends ClassVisitor {
         }
         // Else, compare the inner classes entry nameSymbol.info - 1 with the arguments of this method
         // and throw an exception if there is a difference?
+    }
+
+    @Override
+    public final RecordComponentVisitor visitRecordComponent(
+            final String name, final String descriptor, final String signature) {
+        RecordComponentWriter recordComponentWriter =
+                new RecordComponentWriter(symbolTable, name, descriptor, signature);
+        if (firstRecordComponent == null) {
+            firstRecordComponent = recordComponentWriter;
+        } else {
+            lastRecordComponent.delegate = recordComponentWriter;
+        }
+        return lastRecordComponent = recordComponentWriter;
     }
 
     @Override
@@ -469,7 +523,7 @@ public class ClassWriter extends ClassVisitor {
       * @throws ClassTooLargeException if the constant pool of the class is too large.
       * @throws MethodTooLargeException if the Code attribute of a method is too large.
       */
-    public byte[] toByteArray() throws ClassTooLargeException, MethodTooLargeException {
+    public byte[] toByteArray() {
         // First step: compute the size in bytes of the ClassFile structure.
         // The magic field uses 4 bytes, 10 mandatory fields (minor_version, major_version,
         // constant_pool_count, access_flags, this_class, super_class, interfaces_count, fields_count,
@@ -489,6 +543,7 @@ public class ClassWriter extends ClassVisitor {
             size += methodWriter.computeMethodInfoSize();
             methodWriter = (MethodWriter) methodWriter.mv;
         }
+
         // For ease of reference, we use here the same attribute order as in Section 4.7 of the JVMS.
         int attributesCount = 0;
         if (innerClasses != null) {
@@ -567,6 +622,24 @@ public class ClassWriter extends ClassVisitor {
             ++attributesCount;
             size += 8 + nestMemberClasses.length;
             symbolTable.addConstantUtf8(Constants.NEST_MEMBERS);
+        }
+        if (permittedSubclasses != null) {
+            ++attributesCount;
+            size += 8 + permittedSubclasses.length;
+            symbolTable.addConstantUtf8(Constants.PERMITTED_SUBCLASSES);
+        }
+        int recordComponentCount = 0;
+        int recordSize = 0;
+        if ((accessFlags & Opcodes.ACC_RECORD) != 0 || firstRecordComponent != null) {
+            RecordComponentWriter recordComponentWriter = firstRecordComponent;
+            while (recordComponentWriter != null) {
+                ++recordComponentCount;
+                recordSize += recordComponentWriter.computeRecordComponentInfoSize();
+                recordComponentWriter = (RecordComponentWriter) recordComponentWriter.delegate;
+            }
+            ++attributesCount;
+            size += 8 + recordSize;
+            symbolTable.addConstantUtf8(Constants.RECORD);
         }
         if (firstAttribute != null) {
             attributesCount += firstAttribute.getAttributeCount();
@@ -648,22 +721,13 @@ public class ClassWriter extends ClassVisitor {
         if ((accessFlags & Opcodes.ACC_DEPRECATED) != 0) {
             result.putShort(symbolTable.addConstantUtf8(Constants.DEPRECATED)).putInt(0);
         }
-        if (lastRuntimeVisibleAnnotation != null) {
-            lastRuntimeVisibleAnnotation.putAnnotations(
-                    symbolTable.addConstantUtf8(Constants.RUNTIME_VISIBLE_ANNOTATIONS), result);
-        }
-        if (lastRuntimeInvisibleAnnotation != null) {
-            lastRuntimeInvisibleAnnotation.putAnnotations(
-                    symbolTable.addConstantUtf8(Constants.RUNTIME_INVISIBLE_ANNOTATIONS), result);
-        }
-        if (lastRuntimeVisibleTypeAnnotation != null) {
-            lastRuntimeVisibleTypeAnnotation.putAnnotations(
-                    symbolTable.addConstantUtf8(Constants.RUNTIME_VISIBLE_TYPE_ANNOTATIONS), result);
-        }
-        if (lastRuntimeInvisibleTypeAnnotation != null) {
-            lastRuntimeInvisibleTypeAnnotation.putAnnotations(
-                    symbolTable.addConstantUtf8(Constants.RUNTIME_INVISIBLE_TYPE_ANNOTATIONS), result);
-        }
+        AnnotationWriter.putAnnotations(
+                symbolTable,
+                lastRuntimeVisibleAnnotation,
+                lastRuntimeInvisibleAnnotation,
+                lastRuntimeVisibleTypeAnnotation,
+                lastRuntimeInvisibleTypeAnnotation,
+                result);
         symbolTable.putBootstrapMethods(result);
         if (moduleWriter != null) {
             moduleWriter.putAttributes(result);
@@ -680,6 +744,24 @@ public class ClassWriter extends ClassVisitor {
                     .putInt(nestMemberClasses.length + 2)
                     .putShort(numberOfNestMemberClasses)
                     .putByteArray(nestMemberClasses.data, 0, nestMemberClasses.length);
+        }
+        if (permittedSubclasses != null) {
+            result
+                    .putShort(symbolTable.addConstantUtf8(Constants.PERMITTED_SUBCLASSES))
+                    .putInt(permittedSubclasses.length + 2)
+                    .putShort(numberOfPermittedSubclasses)
+                    .putByteArray(permittedSubclasses.data, 0, permittedSubclasses.length);
+        }
+        if ((accessFlags & Opcodes.ACC_RECORD) != 0 || firstRecordComponent != null) {
+            result
+                    .putShort(symbolTable.addConstantUtf8(Constants.RECORD))
+                    .putInt(recordSize + 2)
+                    .putShort(recordComponentCount);
+            RecordComponentWriter recordComponentWriter = firstRecordComponent;
+            while (recordComponentWriter != null) {
+                recordComponentWriter.putRecordComponentInfo(result);
+                recordComponentWriter = (RecordComponentWriter) recordComponentWriter.delegate;
+            }
         }
         if (firstAttribute != null) {
             firstAttribute.putAttributes(symbolTable, result);
@@ -717,6 +799,10 @@ public class ClassWriter extends ClassVisitor {
         nestHostClassIndex = 0;
         numberOfNestMemberClasses = 0;
         nestMemberClasses = null;
+        numberOfPermittedSubclasses = 0;
+        permittedSubclasses = null;
+        firstRecordComponent = null;
+        lastRecordComponent = null;
         firstAttribute = null;
         compute = hasFrames ? MethodWriter.COMPUTE_INSERTED_FRAMES : MethodWriter.COMPUTE_NOTHING;
         new ClassReader(classFile, 0, /* checkClassVersion = */ false)
@@ -744,6 +830,11 @@ public class ClassWriter extends ClassVisitor {
         while (methodWriter != null) {
             methodWriter.collectAttributePrototypes(attributePrototypes);
             methodWriter = (MethodWriter) methodWriter.mv;
+        }
+        RecordComponentWriter recordComponentWriter = firstRecordComponent;
+        while (recordComponentWriter != null) {
+            recordComponentWriter.collectAttributePrototypes(attributePrototypes);
+            recordComponentWriter = (RecordComponentWriter) recordComponentWriter.delegate;
         }
         return attributePrototypes.toArray();
     }
@@ -1014,3 +1105,4 @@ public class ClassWriter extends ClassVisitor {
         return getClass().getClassLoader();
     }
 }
+

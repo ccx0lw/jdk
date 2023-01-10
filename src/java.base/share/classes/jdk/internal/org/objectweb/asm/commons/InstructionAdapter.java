@@ -56,6 +56,7 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 package jdk.internal.org.objectweb.asm.commons;
 
 import jdk.internal.org.objectweb.asm.ConstantDynamic;
@@ -83,7 +84,7 @@ public class InstructionAdapter extends MethodVisitor {
       * @throws IllegalStateException If a subclass calls this constructor.
       */
     public InstructionAdapter(final MethodVisitor methodVisitor) {
-        this(Opcodes.ASM7, methodVisitor);
+        this(/* latest api = */ Opcodes.ASM9, methodVisitor);
         if (getClass() != InstructionAdapter.class) {
             throw new IllegalStateException();
         }
@@ -92,8 +93,8 @@ public class InstructionAdapter extends MethodVisitor {
     /**
       * Constructs a new {@link InstructionAdapter}.
       *
-      * @param api the ASM API version implemented by this visitor. Must be one of {@link
-      *     Opcodes#ASM4}, {@link Opcodes#ASM5}, {@link Opcodes#ASM6} or {@link Opcodes#ASM7}.
+      * @param api the ASM API version implemented by this visitor. Must be one of the {@code
+      *     ASM}<i>x</i> values in {@link Opcodes}.
       * @param methodVisitor the method visitor to which this adapter delegates calls.
       */
     protected InstructionAdapter(final int api, final MethodVisitor methodVisitor) {
@@ -454,40 +455,40 @@ public class InstructionAdapter extends MethodVisitor {
     }
 
     @Override
-    public void visitVarInsn(final int opcode, final int var) {
+    public void visitVarInsn(final int opcode, final int varIndex) {
         switch (opcode) {
             case Opcodes.ILOAD:
-                load(var, Type.INT_TYPE);
+                load(varIndex, Type.INT_TYPE);
                 break;
             case Opcodes.LLOAD:
-                load(var, Type.LONG_TYPE);
+                load(varIndex, Type.LONG_TYPE);
                 break;
             case Opcodes.FLOAD:
-                load(var, Type.FLOAT_TYPE);
+                load(varIndex, Type.FLOAT_TYPE);
                 break;
             case Opcodes.DLOAD:
-                load(var, Type.DOUBLE_TYPE);
+                load(varIndex, Type.DOUBLE_TYPE);
                 break;
             case Opcodes.ALOAD:
-                load(var, OBJECT_TYPE);
+                load(varIndex, OBJECT_TYPE);
                 break;
             case Opcodes.ISTORE:
-                store(var, Type.INT_TYPE);
+                store(varIndex, Type.INT_TYPE);
                 break;
             case Opcodes.LSTORE:
-                store(var, Type.LONG_TYPE);
+                store(varIndex, Type.LONG_TYPE);
                 break;
             case Opcodes.FSTORE:
-                store(var, Type.FLOAT_TYPE);
+                store(varIndex, Type.FLOAT_TYPE);
                 break;
             case Opcodes.DSTORE:
-                store(var, Type.DOUBLE_TYPE);
+                store(varIndex, Type.DOUBLE_TYPE);
                 break;
             case Opcodes.ASTORE:
-                store(var, OBJECT_TYPE);
+                store(varIndex, OBJECT_TYPE);
                 break;
             case Opcodes.RET:
-                ret(var);
+                ret(varIndex);
                 break;
             default:
                 throw new IllegalArgumentException();
@@ -536,42 +537,20 @@ public class InstructionAdapter extends MethodVisitor {
         }
     }
 
-    /**
-      * Deprecated.
-      *
-      * @deprecated use {@link #visitMethodInsn(int, String, String, String, boolean)} instead.
-      */
-    @Deprecated
     @Override
     public void visitMethodInsn(
-            final int opcode, final String owner, final String name, final String descriptor) {
-        if (api >= Opcodes.ASM5) {
-            super.visitMethodInsn(opcode, owner, name, descriptor);
-            return;
-        }
-        doVisitMethodInsn(opcode, owner, name, descriptor, opcode == Opcodes.INVOKEINTERFACE);
-    }
-
-    @Override
-    public void visitMethodInsn(
-            final int opcode,
+            final int opcodeAndSource,
             final String owner,
             final String name,
             final String descriptor,
             final boolean isInterface) {
-        if (api < Opcodes.ASM5) {
-            super.visitMethodInsn(opcode, owner, name, descriptor, isInterface);
+        if (api < Opcodes.ASM5 && (opcodeAndSource & Opcodes.SOURCE_DEPRECATED) == 0) {
+            // Redirect the call to the deprecated version of this method.
+            super.visitMethodInsn(opcodeAndSource, owner, name, descriptor, isInterface);
             return;
         }
-        doVisitMethodInsn(opcode, owner, name, descriptor, isInterface);
-    }
+        int opcode = opcodeAndSource & ~Opcodes.SOURCE_MASK;
 
-    private void doVisitMethodInsn(
-            final int opcode,
-            final String owner,
-            final String name,
-            final String descriptor,
-            final boolean isInterface) {
         switch (opcode) {
             case Opcodes.INVOKESPECIAL:
                 invokespecial(owner, name, descriptor, isInterface);
@@ -673,7 +652,7 @@ public class InstructionAdapter extends MethodVisitor {
                         || (value instanceof Type && ((Type) value).getSort() == Type.METHOD))) {
             throw new UnsupportedOperationException("This feature requires ASM5");
         }
-        if (api != Opcodes.ASM7 && value instanceof ConstantDynamic) {
+        if (api < Opcodes.ASM7 && value instanceof ConstantDynamic) {
             throw new UnsupportedOperationException("This feature requires ASM7");
         }
         if (value instanceof Integer) {
@@ -706,8 +685,8 @@ public class InstructionAdapter extends MethodVisitor {
     }
 
     @Override
-    public void visitIincInsn(final int var, final int increment) {
-        iinc(var, increment);
+    public void visitIincInsn(final int varIndex, final int increment) {
+        iinc(varIndex, increment);
     }
 
     @Override
@@ -836,16 +815,16 @@ public class InstructionAdapter extends MethodVisitor {
         mv.visitLdcInsn(constantDynamic);
     }
 
-    public void load(final int var, final Type type) {
-        mv.visitVarInsn(type.getOpcode(Opcodes.ILOAD), var);
+    public void load(final int varIndex, final Type type) {
+        mv.visitVarInsn(type.getOpcode(Opcodes.ILOAD), varIndex);
     }
 
     public void aload(final Type type) {
         mv.visitInsn(type.getOpcode(Opcodes.IALOAD));
     }
 
-    public void store(final int var, final Type type) {
-        mv.visitVarInsn(type.getOpcode(Opcodes.ISTORE), var);
+    public void store(final int varIndex, final Type type) {
+        mv.visitVarInsn(type.getOpcode(Opcodes.ISTORE), varIndex);
     }
 
     public void astore(final Type type) {
@@ -936,8 +915,8 @@ public class InstructionAdapter extends MethodVisitor {
         mv.visitInsn(type.getOpcode(Opcodes.IXOR));
     }
 
-    public void iinc(final int var, final int increment) {
-        mv.visitIincInsn(var, increment);
+    public void iinc(final int varIndex, final int increment) {
+        mv.visitIincInsn(varIndex, increment);
     }
 
     /**
@@ -947,47 +926,58 @@ public class InstructionAdapter extends MethodVisitor {
       * @param to a Type.
       */
     public void cast(final Type from, final Type to) {
+        cast(mv, from, to);
+    }
+
+    /**
+      * Generates the instruction to cast from the first given type to the other.
+      *
+      * @param methodVisitor the method visitor to use to generate the instruction.
+      * @param from a Type.
+      * @param to a Type.
+      */
+    static void cast(final MethodVisitor methodVisitor, final Type from, final Type to) {
         if (from != to) {
             if (from == Type.DOUBLE_TYPE) {
                 if (to == Type.FLOAT_TYPE) {
-                    mv.visitInsn(Opcodes.D2F);
+                    methodVisitor.visitInsn(Opcodes.D2F);
                 } else if (to == Type.LONG_TYPE) {
-                    mv.visitInsn(Opcodes.D2L);
+                    methodVisitor.visitInsn(Opcodes.D2L);
                 } else {
-                    mv.visitInsn(Opcodes.D2I);
-                    cast(Type.INT_TYPE, to);
+                    methodVisitor.visitInsn(Opcodes.D2I);
+                    cast(methodVisitor, Type.INT_TYPE, to);
                 }
             } else if (from == Type.FLOAT_TYPE) {
                 if (to == Type.DOUBLE_TYPE) {
-                    mv.visitInsn(Opcodes.F2D);
+                    methodVisitor.visitInsn(Opcodes.F2D);
                 } else if (to == Type.LONG_TYPE) {
-                    mv.visitInsn(Opcodes.F2L);
+                    methodVisitor.visitInsn(Opcodes.F2L);
                 } else {
-                    mv.visitInsn(Opcodes.F2I);
-                    cast(Type.INT_TYPE, to);
+                    methodVisitor.visitInsn(Opcodes.F2I);
+                    cast(methodVisitor, Type.INT_TYPE, to);
                 }
             } else if (from == Type.LONG_TYPE) {
                 if (to == Type.DOUBLE_TYPE) {
-                    mv.visitInsn(Opcodes.L2D);
+                    methodVisitor.visitInsn(Opcodes.L2D);
                 } else if (to == Type.FLOAT_TYPE) {
-                    mv.visitInsn(Opcodes.L2F);
+                    methodVisitor.visitInsn(Opcodes.L2F);
                 } else {
-                    mv.visitInsn(Opcodes.L2I);
-                    cast(Type.INT_TYPE, to);
+                    methodVisitor.visitInsn(Opcodes.L2I);
+                    cast(methodVisitor, Type.INT_TYPE, to);
                 }
             } else {
                 if (to == Type.BYTE_TYPE) {
-                    mv.visitInsn(Opcodes.I2B);
+                    methodVisitor.visitInsn(Opcodes.I2B);
                 } else if (to == Type.CHAR_TYPE) {
-                    mv.visitInsn(Opcodes.I2C);
+                    methodVisitor.visitInsn(Opcodes.I2C);
                 } else if (to == Type.DOUBLE_TYPE) {
-                    mv.visitInsn(Opcodes.I2D);
+                    methodVisitor.visitInsn(Opcodes.I2D);
                 } else if (to == Type.FLOAT_TYPE) {
-                    mv.visitInsn(Opcodes.I2F);
+                    methodVisitor.visitInsn(Opcodes.I2F);
                 } else if (to == Type.LONG_TYPE) {
-                    mv.visitInsn(Opcodes.I2L);
+                    methodVisitor.visitInsn(Opcodes.I2L);
                 } else if (to == Type.SHORT_TYPE) {
-                    mv.visitInsn(Opcodes.I2S);
+                    methodVisitor.visitInsn(Opcodes.I2S);
                 }
             }
         }
@@ -1069,8 +1059,8 @@ public class InstructionAdapter extends MethodVisitor {
         mv.visitJumpInsn(Opcodes.JSR, label);
     }
 
-    public void ret(final int var) {
-        mv.visitVarInsn(Opcodes.RET, var);
+    public void ret(final int varIndex) {
+        mv.visitVarInsn(Opcodes.RET, varIndex);
     }
 
     public void tableswitch(final int min, final int max, final Label dflt, final Label... labels) {
@@ -1131,7 +1121,7 @@ public class InstructionAdapter extends MethodVisitor {
             final String owner, final String name, final String descriptor, final boolean isInterface) {
         if (api < Opcodes.ASM5) {
             if (isInterface) {
-                throw new IllegalArgumentException("INVOKEVIRTUAL on interfaces require ASM 5");
+                throw new UnsupportedOperationException("INVOKEVIRTUAL on interfaces require ASM 5");
             }
             invokevirtual(owner, name, descriptor);
             return;
@@ -1169,7 +1159,7 @@ public class InstructionAdapter extends MethodVisitor {
             final String owner, final String name, final String descriptor, final boolean isInterface) {
         if (api < Opcodes.ASM5) {
             if (isInterface) {
-                throw new IllegalArgumentException("INVOKESPECIAL on interfaces require ASM 5");
+                throw new UnsupportedOperationException("INVOKESPECIAL on interfaces require ASM 5");
             }
             invokespecial(owner, name, descriptor);
             return;
@@ -1207,7 +1197,7 @@ public class InstructionAdapter extends MethodVisitor {
             final String owner, final String name, final String descriptor, final boolean isInterface) {
         if (api < Opcodes.ASM5) {
             if (isInterface) {
-                throw new IllegalArgumentException("INVOKESTATIC on interfaces require ASM 5");
+                throw new UnsupportedOperationException("INVOKESTATIC on interfaces require ASM 5");
             }
             invokestatic(owner, name, descriptor);
             return;
@@ -1256,6 +1246,16 @@ public class InstructionAdapter extends MethodVisitor {
       * @param type an array Type.
       */
     public void newarray(final Type type) {
+        newarray(mv, type);
+    }
+
+    /**
+      * Generates the instruction to create and push on the stack an array of the given type.
+      *
+      * @param methodVisitor the method visitor to use to generate the instruction.
+      * @param type an array Type.
+      */
+    static void newarray(final MethodVisitor methodVisitor, final Type type) {
         int arrayType;
         switch (type.getSort()) {
             case Type.BOOLEAN:
@@ -1283,10 +1283,10 @@ public class InstructionAdapter extends MethodVisitor {
                 arrayType = Opcodes.T_DOUBLE;
                 break;
             default:
-                mv.visitTypeInsn(Opcodes.ANEWARRAY, type.getInternalName());
+                methodVisitor.visitTypeInsn(Opcodes.ANEWARRAY, type.getInternalName());
                 return;
         }
-        mv.visitIntInsn(Opcodes.NEWARRAY, arrayType);
+        methodVisitor.visitIntInsn(Opcodes.NEWARRAY, arrayType);
     }
 
     public void arraylength() {
@@ -1329,3 +1329,4 @@ public class InstructionAdapter extends MethodVisitor {
         mv.visitLabel(label);
     }
 }
+

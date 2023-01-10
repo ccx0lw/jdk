@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -39,7 +39,6 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.io.UncheckedIOException;
-import java.io.UnsupportedEncodingException;
 import java.lang.System.Logger.Level;
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
@@ -60,6 +59,7 @@ import java.text.Normalizer;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
@@ -74,6 +74,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static java.lang.String.format;
+import static java.nio.charset.StandardCharsets.US_ASCII;
 import static java.util.stream.Collectors.joining;
 import jdk.internal.net.http.HttpRequestImpl;
 
@@ -174,10 +175,13 @@ public final class Utils {
     // used by caller.
 
     public static final BiPredicate<String, String> CONTEXT_RESTRICTED(HttpClient client) {
-        return (k, v) -> client.authenticator() == null ||
-                ! (k.equalsIgnoreCase("Authorization")
-                        && k.equalsIgnoreCase("Proxy-Authorization"));
+        return (k, v) -> client.authenticator().isEmpty() ||
+                (!k.equalsIgnoreCase("Authorization")
+                        && !k.equalsIgnoreCase("Proxy-Authorization"));
     }
+
+    public record ProxyHeaders(HttpHeaders userHeaders, HttpHeaders systemHeaders) {}
+
     private static final BiPredicate<String, String> HOST_RESTRICTED = (k,v) -> !"host".equalsIgnoreCase(k);
     public static final BiPredicate<String, String> PROXY_TUNNEL_RESTRICTED(HttpClient client)  {
         return CONTEXT_RESTRICTED(client).and(HOST_RESTRICTED);
@@ -286,11 +290,21 @@ public final class Utils {
     }
 
     public static Throwable getCompletionCause(Throwable x) {
-        if (!(x instanceof CompletionException)
-                && !(x instanceof ExecutionException)) return x;
-        final Throwable cause = x.getCause();
-        if (cause == null) {
+        Throwable cause = x;
+        while ((cause instanceof CompletionException)
+                || (cause instanceof ExecutionException)) {
+            cause = cause.getCause();
+        }
+        if (cause == null && cause != x) {
             throw new InternalError("Unexpected null cause", x);
+        }
+        return cause;
+    }
+
+    public static Throwable getCancelCause(Throwable x) {
+        Throwable cause = getCompletionCause(x);
+        if (cause instanceof ConnectionExpiredException) {
+            cause = cause.getCause();
         }
         return cause;
     }
@@ -377,7 +391,6 @@ public final class Utils {
         return new URLPermission(urlString, actionStringBuilder.toString());
     }
 
-
     // ABNF primitives defined in RFC 7230
     private static final boolean[] tchar      = new boolean[256];
     private static final boolean[] fieldvchar = new boolean[256];
@@ -390,14 +403,14 @@ public final class Utils {
         for (char c : allowedTokenChars) {
             tchar[c] = true;
         }
-        for (char c = 0x21; c < 0xFF; c++) {
+        for (char c = 0x21; c <= 0xFF; c++) {
             fieldvchar[c] = true;
         }
         fieldvchar[0x7F] = false; // a little hole (DEL) in the range
     }
 
     /*
-     * Validates a RFC 7230 field-name.
+     * Validates an RFC 7230 field-name.
      */
     public static boolean isValidName(String token) {
         for (int i = 0; i < token.length(); i++) {
@@ -458,7 +471,7 @@ public final class Utils {
     }
 
     /*
-     * Validates a RFC 7230 field-value.
+     * Validates an RFC 7230 field-value.
      *
      * "Obsolete line folding" rule
      *
@@ -481,27 +494,31 @@ public final class Utils {
         return true;
     }
 
-
+    @SuppressWarnings("removal")
     public static int getIntegerNetProperty(String name, int defaultValue) {
         return AccessController.doPrivileged((PrivilegedAction<Integer>) () ->
                 NetProperties.getInteger(name, defaultValue));
     }
 
+    @SuppressWarnings("removal")
     public static String getNetProperty(String name) {
         return AccessController.doPrivileged((PrivilegedAction<String>) () ->
                 NetProperties.get(name));
     }
 
+    @SuppressWarnings("removal")
     public static boolean getBooleanProperty(String name, boolean def) {
         return AccessController.doPrivileged((PrivilegedAction<Boolean>) () ->
                 Boolean.parseBoolean(System.getProperty(name, String.valueOf(def))));
     }
 
+    @SuppressWarnings("removal")
     public static String getProperty(String name) {
         return AccessController.doPrivileged((PrivilegedAction<String>) () ->
                 System.getProperty(name));
     }
 
+    @SuppressWarnings("removal")
     public static int getIntegerProperty(String name, int defaultValue) {
         return AccessController.doPrivileged((PrivilegedAction<Integer>) () ->
                 Integer.parseInt(System.getProperty(name, String.valueOf(defaultValue))));
@@ -538,15 +555,9 @@ public final class Utils {
 
     public static String stackTrace(Throwable t) {
         ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        String s = null;
-        try {
-            PrintStream p = new PrintStream(bos, true, "US-ASCII");
-            t.printStackTrace(p);
-            s = bos.toString("US-ASCII");
-        } catch (UnsupportedEncodingException ex) {
-            throw new InternalError(ex); // Can't happen
-        }
-        return s;
+        PrintStream p = new PrintStream(bos, true, US_ASCII);
+        t.printStackTrace(p);
+        return bos.toString(US_ASCII);
     }
 
     /**
@@ -647,33 +658,41 @@ public final class Utils {
     }
 
     public static boolean hasRemaining(List<ByteBuffer> bufs) {
-        synchronized (bufs) {
-            for (ByteBuffer buf : bufs) {
-                if (buf.hasRemaining())
-                    return true;
-            }
+        for (ByteBuffer buf : bufs) {
+            if (buf.hasRemaining())
+                return true;
+        }
+        return false;
+    }
+
+    public static boolean hasRemaining(ByteBuffer[] bufs) {
+        for (ByteBuffer buf : bufs) {
+            if (buf.hasRemaining())
+                return true;
         }
         return false;
     }
 
     public static long remaining(List<ByteBuffer> bufs) {
         long remain = 0;
-        synchronized (bufs) {
-            for (ByteBuffer buf : bufs) {
-                remain += buf.remaining();
-            }
+        for (ByteBuffer buf : bufs) {
+            remain += buf.remaining();
         }
         return remain;
     }
 
+    public static long synchronizedRemaining(List<ByteBuffer> bufs) {
+        synchronized (bufs) {
+            return remaining(bufs);
+        }
+    }
+
     public static int remaining(List<ByteBuffer> bufs, int max) {
         long remain = 0;
-        synchronized (bufs) {
-            for (ByteBuffer buf : bufs) {
-                remain += buf.remaining();
-                if (remain > max) {
-                    throw new IllegalArgumentException("too many bytes");
-                }
+        for (ByteBuffer buf : bufs) {
+            remain += buf.remaining();
+            if (remain > max) {
+                throw new IllegalArgumentException("too many bytes");
             }
         }
         return (int) remain;
@@ -860,7 +879,7 @@ public final class Utils {
         if (defaultPort) {
             return host;
         } else {
-            return host + ":" + Integer.toString(port);
+            return host + ":" + port;
         }
     }
 
@@ -1081,17 +1100,6 @@ public final class Utils {
 
     // -- toAsciiString-like support to encode path and query URI segments
 
-    private static final char[] hexDigits = {
-            '0', '1', '2', '3', '4', '5', '6', '7',
-            '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'
-    };
-
-    private static void appendEscape(StringBuilder sb, byte b) {
-        sb.append('%');
-        sb.append(hexDigits[(b >> 4) & 0x0f]);
-        sb.append(hexDigits[(b >> 0) & 0x0f]);
-    }
-
     // Encodes all characters >= \u0080 into escaped, normalized UTF-8 octets,
     // assuming that s is otherwise legal
     //
@@ -1119,13 +1127,16 @@ public final class Utils {
             assert false : x;
         }
 
+        HexFormat format = HexFormat.of().withUpperCase();
         StringBuilder sb = new StringBuilder();
         while (bb.hasRemaining()) {
             int b = bb.get() & 0xff;
-            if (b >= 0x80)
-                appendEscape(sb, (byte)b);
-            else
-                sb.append((char)b);
+            if (b >= 0x80) {
+                sb.append('%');
+                format.toHexDigits(sb, (byte)b);
+            } else {
+                sb.append((char) b);
+            }
         }
         return sb.toString();
     }

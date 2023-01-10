@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1995, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1995, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -67,6 +67,7 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.PrintStream;
 import java.io.PrintWriter;
+import java.io.Serial;
 import java.io.Serializable;
 import java.security.AccessControlContext;
 import java.security.AccessController;
@@ -207,7 +208,7 @@ import static sun.java2d.pipe.hw.ExtendedBufferCapabilities.VSyncType.VSYNC_ON;
  * <a href="https://docs.oracle.com/javase/tutorial/uiswing/misc/focus.html">
  * How to Use the Focus Subsystem</a>,
  * a section in <em>The Java Tutorial</em>, and the
- * <a href="../../java/awt/doc-files/FocusSpec.html">Focus Specification</a>
+ * <a href="doc-files/FocusSpec.html">Focus Specification</a>
  * for more information.
  *
  * @author      Arthur van Hoff
@@ -394,7 +395,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
      * @see #validate
      * @see #invalidate
      */
-    private volatile boolean valid = false;
+    private volatile boolean valid;
 
     /**
      * The {@code DropTarget} associated with this component.
@@ -504,6 +505,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
     /*
      * The component's AccessControlContext.
      */
+    @SuppressWarnings("removal")
     private transient volatile AccessControlContext acc =
         AccessController.getContext();
 
@@ -625,13 +627,15 @@ public abstract class Component implements ImageObserver, MenuContainer,
             initIDs();
         }
 
+        @SuppressWarnings("removal")
         String s = java.security.AccessController.doPrivileged(
                                                                new GetPropertyAction("awt.image.incrementaldraw"));
         isInc = (s == null || s.equals("true"));
 
-        s = java.security.AccessController.doPrivileged(
+        @SuppressWarnings("removal")
+        String s2 = java.security.AccessController.doPrivileged(
                                                         new GetPropertyAction("awt.image.redrawrate"));
-        incRate = (s != null) ? Integer.parseInt(s) : 100;
+        incRate = (s2 != null) ? Integer.parseInt(s2) : 100;
     }
 
     /**
@@ -671,9 +675,10 @@ public abstract class Component implements ImageObserver, MenuContainer,
      */
     public static final float RIGHT_ALIGNMENT = 1.0f;
 
-    /*
-     * JDK 1.1 serialVersionUID
+    /**
+     * Use serialVersionUID from JDK 1.1 for interoperability.
      */
+    @Serial
     private static final long serialVersionUID = -7644114512714619750L;
 
     /**
@@ -709,6 +714,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
     /*
      * Returns the acc this component was constructed with.
      */
+    @SuppressWarnings("removal")
     final AccessControlContext getAccessControlContext() {
         if (acc == null) {
             throw new SecurityException("Component is missing AccessControlContext");
@@ -716,6 +722,9 @@ public abstract class Component implements ImageObserver, MenuContainer,
         return acc;
     }
 
+    /**
+     * Whether the component is packed or not;
+     */
     boolean isPacked = false;
 
     /**
@@ -968,6 +977,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
                 comp.processEvent(e);
             }
 
+            @SuppressWarnings("removal")
             public AccessControlContext getAccessControlContext(Component comp) {
                 return comp.getAccessControlContext();
             }
@@ -1410,7 +1420,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
      * pointer. If the return value of this method is {@code null}, mouse
      * pointer is not directly above the {@code Component}.
      *
-     * @exception HeadlessException if GraphicsEnvironment.isHeadless() returns true
+     * @throws HeadlessException if GraphicsEnvironment.isHeadless() returns true
      * @see       #isShowing
      * @see       Container#getMousePosition
      * @return    mouse coordinates relative to this {@code Component}, or null
@@ -1421,6 +1431,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
             throw new HeadlessException();
         }
 
+        @SuppressWarnings("removal")
         PointerInfo pi = java.security.AccessController.doPrivileged(
                                                                      new java.security.PrivilegedAction<PointerInfo>() {
                                                                          public PointerInfo run() {
@@ -1973,7 +1984,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
      * @return this component's locale; if this component does not
      *          have a locale, the locale of its parent is returned
      * @see #setLocale
-     * @exception IllegalComponentStateException if the {@code Component}
+     * @throws IllegalComponentStateException if the {@code Component}
      *          does not have its own locale and has not yet been added to
      *          a containment hierarchy such that the locale can be determined
      *          from the containing parent
@@ -2972,8 +2983,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
             if (!wasValid && peer != null) {
                 Font newfont = getFont();
                 Font oldfont = peerFont;
-                if (newfont != oldfont && (oldfont == null
-                                           || !oldfont.equals(newfont))) {
+                if (newfont != null && !Objects.equals(oldfont, newfont)) {
                     peer.setFont(newfont);
                     peerFont = newfont;
                 }
@@ -3167,17 +3177,6 @@ public abstract class Component implements ImageObserver, MenuContainer,
      * @since     1.0
      */
     public FontMetrics getFontMetrics(Font font) {
-        // This is an unsupported hack, but left in for a customer.
-        // Do not remove.
-        FontManager fm = FontManagerFactory.getInstance();
-        if (fm instanceof SunFontManager
-            && ((SunFontManager) fm).usePlatformFontMetrics()) {
-
-            if (peer != null &&
-                !(peer instanceof LightweightPeer)) {
-                return peer.getFontMetrics(font);
-            }
-        }
         return sun.font.FontDesignMetrics.getMetrics(font);
     }
 
@@ -3634,10 +3633,6 @@ public abstract class Component implements ImageObserver, MenuContainer,
      * @since     1.0
      */
     public Image createImage(ImageProducer producer) {
-        ComponentPeer peer = this.peer;
-        if ((peer != null) && ! (peer instanceof LightweightPeer)) {
-            return peer.createImage(producer);
-        }
         return getToolkit().createImage(producer);
     }
 
@@ -3753,16 +3748,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
      */
     public boolean prepareImage(Image image, int width, int height,
                                 ImageObserver observer) {
-        ComponentPeer peer = this.peer;
-        if (peer instanceof LightweightPeer) {
-            return (parent != null)
-                ? parent.prepareImage(image, width, height, observer)
-                : getToolkit().prepareImage(image, width, height, observer);
-        } else {
-            return (peer != null)
-                ? peer.prepareImage(image, width, height, observer)
-                : getToolkit().prepareImage(image, width, height, observer);
-        }
+        return getToolkit().prepareImage(image, width, height, observer);
     }
 
     /**
@@ -3825,16 +3811,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
      */
     public int checkImage(Image image, int width, int height,
                           ImageObserver observer) {
-        ComponentPeer peer = this.peer;
-        if (peer instanceof LightweightPeer) {
-            return (parent != null)
-                ? parent.checkImage(image, width, height, observer)
-                : getToolkit().checkImage(image, width, height, observer);
-        } else {
-            return (peer != null)
-                ? peer.checkImage(image, width, height, observer)
-                : getToolkit().checkImage(image, width, height, observer);
-        }
+        return getToolkit().checkImage(image, width, height, observer);
     }
 
     /**
@@ -3850,8 +3827,8 @@ public abstract class Component implements ImageObserver, MenuContainer,
      * Each time this method is called,
      * the existing buffer strategy for this component is discarded.
      * @param numBuffers number of buffers to create, including the front buffer
-     * @exception IllegalArgumentException if numBuffers is less than 1.
-     * @exception IllegalStateException if the component is not displayable
+     * @throws IllegalArgumentException if numBuffers is less than 1.
+     * @throws IllegalStateException if the component is not displayable
      * @see #isDisplayable
      * @see Window#getBufferStrategy()
      * @see Canvas#getBufferStrategy()
@@ -3907,11 +3884,11 @@ public abstract class Component implements ImageObserver, MenuContainer,
      * @param numBuffers number of buffers to create
      * @param caps the required capabilities for creating the buffer strategy;
      * cannot be {@code null}
-     * @exception AWTException if the capabilities supplied could not be
+     * @throws AWTException if the capabilities supplied could not be
      * supported or met; this may happen, for example, if there is not enough
      * accelerated memory currently available, or if page flipping is specified
      * but not possible.
-     * @exception IllegalArgumentException if numBuffers is less than 1, or if
+     * @throws IllegalArgumentException if numBuffers is less than 1, or if
      * caps is {@code null}
      * @see Window#getBufferStrategy()
      * @see Canvas#getBufferStrategy()
@@ -3954,7 +3931,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
      *
      * @see sun.java2d.SunGraphicsEnvironment#isFlipStrategyPreferred(ComponentPeer)
      */
-    private class ProxyCapabilities extends ExtendedBufferCapabilities {
+    private static class ProxyCapabilities extends ExtendedBufferCapabilities {
         private BufferCapabilities orig;
         private ProxyCapabilities(BufferCapabilities orig) {
             super(orig.getFrontBufferCapabilities(),
@@ -4055,17 +4032,17 @@ public abstract class Component implements ImageObserver, MenuContainer,
          * @see Applet
          * @param numBuffers the number of buffers
          * @param caps the capabilities of the buffers
-         * @exception AWTException if the capabilities supplied could not be
+         * @throws AWTException if the capabilities supplied could not be
          * supported or met
-         * @exception ClassCastException if the component is not a canvas or
+         * @throws ClassCastException if the component is not a canvas or
          * window.
-         * @exception IllegalStateException if the component has no peer
-         * @exception IllegalArgumentException if {@code numBuffers} is less than two,
+         * @throws IllegalStateException if the component has no peer
+         * @throws IllegalArgumentException if {@code numBuffers} is less than two,
          * or if {@code BufferCapabilities.isPageFlipping} is not
          * {@code true}.
          * @see #createBuffers(int, BufferCapabilities)
          */
-        @SuppressWarnings("deprecation")
+        @SuppressWarnings("removal")
         protected FlipBufferStrategy(int numBuffers, BufferCapabilities caps)
             throws AWTException
         {
@@ -4089,10 +4066,10 @@ public abstract class Component implements ImageObserver, MenuContainer,
          * @param caps the capabilities of the buffers.
          * {@code BufferCapabilities.isPageFlipping} must be
          * {@code true}.
-         * @exception AWTException if the capabilities supplied could not be
+         * @throws AWTException if the capabilities supplied could not be
          * supported or met
-         * @exception IllegalStateException if the component has no peer
-         * @exception IllegalArgumentException if numBuffers is less than two,
+         * @throws IllegalStateException if the component has no peer
+         * @throws IllegalArgumentException if numBuffers is less than two,
          * or if {@code BufferCapabilities.isPageFlipping} is not
          * {@code true}.
          * @see java.awt.BufferCapabilities#isPageFlipping()
@@ -4155,8 +4132,10 @@ public abstract class Component implements ImageObserver, MenuContainer,
         }
 
         /**
-         * @return direct access to the back buffer, as an image.
-         * @exception IllegalStateException if the buffers have not yet
+         * Provides direct access to the back buffer as an image.
+         *
+         * @return the back buffer as an image
+         * @throws IllegalStateException if the buffers have not yet
          * been created
          */
         protected Image getBackBuffer() {
@@ -4175,7 +4154,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
          * for the contents of the back buffer.  This should be one of the
          * values of the {@code BufferCapabilities.FlipContents}
          * property.
-         * @exception IllegalStateException if the buffers have not yet
+         * @throws IllegalStateException if the buffers have not yet
          * been created
          * @see java.awt.BufferCapabilities#getFlipContents()
          */
@@ -4715,8 +4694,11 @@ public abstract class Component implements ImageObserver, MenuContainer,
     }
 
     /**
-     * @return whether or not paint messages received from the operating system
+     * Returns whether or not paint messages received from the operating system
      * should be ignored.
+     *
+     * @return whether or not paint messages received from the operating system
+     * should be ignored
      *
      * @since 1.4
      * @see #setIgnoreRepaint
@@ -4967,8 +4949,8 @@ public abstract class Component implements ImageObserver, MenuContainer,
             // the active/passive/peered clients loose focus.
             if (id == FocusEvent.FOCUS_GAINED) {
                 InputContext inputContext = getInputContext();
-                if (inputContext != null && inputContext instanceof sun.awt.im.InputContext) {
-                    ((sun.awt.im.InputContext)inputContext).disableNativeIM();
+                if (inputContext instanceof sun.awt.im.InputContext ctx) {
+                    ctx.disableNativeIM();
                 }
             }
         }
@@ -6078,7 +6060,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
      * @return an array of all objects registered as
      *          <code><em>Foo</em>Listener</code>s on this component,
      *          or an empty array if no such listeners have been added
-     * @exception ClassCastException if {@code listenerType}
+     * @throws ClassCastException if {@code listenerType}
      *          doesn't specify a class or interface that implements
      *          {@code java.util.EventListener}
      * @throws NullPointerException if {@code listenerType} is {@code null}
@@ -6243,7 +6225,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
 
     /**
      * Weak map of known coalesceEvent overriders.
-     * Value indicates whether overriden.
+     * Value indicates whether overridden.
      * Bootstrap classes are not included.
      */
     private static final Map<Class<?>, Boolean> coalesceMap =
@@ -6270,6 +6252,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
              }
 
              // Need to check non-bootstraps.
+             @SuppressWarnings("removal")
              Boolean enabled = java.security.AccessController.doPrivileged(
                  new java.security.PrivilegedAction<Boolean>() {
                      public Boolean run() {
@@ -6318,7 +6301,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
         }
 
         try {
-            // Throws if not overriden.
+            // Throws if not overridden.
             clazz.getDeclaredMethod(
                 "coalesceEvents", coalesceEventsParams
                 );
@@ -7671,7 +7654,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
      * @param temporary true if the focus change is temporary,
      *        such as when the window loses the focus; for
      *        more information on temporary focus changes see the
-     *<a href="../../java/awt/doc-files/FocusSpec.html">Focus Specification</a>
+     *<a href="doc-files/FocusSpec.html">Focus Specification</a>
      * @return {@code false} if the focus change request is guaranteed to
      *         fail; {@code true} if it is likely to succeed
      * @see java.awt.event.FocusEvent
@@ -7739,7 +7722,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
      * @param temporary true if the focus change is temporary,
      *        such as when the window loses the focus; for
      *        more information on temporary focus changes see the
-     *<a href="../../java/awt/doc-files/FocusSpec.html">Focus Specification</a>
+     *<a href="doc-files/FocusSpec.html">Focus Specification</a>
      *
      * @param  cause the cause why the focus is requested
      * @return {@code false} if the focus change request is guaranteed to
@@ -7906,7 +7889,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
      * @param temporary true if the focus change is temporary,
      *        such as when the window loses the focus; for
      *        more information on temporary focus changes see the
-     *<a href="../../java/awt/doc-files/FocusSpec.html">Focus Specification</a>
+     *<a href="doc-files/FocusSpec.html">Focus Specification</a>
      * @return {@code false} if the focus change request is guaranteed to
      *         fail; {@code true} if it is likely to succeed
      * @see #requestFocus
@@ -8103,7 +8086,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
         {
             return true;
         }
-    };
+    }
 
     static synchronized void setRequestFocusController(RequestFocusController requestController)
     {
@@ -8197,7 +8180,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
         return res;
     }
 
-    @SuppressWarnings("deprecation")
+    @SuppressWarnings("removal")
     final Component getNextFocusCandidate() {
         Container rootAncestor = getTraversalRoot();
         Component comp = this;
@@ -8351,7 +8334,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
         return hasFocus();
     }
 
-    /*
+    /**
      * Used to disallow auto-focus-transfer on disposal of the focus owner
      * in the process of disposing its parent container.
      */
@@ -8369,7 +8352,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
      * Adds the specified popup menu to the component.
      * @param     popup the popup menu to be added to the component.
      * @see       #remove(MenuComponent)
-     * @exception NullPointerException if {@code popup} is {@code null}
+     * @throws NullPointerException if {@code popup} is {@code null}
      * @since     1.1
      */
     public void add(PopupMenu popup) {
@@ -8926,7 +8909,8 @@ public abstract class Component implements ImageObserver, MenuContainer,
      * The non-serializable listeners are detected and
      * no attempt is made to serialize them.
      *
-     * @param s the {@code ObjectOutputStream} to write
+     * @param  s the {@code ObjectOutputStream} to write
+     * @throws IOException if an I/O error occurs
      * @serialData {@code null} terminated sequence of
      *   0 or more pairs; the pair consists of a {@code String}
      *   and an {@code Object}; the {@code String} indicates
@@ -8964,6 +8948,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
      * @see #mouseWheelListenerK
      * @see #readObject(ObjectInputStream)
      */
+    @Serial
     private void writeObject(ObjectOutputStream s)
       throws IOException
     {
@@ -8997,9 +8982,14 @@ public abstract class Component implements ImageObserver, MenuContainer,
      * of events fired by the component.
      * Unrecognized keys or values will be ignored.
      *
-     * @param s the {@code ObjectInputStream} to read
+     * @param  s the {@code ObjectInputStream} to read
+     * @throws ClassNotFoundException if the class of a serialized object could
+     *         not be found
+     * @throws IOException if an I/O error occurs
      * @see #writeObject(ObjectOutputStream)
      */
+    @SuppressWarnings("removal")
+    @Serial
     private void readObject(ObjectInputStream s)
       throws ClassNotFoundException, IOException
     {
@@ -9202,7 +9192,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
      *
      * @param orientation the new component orientation of this component and
      *        the components contained within it.
-     * @exception NullPointerException if {@code orientation} is null.
+     * @throws NullPointerException if {@code orientation} is null.
      * @see #setComponentOrientation
      * @see #getComponentOrientation
      * @see #invalidate
@@ -9326,6 +9316,10 @@ public abstract class Component implements ImageObserver, MenuContainer,
     protected abstract class AccessibleAWTComponent extends AccessibleContext
         implements Serializable, AccessibleComponent {
 
+        /**
+         * Use serialVersionUID from JDK 1.3 for interoperability.
+         */
+        @Serial
         private static final long serialVersionUID = 642321655757800191L;
 
         /**
@@ -9340,7 +9334,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
          * to add/remove ComponentListener and FocusListener to track
          * target Component's state.
          */
-        private transient volatile int propertyListenersCount = 0;
+        private transient volatile int propertyListenersCount;
 
         /**
          * A component listener to track show/hide/resize events
@@ -9362,7 +9356,17 @@ public abstract class Component implements ImageObserver, MenuContainer,
          * @since 1.3
          */
         protected class AccessibleAWTComponentHandler implements ComponentListener, Serializable {
+
+            /**
+             * Use serialVersionUID from JDK 1.3 for interoperability.
+             */
+            @Serial
             private static final long serialVersionUID = -1009684107426231869L;
+
+            /**
+             * Constructs an {@code AccessibleAWTComponentHandler}.
+             */
+            protected AccessibleAWTComponentHandler() {}
 
             public void componentHidden(ComponentEvent e)  {
                 if (accessibleContext != null) {
@@ -9394,7 +9398,17 @@ public abstract class Component implements ImageObserver, MenuContainer,
          * @since 1.3
          */
         protected class AccessibleAWTFocusHandler implements FocusListener, Serializable {
+
+            /**
+             * Use serialVersionUID from JDK 1.3 for interoperability.
+             */
+            @Serial
             private static final long serialVersionUID = 3150908257351582233L;
+
+            /**
+             * Constructs an {@code AccessibleAWTFocusHandler}.
+             */
+            protected AccessibleAWTFocusHandler() {}
 
             public void focusGained(FocusEvent event) {
                 if (accessibleContext != null) {
@@ -10142,7 +10156,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
      * needs to be cut off of the heavyweight components in order to mix this
      * lightweight component correctly with them.
      *
-     * The method is overriden in the java.awt.Container to handle non-opaque
+     * The method is overridden in the java.awt.Container to handle non-opaque
      * containers containing opaque children.
      *
      * See 6637655 for details.
@@ -10411,7 +10425,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
     }
 
     void mixOnValidating() {
-        // This method gets overriden in the Container. Obviously, a plain
+        // This method gets overridden in the Container. Obviously, a plain
         // non-container components don't need to handle validation.
     }
 
@@ -10514,7 +10528,7 @@ public abstract class Component implements ImageObserver, MenuContainer,
 
     // ****************** END OF MIXING CODE ********************************
 
-    // Note that the method is overriden in the Window class,
+    // Note that the method is overridden in the Window class,
     // a window doesn't need to be updated in the Z-order.
     void updateZOrder() {
         peer.setZOrder(getHWPeerAboveMe());

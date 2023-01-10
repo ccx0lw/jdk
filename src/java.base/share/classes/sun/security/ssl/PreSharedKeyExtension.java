@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,14 +28,11 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.security.*;
 import java.text.MessageFormat;
-import java.util.List;
-import java.util.ArrayList;
-import java.util.Locale;
-import java.util.Arrays;
-import java.util.Collection;
+import java.util.*;
 import javax.crypto.Mac;
 import javax.crypto.SecretKey;
 import javax.net.ssl.SSLPeerUnverifiedException;
+import javax.net.ssl.SSLProtocolException;
 import static sun.security.ssl.ClientAuthType.CLIENT_AUTH_REQUIRED;
 import sun.security.ssl.ClientHello.ClientHelloMessage;
 import sun.security.ssl.SSLExtension.ExtensionConsumer;
@@ -55,9 +52,11 @@ final class PreSharedKeyExtension {
     static final ExtensionConsumer chOnLoadConsumer =
             new CHPreSharedKeyConsumer();
     static final HandshakeAbsence chOnLoadAbsence =
-            new CHPreSharedKeyAbsence();
+            new CHPreSharedKeyOnLoadAbsence();
     static final HandshakeConsumer chOnTradeConsumer =
             new CHPreSharedKeyUpdate();
+    static final HandshakeAbsence chOnTradAbsence =
+            new CHPreSharedKeyOnTradeAbsence();
     static final SSLStringizer chStringizer =
             new CHPreSharedKeyStringizer();
 
@@ -105,23 +104,25 @@ final class PreSharedKeyExtension {
             this.binders = binders;
         }
 
-        CHPreSharedKeySpec(HandshakeContext context,
+        CHPreSharedKeySpec(HandshakeContext hc,
                 ByteBuffer m) throws IOException {
             // struct {
             //     PskIdentity identities<7..2^16-1>;
             //     PskBinderEntry binders<33..2^16-1>;
             // } OfferedPsks;
             if (m.remaining() < 44) {
-                throw context.conContext.fatal(Alert.ILLEGAL_PARAMETER,
+                throw hc.conContext.fatal(Alert.DECODE_ERROR,
+                        new SSLProtocolException(
                     "Invalid pre_shared_key extension: " +
-                    "insufficient data (length=" + m.remaining() + ")");
+                    "insufficient data (length=" + m.remaining() + ")"));
             }
 
             int idEncodedLength = Record.getInt16(m);
             if (idEncodedLength < 7) {
-                throw context.conContext.fatal(Alert.ILLEGAL_PARAMETER,
+                throw hc.conContext.fatal(Alert.DECODE_ERROR,
+                        new SSLProtocolException(
                     "Invalid pre_shared_key extension: " +
-                    "insufficient identities (length=" + idEncodedLength + ")");
+                    "insufficient identities (length=" + idEncodedLength + ")"));
             }
 
             identities = new ArrayList<>();
@@ -129,9 +130,10 @@ final class PreSharedKeyExtension {
             while (idReadLength < idEncodedLength) {
                 byte[] id = Record.getBytes16(m);
                 if (id.length < 1) {
-                    throw context.conContext.fatal(Alert.ILLEGAL_PARAMETER,
+                    throw hc.conContext.fatal(Alert.DECODE_ERROR,
+                            new SSLProtocolException(
                         "Invalid pre_shared_key extension: " +
-                        "insufficient identity (length=" + id.length + ")");
+                        "insufficient identity (length=" + id.length + ")"));
                 }
                 int obfuscatedTicketAge = Record.getInt32(m);
 
@@ -141,18 +143,20 @@ final class PreSharedKeyExtension {
             }
 
             if (m.remaining() < 35) {
-                throw context.conContext.fatal(Alert.ILLEGAL_PARAMETER,
-                        "Invalid pre_shared_key extension: " +
-                        "insufficient binders data (length=" +
-                        m.remaining() + ")");
+                throw hc.conContext.fatal(Alert.DECODE_ERROR,
+                        new SSLProtocolException(
+                    "Invalid pre_shared_key extension: " +
+                    "insufficient binders data (length=" +
+                    m.remaining() + ")"));
             }
 
             int bindersEncodedLen = Record.getInt16(m);
             if (bindersEncodedLen < 33) {
-                throw context.conContext.fatal(Alert.ILLEGAL_PARAMETER,
-                        "Invalid pre_shared_key extension: " +
-                        "insufficient binders (length=" +
-                        bindersEncodedLen + ")");
+                throw hc.conContext.fatal(Alert.DECODE_ERROR,
+                        new SSLProtocolException(
+                    "Invalid pre_shared_key extension: " +
+                    "insufficient binders (length=" +
+                    bindersEncodedLen + ")"));
             }
 
             binders = new ArrayList<>();
@@ -160,10 +164,11 @@ final class PreSharedKeyExtension {
             while (bindersReadLength < bindersEncodedLen) {
                 byte[] binder = Record.getBytes8(m);
                 if (binder.length < 32) {
-                    throw context.conContext.fatal(Alert.ILLEGAL_PARAMETER,
-                            "Invalid pre_shared_key extension: " +
-                            "insufficient binder entry (length=" +
-                            binder.length + ")");
+                    throw hc.conContext.fatal(Alert.DECODE_ERROR,
+                            new SSLProtocolException(
+                        "Invalid pre_shared_key extension: " +
+                        "insufficient binder entry (length=" +
+                        binder.length + ")"));
                 }
                 binders.add(binder);
                 bindersReadLength += 1 + binder.length;
@@ -209,12 +214,12 @@ final class PreSharedKeyExtension {
         @Override
         public String toString() {
             MessageFormat messageFormat = new MessageFormat(
-                "\"PreSharedKey\": '{'\n" +
-                "  \"identities\": '{'\n" +
-                "{0}\n" +
-                "  '}'" +
-                "  \"binders\": \"{1}\",\n" +
-                "'}'",
+                    """
+                            "PreSharedKey": '{'
+                              "identities": '{'
+                            {0}
+                              '}'  "binders": "{1}",
+                            '}'""",
                 Locale.ENGLISH);
 
             Object[] messageFields = {
@@ -251,15 +256,9 @@ final class PreSharedKeyExtension {
     private static final
             class CHPreSharedKeyStringizer implements SSLStringizer {
         @Override
-        public String toString(ByteBuffer buffer) {
+        public String toString(HandshakeContext hc, ByteBuffer buffer) {
             try {
-                // As the HandshakeContext parameter of CHPreSharedKeySpec
-                // constructor is used for fatal alert only, we can use
-                // null HandshakeContext here as we don't care about exception.
-                //
-                // Please take care of this code if the CHPreSharedKeySpec
-                // constructor is updated in the future.
-                return (new CHPreSharedKeySpec(null, buffer)).toString();
+                return (new CHPreSharedKeySpec(hc, buffer)).toString();
             } catch (Exception ex) {
                 // For debug logging only, so please swallow exceptions.
                 return ex.getMessage();
@@ -275,13 +274,14 @@ final class PreSharedKeyExtension {
             this.selectedIdentity = selectedIdentity;
         }
 
-        SHPreSharedKeySpec(HandshakeContext context,
+        SHPreSharedKeySpec(HandshakeContext hc,
                 ByteBuffer m) throws IOException {
             if (m.remaining() < 2) {
-                throw context.conContext.fatal(Alert.ILLEGAL_PARAMETER,
-                        "Invalid pre_shared_key extension: " +
-                        "insufficient selected_identity (length=" +
-                        m.remaining() + ")");
+                throw hc.conContext.fatal(Alert.DECODE_ERROR,
+                        new SSLProtocolException(
+                    "Invalid pre_shared_key extension: " +
+                    "insufficient selected_identity (length=" +
+                    m.remaining() + ")"));
             }
             this.selectedIdentity = Record.getInt16(m);
         }
@@ -296,9 +296,10 @@ final class PreSharedKeyExtension {
         @Override
         public String toString() {
             MessageFormat messageFormat = new MessageFormat(
-                "\"PreSharedKey\": '{'\n" +
-                "  \"selected_identity\"      : \"{0}\",\n" +
-                "'}'",
+                    """
+                            "PreSharedKey": '{'
+                              "selected_identity"      : "{0}",
+                            '}'""",
                 Locale.ENGLISH);
 
             Object[] messageFields = {
@@ -312,15 +313,9 @@ final class PreSharedKeyExtension {
     private static final
             class SHPreSharedKeyStringizer implements SSLStringizer {
         @Override
-        public String toString(ByteBuffer buffer) {
+        public String toString(HandshakeContext hc, ByteBuffer buffer) {
             try {
-                // As the HandshakeContext parameter of SHPreSharedKeySpec
-                // constructor is used for fatal alert only, we can use
-                // null HandshakeContext here as we don't care about exception.
-                //
-                // Please take care of this code if the SHPreSharedKeySpec
-                // constructor is updated in the future.
-                return (new SHPreSharedKeySpec(null, buffer)).toString();
+                return (new SHPreSharedKeySpec(hc, buffer)).toString();
             } catch (Exception ex) {
                 // For debug logging only, so please swallow exceptions.
                 return ex.getMessage();
@@ -351,12 +346,7 @@ final class PreSharedKeyExtension {
             }
 
             // Parse the extension.
-            CHPreSharedKeySpec pskSpec = null;
-            try {
-                pskSpec = new CHPreSharedKeySpec(shc, buffer);
-            } catch (IOException ioe) {
-                throw shc.conContext.fatal(Alert.UNEXPECTED_MESSAGE, ioe);
-            }
+            CHPreSharedKeySpec pskSpec = new CHPreSharedKeySpec(shc, buffer);
 
             // The "psk_key_exchange_modes" extension should have been loaded.
             if (!shc.handshakeExtensions.containsKey(
@@ -379,16 +369,18 @@ final class PreSharedKeyExtension {
                 SSLSessionImpl s = null;
 
                 for (PskIdentity requestedId : pskSpec.identities) {
-                    // If we are keeping state, see if the identity is in the cache
+                    // If we are keeping state, see if the identity is in the
+                    // cache. Note that for TLS 1.3, we would also clean
+                    // up the cached session if it is not rejoinable.
                     if (requestedId.identity.length == SessionId.MAX_LENGTH) {
-                        s = sessionCache.get(requestedId.identity);
+                        s = sessionCache.pull(requestedId.identity);
                     }
                     // See if the identity is a stateless ticket
                     if (s == null &&
                             requestedId.identity.length > SessionId.MAX_LENGTH &&
                             sessionCache.statelessEnabled()) {
                         ByteBuffer b =
-                                new SessionTicketSpec(requestedId.identity).
+                            new SessionTicketSpec(shc, requestedId.identity).
                                         decrypt(shc);
                         if (b != null) {
                             try {
@@ -450,11 +442,12 @@ final class PreSharedKeyExtension {
 
         // Make sure that the server handshake context's localSupportedSignAlgs
         // field is populated.  This is particularly important when
-        // client authentication was used in an initial session and it is
+        // client authentication was used in an initial session, and it is
         // now being resumed.
         if (shc.localSupportedSignAlgs == null) {
             shc.localSupportedSignAlgs =
                     SignatureScheme.getSupportedAlgorithms(
+                            shc.sslConfig,
                             shc.algorithmConstraints, shc.activeProtocols);
         }
 
@@ -573,9 +566,9 @@ final class PreSharedKeyExtension {
         SecretKey binderKey = deriveBinderKey(shc, psk, session);
         byte[] computedBinder =
                 computeBinder(shc, binderKey, session, pskBinderHash);
-        if (!Arrays.equals(binder, computedBinder)) {
+        if (!MessageDigest.isEqual(binder, computedBinder)) {
             throw shc.conContext.fatal(Alert.ILLEGAL_PARAMETER,
-                    "Incorect PSK binder value");
+                    "Incorrect PSK binder value");
         }
     }
 
@@ -688,7 +681,7 @@ final class PreSharedKeyExtension {
                 return null;
             }
 
-            // The PSK ID can only be used in one connections, but this method
+            // The PSK ID can only be used in one connection, but this method
             // may be called twice in a connection if the server sends HRR.
             // ID is saved in the context so it can be used in the second call.
             if (chc.pskIdentity == null) {
@@ -831,7 +824,7 @@ final class PreSharedKeyExtension {
     }
 
     private static final
-            class CHPreSharedKeyAbsence implements HandshakeAbsence {
+            class CHPreSharedKeyOnLoadAbsence implements HandshakeAbsence {
         @Override
         public void absent(ConnectionContext context,
                            HandshakeMessage message) throws IOException {
@@ -846,6 +839,37 @@ final class PreSharedKeyExtension {
             // Resumption is only determined by PSK, when enabled
             shc.resumingSession = null;
             shc.isResumption = false;
+        }
+    }
+
+    /**
+     * The absence processing if the extension is not present in
+     * a ClientHello handshake message.
+     */
+    private static final class CHPreSharedKeyOnTradeAbsence
+            implements HandshakeAbsence {
+        @Override
+        public void absent(ConnectionContext context,
+                HandshakeMessage message) throws IOException {
+            // The producing happens in server side only.
+            ServerHandshakeContext shc = (ServerHandshakeContext)context;
+
+            // A client is considered to be attempting to negotiate using this
+            // specification if the ClientHello contains a "supported_versions"
+            // extension with 0x0304 contained in its body.  Such a ClientHello
+            // message MUST meet the following requirements:
+            //   -  If not containing a "pre_shared_key" extension, it MUST
+            //      contain both a "signature_algorithms" extension and a
+            //      "supported_groups" extension.
+            if (shc.negotiatedProtocol.useTLS13PlusSpec() &&
+                    (!shc.handshakeExtensions.containsKey(
+                            SSLExtension.CH_SIGNATURE_ALGORITHMS) ||
+                     !shc.handshakeExtensions.containsKey(
+                            SSLExtension.CH_SUPPORTED_GROUPS))) {
+                throw shc.conContext.fatal(Alert.MISSING_EXTENSION,
+                    "No supported_groups or signature_algorithms extension " +
+                    "when pre_shared_key extension is not present");
+            }
         }
     }
 

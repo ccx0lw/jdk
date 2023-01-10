@@ -47,11 +47,11 @@ package com.sun.org.apache.bcel.internal.generic;
  * @see InstructionHandle
  * @see InstructionList
  * @see InstructionTargeter
- * @version $Id$
  */
 public final class TargetLostException extends Exception {
 
     private static final long serialVersionUID = -6857272667645328384L;
+    @SuppressWarnings("serial") // Array component type is not Serializable
     private final InstructionHandle[] targets;
 
 

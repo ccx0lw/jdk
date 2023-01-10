@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,7 +27,7 @@
 
 /* This file contains dummy provider probes needed when compiling a hotspot
  * that does not support dtrace probes. This could be because we're building
- * on a system that doesn't support dtrace or because we're bulding a variant
+ * on a system that doesn't support dtrace or because we're building a variant
  * of hotspot (like core) where we do not support dtrace
  */
 #if !defined(DTRACE_ENABLED)
@@ -121,14 +121,6 @@
 #define HOTSPOT_VMOPS_END_ENABLED() 0
 
 /* hs_private provider probes */
-#define HS_PRIVATE_CMS_INITMARK_BEGIN()
-#define HS_PRIVATE_CMS_INITMARK_BEGIN_ENABLED() 0
-#define HS_PRIVATE_CMS_INITMARK_END()
-#define HS_PRIVATE_CMS_INITMARK_END_ENABLED() 0
-#define HS_PRIVATE_CMS_REMARK_BEGIN()
-#define HS_PRIVATE_CMS_REMARK_BEGIN_ENABLED() 0
-#define HS_PRIVATE_CMS_REMARK_END()
-#define HS_PRIVATE_CMS_REMARK_END_ENABLED() 0
 #define HS_PRIVATE_HASHTABLE_NEW_ENTRY(arg0, arg1, arg2, arg3)
 #define HS_PRIVATE_HASHTABLE_NEW_ENTRY_ENABLED() 0
 #define HS_PRIVATE_SAFEPOINT_BEGIN()

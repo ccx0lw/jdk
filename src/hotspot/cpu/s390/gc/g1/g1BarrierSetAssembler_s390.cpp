@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2018, 2019, SAP SE. All rights reserved.
+ * Copyright (c) 2018, 2019 SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -35,7 +35,9 @@
 #include "gc/g1/g1ThreadLocalData.hpp"
 #include "gc/g1/heapRegion.hpp"
 #include "interpreter/interp_masm.hpp"
+#include "runtime/jniHandles.hpp"
 #include "runtime/sharedRuntime.hpp"
+#include "utilities/macros.hpp"
 #ifdef COMPILER1
 #include "c1/c1_LIRAssembler.hpp"
 #include "c1/c1_MacroAssembler.hpp"
@@ -304,7 +306,7 @@ void G1BarrierSetAssembler::g1_write_barrier_post(MacroAssembler* masm, Decorato
 
   // calculate address of card
   __ load_const_optimized(Rbase, (address)ct->card_table()->byte_map_base());      // Card table base.
-  __ z_srlg(Rcard_addr, Rstore_addr, CardTable::card_shift);         // Index into card table.
+  __ z_srlg(Rcard_addr, Rstore_addr, CardTable::card_shift());         // Index into card table.
   __ z_algr(Rcard_addr, Rbase);                                      // Explicit calculation needed for cli.
   Rbase = noreg; // end of lifetime
 
@@ -400,11 +402,11 @@ void G1BarrierSetAssembler::resolve_jobject(MacroAssembler* masm, Register value
 
   __ z_tmll(tmp1, JNIHandles::weak_tag_mask); // Test for jweak tag.
   __ z_braz(Lnot_weak);
-  __ verify_oop(value);
+  __ verify_oop(value, FILE_AND_LINE);
   DecoratorSet decorators = IN_NATIVE | ON_PHANTOM_OOP_REF;
   g1_write_barrier_pre(masm, decorators, (const Address*)NULL, value, noreg, tmp1, tmp2, true);
   __ bind(Lnot_weak);
-  __ verify_oop(value);
+  __ verify_oop(value, FILE_AND_LINE);
   __ bind(Ldone);
 }
 
@@ -426,7 +428,7 @@ void G1BarrierSetAssembler::gen_pre_barrier_stub(LIR_Assembler* ce, G1PreBarrier
   Register pre_val_reg = stub->pre_val()->as_register();
 
   if (stub->do_load()) {
-    ce->mem2reg(stub->addr(), stub->pre_val(), T_OBJECT, stub->patch_code(), stub->info(), false /*wide*/, false /*unaligned*/);
+    ce->mem2reg(stub->addr(), stub->pre_val(), T_OBJECT, stub->patch_code(), stub->info(), false /*wide*/);
   }
 
   __ z_ltgr(Z_R1_scratch, pre_val_reg); // Pass oop in Z_R1_scratch to Runtime1::g1_pre_barrier_slow_id.
@@ -547,7 +549,7 @@ void G1BarrierSetAssembler::generate_c1_post_barrier_runtime_stub(StubAssembler*
 
   // Calculate address of card corresponding to the updated oop slot.
   AddressLiteral rs(byte_map_base);
-  __ z_srlg(addr_card, addr_oop, CardTable::card_shift);
+  __ z_srlg(addr_card, addr_oop, CardTable::card_shift());
   addr_oop = noreg; // dead now
   __ load_const_optimized(cardtable, rs); // cardtable := <card table base>
   __ z_agr(addr_card, cardtable); // addr_card := addr_oop>>card_shift + cardtable

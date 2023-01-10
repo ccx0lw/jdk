@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -94,7 +94,7 @@ private:
 
 public:
   LIR_OpZLoadBarrierTest(LIR_Opr opr) :
-      LIR_Op(),
+      LIR_Op(lir_zloadbarrier_test, LIR_OprFact::illegalOpr, NULL),
       _opr(opr) {}
 
   virtual void visit(LIR_OpVisitState* state) {
@@ -149,7 +149,7 @@ void ZBarrierSetC1::load_barrier(LIRAccess& access, LIR_Opr result) const {
   // Slow path
   const address runtime_stub = load_barrier_on_oop_field_preloaded_runtime_stub(access.decorators());
   CodeStub* const stub = new ZLoadBarrierStubC1(access, result, runtime_stub);
-  __ branch(lir_cond_notEqual, T_ADDRESS, stub);
+  __ branch(lir_cond_notEqual, stub);
   __ branch_destination(stub->continuation());
 }
 

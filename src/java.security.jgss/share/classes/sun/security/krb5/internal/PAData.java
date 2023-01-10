@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -31,13 +31,16 @@
 
 package sun.security.krb5.internal;
 
+import java.io.IOException;
+import java.util.ArrayList;
+
+import static java.nio.charset.StandardCharsets.ISO_8859_1;
+import static java.nio.charset.StandardCharsets.UTF_8;
+
+import sun.security.krb5.Asn1Exception;
+import sun.security.krb5.internal.util.KerberosString;
 import sun.security.krb5.internal.crypto.EType;
 import sun.security.util.*;
-import sun.security.krb5.Asn1Exception;
-import java.io.IOException;
-import java.util.Vector;
-
-import sun.security.krb5.internal.util.KerberosString;
 
 /**
  * Implements the ASN.1 PA-DATA type.
@@ -164,13 +167,12 @@ public class PAData {
         if (subsubDer.getTag() != DerValue.tag_SequenceOf) {
             throw new Asn1Exception(Krb5.ASN1_BAD_ID);
         }
-        Vector<PAData> v = new Vector<>();
+        ArrayList<PAData> v = new ArrayList<>();
         while (subsubDer.getData().available() > 0) {
-            v.addElement(new PAData(subsubDer.getData().getDerValue()));
+            v.add(new PAData(subsubDer.getData().getDerValue()));
         }
         if (v.size() > 0) {
-            PAData[] pas = new PAData[v.size()];
-            v.copyInto(pas);
+            PAData[] pas = v.toArray(new PAData[0]);
             return pas;
         }
         return null;
@@ -263,7 +265,7 @@ public class PAData {
             switch (p.getType()) {
                 case Krb5.PA_PW_SALT:
                     paPwSalt = new String(p.getValue(),
-                            KerberosString.MSNAME?"UTF8":"8859_1");
+                            KerberosString.MSNAME ? UTF_8 : ISO_8859_1);
                     break;
                 case Krb5.PA_ETYPE_INFO:
                     d = new DerValue(p.getValue());

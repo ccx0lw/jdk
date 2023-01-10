@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,7 +23,7 @@
 
 /*
  * @test
- * @bug 8205593
+ * @bug 8205593 8240169 8274639
  * @summary Javadoc -link makes broken links if module name matches package name
  * @library /tools/lib ../../lib
  * @modules
@@ -48,16 +48,17 @@ import javadoc.tester.JavadocTester;
 public class TestLinkOptionWithModule extends JavadocTester {
 
     final ToolBox tb;
-    private final Path src;
+    private final Path moduleSrc, packageSrc;
 
     public static void main(String... args) throws Exception {
-        TestLinkOptionWithModule tester = new TestLinkOptionWithModule();
-        tester.runTests(m -> new Object[]{Paths.get(m.getName())});
+        var tester = new TestLinkOptionWithModule();
+        tester.runTests();
     }
 
     TestLinkOptionWithModule() throws Exception {
         tb = new ToolBox();
-        src = Paths.get("src");
+        moduleSrc = Paths.get("src", "modules");
+        packageSrc = Paths.get("src", "packages");
         initModulesAndPackages();
     }
 
@@ -66,18 +67,19 @@ public class TestLinkOptionWithModule extends JavadocTester {
         Path out1 = base.resolve("out1a"), out2 = base.resolve("out1b");
 
         javadoc("-d", out1.toString(),
-                "--module-source-path", src.toString(),
+                "--module-source-path", moduleSrc.toString(),
                 "--module", "com.ex1");
 
         javadoc("-d", out2.toString(),
-                "--module-source-path", src.toString(),
+                "-Werror", "-Xdoclint:-missing",
+                "--module-source-path", moduleSrc.toString(),
                 "--module", "com.ex2",
                 "-link", "../" + out1.getFileName());
 
         checkExit(Exit.OK);
         checkOutput("com.ex2/com/ex2/B.html", true,
-                "<a href=\"../../../../out1a/com.ex1/com/ex1/A.html?is-external=true\" "
-                + "title=\"class or interface in com.ex1\" class=\"externalLink\">A</a>");
+                """
+                    <a href="../../../../out1a/com.ex1/com/ex1/A.html" title="class or interface in com.ex1" class="external-link">A</a>""");
     }
 
     @Test
@@ -85,18 +87,18 @@ public class TestLinkOptionWithModule extends JavadocTester {
         Path out1 = base.resolve("out2a"), out2 = base.resolve("out2b");
 
         javadoc("-d", out1.toString(),
-                "-sourcepath", src.toString(),
+                "-sourcepath", packageSrc.toString(),
                 "-subpackages", "com.ex1");
 
         javadoc("-d", out2.toString(),
-                "-sourcepath", src.toString(),
+                "-sourcepath", packageSrc.toString(),
                 "-subpackages", "com.ex2",
                 "-link", "../" + out1.getFileName());
 
         checkExit(Exit.OK);
         checkOutput("com/ex2/B.html", true,
-                "<a href=\"../../../out2a/com/ex1/A.html?is-external=true\" title=\"class or interface in com.ex1\" "
-                + "class=\"externalLink\">A</a>");
+                """
+                    <a href="../../../out2a/com/ex1/A.html" title="class or interface in com.ex1" class="external-link">A</a>""");
     }
 
     @Test
@@ -104,18 +106,22 @@ public class TestLinkOptionWithModule extends JavadocTester {
         Path out1 = base.resolve("out3a"), out2 = base.resolve("out3b");
 
         javadoc("-d", out1.toString(),
-                "-sourcepath", src.toString(),
+                "-sourcepath", packageSrc.toString(),
                 "-subpackages", "com.ex1");
 
         javadoc("-d", out2.toString(),
-                "--module-source-path", src.toString(),
+                "--link-modularity-mismatch", "warn",
+                "--module-source-path", moduleSrc.toString(),
                 "--module", "com.ex2",
                 "-link", "../" + out1.getFileName());
 
-        checkExit(Exit.ERROR);
+        checkExit(Exit.OK);
         checkOutput(Output.OUT, true,
-                "The code being documented uses modules but the packages defined "
+                "warning: The code being documented uses modules but the packages defined "
                 + "in ../out3a/ are in the unnamed module");
+        checkOutput("com.ex2/com/ex2/B.html", true,
+                """
+                    <a href="../../../../out3a/com/ex1/A.html" title="class or interface in com.ex1" class="external-link">A</a>""");
     }
 
     @Test
@@ -123,46 +129,100 @@ public class TestLinkOptionWithModule extends JavadocTester {
         Path out1 = base.resolve("out4a"), out2 = base.resolve("out4b");
 
         javadoc("-d", out1.toString(),
-                "--module-source-path", src.toString(),
+                "--module-source-path", moduleSrc.toString(),
                 "--module", "com.ex1");
 
         javadoc("-d", out2.toString(),
-                "-sourcepath", src.toString(),
+                "-sourcepath", packageSrc.toString(),
                 "-subpackages", "com.ex2",
                 "-link", "../" + out1.getFileName());
 
-        checkExit(Exit.ERROR);
+        checkExit(Exit.OK);
         checkOutput(Output.OUT, true,
-                "The code being documented uses packages in the unnamed module, but the packages defined "
+                "warning: The code being documented uses packages in the unnamed module, but the packages defined "
                 + "in ../out4a/ are in named modules");
+        checkOutput("com/ex2/B.html", true,
+                """
+                    <a href="../../../out4a/com.ex1/com/ex1/A.html" title="class or interface in com.ex1" class="external-link">A</a>""");
     }
 
+    @Test
+    public void testModuleLinkedToPackageNoWarning(Path base) throws Exception {
+        Path out1 = base.resolve("out5a"), out2 = base.resolve("out5b");
+
+        javadoc("-d", out1.toString(),
+                "-sourcepath", packageSrc.toString(),
+                "-subpackages", "com.ex1");
+
+        javadoc("-d", out2.toString(),
+                "--link-modularity-mismatch", "info",
+                "-Werror", "-Xdoclint:-missing",
+                "--module-source-path", moduleSrc.toString(),
+                "--module", "com.ex2",
+                "-link", "../" + out1.getFileName());
+
+        checkExit(Exit.OK);
+        checkOutput(Output.OUT, true,
+                "The code being documented uses modules but the packages defined "
+                        + "in ../out5a/ are in the unnamed module");
+        checkOutput("com.ex2/com/ex2/B.html", true,
+                """
+                    <a href="../../../../out5a/com/ex1/A.html" title="class or interface in com.ex1" class="external-link">A</a>""");
+    }
+
+    @Test
+    public void testPackageLinkedToModuleNoWarning(Path base) throws Exception {
+        Path out1 = base.resolve("out6a"), out2 = base.resolve("out6b");
+
+        javadoc("-d", out1.toString(),
+                "--module-source-path", moduleSrc.toString(),
+                "--module", "com.ex1");
+
+        javadoc("-d", out2.toString(),
+                "--link-modularity-mismatch", "info",
+                "-quiet",  // should not print modularity mismatch info
+                "-Werror", "-Xdoclint:-missing",
+                "-sourcepath", packageSrc.toString(),
+                "-subpackages", "com.ex2",
+                "-link", "../" + out1.getFileName());
+
+        checkExit(Exit.OK);
+        // Modularity mismatch diagnostic should not be printed because we're runnning with -quiet option
+        checkOutput(Output.OUT, false,
+                "The code being documented uses packages in the unnamed module, but the packages defined "
+                        + "in ../out6a/ are in named modules");
+        checkOutput("com/ex2/B.html", true,
+                """
+                    <a href="../../../out6a/com.ex1/com/ex1/A.html" title="class or interface in com.ex1" class="external-link">A</a>""");
+    }
 
     void initModulesAndPackages() throws Exception{
         new ModuleBuilder(tb, "com.ex1")
                 .exports("com.ex1")
                 .classes("package com.ex1; public class A{}")
-                .write(src);
+                .write(moduleSrc);
 
         new ModuleBuilder(tb, "com.ex2")
                 .requires("com.ex1")
                 .exports("com.ex2")
-                .classes("package com.ex2; \n"
-                        + "import com.ex1.A;\n"
-                        + "public class B{\n"
-                        + "public B(A obj){}\n"
-                        + "}\n")
-                .write(src);
+                .classes("""
+                    package com.ex2;\s
+                    import com.ex1.A;
+                    public class B{
+                    public B(A obj){}
+                    }
+                    """)
+                .write(moduleSrc);
 
         new ClassBuilder(tb, "com.ex1.A")
                 .setModifiers("public","class")
-                .write(src);
+                .write(packageSrc);
 
         new ClassBuilder(tb, "com.ex2.B")
                 .addImports("com.ex1.A")
                 .setModifiers("public","class")
                 .addMembers(MethodBuilder.parse("public void foo(A a)"))
-                .write(src);
+                .write(packageSrc);
     }
 
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -123,6 +123,7 @@ void ADLParser::parse() {
     parse_err(SEMERR, "Did not declare 'register' definitions");
   }
   regBlock->addSpillRegClass();
+  regBlock->addDynamicRegClass();
 
   // Done with parsing, check consistency.
 
@@ -210,8 +211,9 @@ void ADLParser::instr_parse(void) {
             return;
           }
           assert(match_rules_cnt < 100," too many match rule clones");
-          char* buf = (char*) AllocateHeap(strlen(instr->_ident) + 4);
-          sprintf(buf, "%s_%d", instr->_ident, match_rules_cnt++);
+          const size_t buf_size = strlen(instr->_ident) + 4;
+          char* buf = (char*) AdlAllocateHeap(buf_size);
+          snprintf_checked(buf, buf_size, "%s_%d", instr->_ident, match_rules_cnt++);
           rule->_result = buf;
           // Check for commutative operations with tree operands.
           matchrule_clone_and_swap(rule, instr->_ident, match_rules_cnt);
@@ -240,7 +242,7 @@ void ADLParser::instr_parse(void) {
       parse_err(SYNERR, "Instructions do not specify an interface\n");
     }
     else if (!strcmp(ident, "ins_pipe"))        ins_pipe_parse(*instr);
-    else {  // Done with staticly defined parts of instruction definition
+    else {  // Done with statically defined parts of instruction definition
       // Check identifier to see if it is the name of an attribute
       const Form    *form = _globalNames[ident];
       AttributeForm *attr = form ? form->is_attribute() : NULL;
@@ -921,7 +923,7 @@ void ADLParser::enc_class_parse_block(EncClass* encoding, char* ec_name) {
 
   // Collect the parts of the encode description
   // (1) strings that are passed through to output
-  // (2) replacement/substitution variable, preceeded by a '$'
+  // (2) replacement/substitution variable, preceded by a '$'
   while ( (_curchar != '%') && (*(_ptr+1) != '}') ) {
 
     // (1)
@@ -984,9 +986,6 @@ void ADLParser::frame_parse(void) {
             parse_err(SYNERR, "missing identifier inside frame block.\n");
             return;
       }
-      if (strcmp(token,"stack_direction")==0) {
-        stack_dir_parse(frame);
-      }
       if (strcmp(token,"sync_stack_slots")==0) {
         sync_stack_slots_parse(frame);
       }
@@ -1004,7 +1003,12 @@ void ADLParser::frame_parse(void) {
         skipws();
       }
       if (strcmp(token,"interpreter_method_oop_reg")==0) {
-        interpreter_method_oop_parse(frame, false);
+        parse_err(WARN, "Using obsolete Token, interpreter_method_oop_reg");
+        skipws();
+      }
+      if (strcmp(token,"interpreter_method_reg")==0) {
+        parse_err(WARN, "Using obsolete Token, interpreter_method_reg");
+        skipws();
       }
       if (strcmp(token,"cisc_spilling_operand_name")==0) {
         cisc_spilling_operand_name_parse(frame, false);
@@ -1016,7 +1020,8 @@ void ADLParser::frame_parse(void) {
         return_addr_parse(frame, false);
       }
       if (strcmp(token,"in_preserve_stack_slots")==0) {
-        preserve_stack_parse(frame);
+        parse_err(WARN, "Using obsolete token, in_preserve_stack_slots");
+        skipws();
       }
       if (strcmp(token,"out_preserve_stack_slots")==0) {
         parse_err(WARN, "Using obsolete token, out_preserve_stack_slots");
@@ -1026,7 +1031,8 @@ void ADLParser::frame_parse(void) {
         frame->_varargs_C_out_slots_killed = parse_one_arg("varargs C out slots killed");
       }
       if (strcmp(token,"calling_convention")==0) {
-        frame->_calling_convention = calling_convention_parse();
+        parse_err(WARN, "Using obsolete token, calling_convention");
+        skipws();
       }
       if (strcmp(token,"return_value")==0) {
         frame->_return_value = return_value_parse();
@@ -1038,7 +1044,8 @@ void ADLParser::frame_parse(void) {
         return_addr_parse(frame, true);
       }
       if (strcmp(token,"c_calling_convention")==0) {
-        frame->_c_calling_convention = calling_convention_parse();
+        parse_err(WARN, "Using obsolete token, c_calling_convention");
+        skipws();
       }
       if (strcmp(token,"c_return_value")==0) {
         frame->_c_return_value = return_value_parse();
@@ -1069,16 +1076,8 @@ void ADLParser::frame_parse(void) {
     parse_err(SYNERR, "missing return address location in frame section.\n");
     return;
   }
-  if(frame->_in_preserve_slots == NULL) {
-    parse_err(SYNERR, "missing stack slot preservation definition in frame section.\n");
-    return;
-  }
   if(frame->_varargs_C_out_slots_killed == NULL) {
     parse_err(SYNERR, "missing varargs C out slots killed definition in frame section.\n");
-    return;
-  }
-  if(frame->_calling_convention == NULL) {
-    parse_err(SYNERR, "missing calling convention definition in frame section.\n");
     return;
   }
   if(frame->_return_value == NULL) {
@@ -1093,9 +1092,6 @@ void ADLParser::frame_parse(void) {
     frame->_c_return_addr = frame->_return_addr;
     frame->_c_return_addr_loc = frame->_return_addr_loc;
   }
-  if(frame->_c_calling_convention == NULL) {
-    frame->_c_calling_convention = frame->_calling_convention;
-  }
   if(frame->_c_return_value == NULL) {
     frame->_c_return_value = frame->_return_value;
   }
@@ -1106,21 +1102,6 @@ void ADLParser::frame_parse(void) {
   // Create the EncodeForm for the architecture description.
   _AD.addForm(frame);
   // skipws();
-}
-
-//------------------------------stack_dir_parse--------------------------------
-void ADLParser::stack_dir_parse(FrameForm *frame) {
-  char *direction = parse_one_arg("stack direction entry");
-  if (strcmp(direction, "TOWARDS_LOW") == 0) {
-    frame->_direction = false;
-  }
-  else if (strcmp(direction, "TOWARDS_HIGH") == 0) {
-    frame->_direction = true;
-  }
-  else {
-    parse_err(SYNERR, "invalid value inside stack direction entry.\n");
-    return;
-  }
 }
 
 //------------------------------sync_stack_slots_parse-------------------------
@@ -1145,11 +1126,6 @@ void ADLParser::interpreter_frame_pointer_parse(FrameForm *frame, bool native) {
 //------------------------------inline_cache_parse-----------------------------
 void ADLParser::inline_cache_parse(FrameForm *frame, bool native) {
   frame->_inline_cache_reg = parse_one_arg("inline cache reg entry");
-}
-
-//------------------------------interpreter_method_oop_parse------------------
-void ADLParser::interpreter_method_oop_parse(FrameForm *frame, bool native) {
-  frame->_interpreter_method_oop_reg = parse_one_arg("method oop reg entry");
 }
 
 //------------------------------cisc_spilling_operand_parse---------------------
@@ -1238,37 +1214,9 @@ void ADLParser::return_addr_parse(FrameForm *frame, bool native) {
   }
 }
 
-//------------------------------preserve_stack_parse---------------------------
-void ADLParser::preserve_stack_parse(FrameForm *frame) {
-  if(_curchar == '(') {
-    char *token = get_paren_expr("preserve_stack_slots");
-    frame->_in_preserve_slots   = token;
-
-    if(_curchar != ';') {  // check for semi-colon
-      parse_err(SYNERR, "missing %c in preserve stack slot entry.\n", ';');
-      return;
-    }
-    next_char();           // skip the semi-colon
-  }
-  else {
-    parse_err(SYNERR, "Missing %c in preserve stack slot entry.\n", '(');
-  }
-}
-
-//------------------------------calling_convention_parse-----------------------
-char *ADLParser::calling_convention_parse() {
-  char   *desc = NULL;          // String representation of calling_convention
-
-  skipws();                     // Skip leading whitespace
-  if ( (desc = find_cpp_block("calling convention block")) == NULL ) {
-    parse_err(SYNERR, "incorrect or missing block for 'calling_convention'.\n");
-  }
-  return desc;
-}
-
 //------------------------------return_value_parse-----------------------------
 char *ADLParser::return_value_parse() {
-  char   *desc = NULL;          // String representation of calling_convention
+  char   *desc = NULL;          // String representation of return_value
 
   skipws();                     // Skip leading whitespace
   if ( (desc = find_cpp_block("return value block")) == NULL ) {
@@ -1611,7 +1559,7 @@ void ADLParser::pipe_parse(void) {
       if (!vsi_seen)
         parse_err(SYNERR, "\"variable_size_instruction\" or \"fixed_size_instruction\" unspecified\n");
     }
-    else {  // Done with staticly defined parts of instruction definition
+    else {  // Done with statically defined parts of instruction definition
       parse_err(SYNERR, "expected one of \"resources\", \"pipe_desc\", \"pipe_class\", found \"%s\"\n", ident);
       return;
     }
@@ -2099,14 +2047,20 @@ void ADLParser::peep_parse(void) {
         return;
       }
       // check for legal subsections of peephole rule
-      if (strcmp(token,"peepmatch")==0) {
+      if (strcmp(token,"peeppredicate")==0) {
+        peep_predicate_parse(*peep); }
+      else if (strcmp(token,"peepmatch")==0) {
         peep_match_parse(*peep); }
+      else if (strcmp(token, "peepprocedure")==0) {
+        peep_procedure_parse(*peep); }
       else if (strcmp(token,"peepconstraint")==0) {
         peep_constraint_parse(*peep); }
       else if (strcmp(token,"peepreplace")==0) {
         peep_replace_parse(*peep); }
       else {
-        parse_err(SYNERR, "expected peepmatch, peepconstraint, or peepreplace for identifier %s.\n", token);
+        parse_err(SYNERR,
+            "expected peeppreddicate, peepmatch, peepprocedure, peepconstraint, peepreplace, received %s.\n",
+            token);
       }
       skipws();
     }
@@ -2590,6 +2544,31 @@ InstructForm *ADLParser::peep_match_child_parse(PeepMatch &match, int parent, in
   return NULL;
 }
 
+//---------------------------peep-predicate-parse------------------------------
+// Syntax for a peeppredicate rule
+//
+// peeppredicate ( predicate );
+//
+void ADLParser::peep_predicate_parse(Peephole& peep) {
+
+  skipws();
+  char* rule = nullptr;
+  if ( (rule = get_paren_expr("pred expression", true)) == nullptr ) {
+    parse_err(SYNERR, "incorrect or missing expression for 'peeppredicate'\n");
+    return;
+  }
+  if (_curchar != ';') {
+    parse_err(SYNERR, "missing ';' in peeppredicate definition\n");
+    return;
+  }
+  next_char();   // skip ';'
+  skipws();
+
+  // Construct PeepPredicate
+  PeepPredicate* predicate = new PeepPredicate(rule);
+  peep.add_predicate(predicate);
+}
+
 //------------------------------peep_match_parse-------------------------------
 // Syntax for a peepmatch rule
 //
@@ -2634,6 +2613,46 @@ void ADLParser::peep_match_parse(Peephole &peep) {
   // Store match into peep, and store peep into instruction
   peep.add_match(match);
   root->append_peephole(&peep);
+}
+
+//---------------------------peep-procedure-parse------------------------------
+// Syntax for a peepprocedure rule
+//
+// peeppredicate ( function_name );
+//
+void ADLParser::peep_procedure_parse(Peephole& peep) {
+
+  skipws();
+  // Check for open paren
+  if (_curchar != '(') {
+    parse_err(SYNERR, "missing '(' at start of peepprocedure rule.\n");
+    return;
+  }
+  next_char();   // skip '('
+  skipws();
+
+  char* name = nullptr;
+  if ( (name = get_ident_dup()) == nullptr ) {
+    parse_err(SYNERR, "incorrect or missing expression for 'peepprocedure'\n");
+    return;
+  }
+
+  skipws();
+  if (_curchar != ')') {
+    parse_err(SYNERR, "peepprocedure should contain a single identifier only\n");
+    return;
+  }
+  next_char();   // skip ')'
+  if (_curchar != ';') {
+    parse_err(SYNERR, "missing ';' in peepprocedure definition\n");
+    return;
+  }
+  next_char();   // skip ';'
+  skipws();
+
+  // Construct PeepProcedure
+  PeepProcedure* procedure = new PeepProcedure(name);
+  peep.add_procedure(procedure);
 }
 
 //------------------------------peep_constraint_parse--------------------------
@@ -2682,7 +2701,7 @@ void ADLParser::peep_constraint_parse(Peephole &peep) {
 
     skipws();
     // Get information on the right instruction and its operand
-    int right_inst;        // Right-instructions's number
+    int right_inst;        // Right-instruction's number
     if( isdigit(_curchar) ) {
       right_inst = get_int();
       // Right-instruction's operand
@@ -2858,8 +2877,9 @@ void ADLParser::ins_encode_parse_block(InstructForm& inst) {
   // Create a new encoding name based on the name of the instruction
   // definition, which should be unique.
   const char* prefix = "__ins_encode_";
-  char* ec_name = (char*) AllocateHeap(strlen(inst._ident) + strlen(prefix) + 1);
-  sprintf(ec_name, "%s%s", prefix, inst._ident);
+  const size_t ec_name_size = strlen(inst._ident) + strlen(prefix) + 1;
+  char* ec_name = (char*) AdlAllocateHeap(ec_name_size);
+  snprintf_checked(ec_name, ec_name_size, "%s%s", prefix, inst._ident);
 
   assert(_AD._encode->encClass(ec_name) == NULL, "shouldn't already exist");
   EncClass* encoding = _AD._encode->add_EncClass(ec_name);
@@ -2880,7 +2900,7 @@ void ADLParser::ins_encode_parse_block(InstructForm& inst) {
     // name is chosen to match the __ idiom used for assembly in other
     // parts of hotspot and assumes the existence of the standard
     // #define __ _masm.
-    encoding->add_code("    MacroAssembler _masm(&cbuf);\n");
+    encoding->add_code("    C2_MacroAssembler _masm(&cbuf);\n");
   }
 
   // Parse the following %{ }% block
@@ -2916,7 +2936,7 @@ void ADLParser::ins_encode_parse_block_impl(InstructForm& inst, EncClass* encodi
 
   // Collect the parts of the encode description
   // (1) strings that are passed through to output
-  // (2) replacement/substitution variable, preceeded by a '$'
+  // (2) replacement/substitution variable, preceded by a '$'
   while ((_curchar != '%') && (*(_ptr+1) != '}')) {
 
     // (1)
@@ -3003,9 +3023,9 @@ void ADLParser::ins_encode_parse_block_impl(InstructForm& inst, EncClass* encodi
 // which synthesizes a new encoding class taking the same arguments as
 // the InstructForm, and automatically prefixes the definition with:
 //
-//    MacroAssembler masm(&cbuf);\n");
+//    C2_MacroAssembler masm(&cbuf);\n");
 //
-//  making it more compact to take advantage of the MacroAssembler and
+//  making it more compact to take advantage of the C2_MacroAssembler and
 //  placing the assembly closer to it's use by instructions.
 void ADLParser::ins_encode_parse(InstructForm& inst) {
 
@@ -3329,8 +3349,9 @@ void ADLParser::constant_parse(InstructForm& inst) {
   // Create a new encoding name based on the name of the instruction
   // definition, which should be unique.
   const char* prefix = "__constant_";
-  char* ec_name = (char*) AllocateHeap(strlen(inst._ident) + strlen(prefix) + 1);
-  sprintf(ec_name, "%s%s", prefix, inst._ident);
+  const size_t ec_name_size = strlen(inst._ident) + strlen(prefix) + 1;
+  char* ec_name = (char*) AdlAllocateHeap(ec_name_size);
+  snprintf_checked(ec_name, ec_name_size, "%s%s", prefix, inst._ident);
 
   assert(_AD._encode->encClass(ec_name) == NULL, "shouldn't already exist");
   EncClass* encoding = _AD._encode->add_EncClass(ec_name);
@@ -3373,7 +3394,7 @@ void ADLParser::constant_parse_expression(EncClass* encoding, char* ec_name) {
   }
 
   // Start code line.
-  encoding->add_code("    _constant = C->constant_table().add");
+  encoding->add_code("    _constant = C->output()->constant_table().add");
 
   // Parse everything in ( ) expression.
   encoding->add_code("(this, ");
@@ -3382,25 +3403,25 @@ void ADLParser::constant_parse_expression(EncClass* encoding, char* ec_name) {
 
   // Collect the parts of the constant expression.
   // (1) strings that are passed through to output
-  // (2) replacement/substitution variable, preceeded by a '$'
+  // (2) replacement/substitution variable, preceded by a '$'
   while (parens_depth > 0) {
     if (_curchar == '(') {
       parens_depth++;
       encoding->add_code("(");
-      next_char();
+      next_char_or_line();
     }
     else if (_curchar == ')') {
       parens_depth--;
       if (parens_depth > 0)
         encoding->add_code(")");
-      next_char();
+      next_char_or_line();
     }
     else {
       // (1)
       // Check if there is a string to pass through to output
       char *start = _ptr;  // Record start of the next string
       while ((_curchar != '$') && (_curchar != '(') && (_curchar != ')')) {
-        next_char();
+        next_char_or_line();
       }
       // If a string was found, terminate it and record in EncClass
       if (start != _ptr) {
@@ -3871,7 +3892,7 @@ FormatRule* ADLParser::format_parse(void) {
 
       // Collect the parts of the format description
       // (1) strings that are passed through to tty->print
-      // (2) replacement/substitution variable, preceeded by a '$'
+      // (2) replacement/substitution variable, preceded by a '$'
       // (3) multi-token ANSIY C style strings
       while ( true ) {
         if ( _curchar == '%' || _curchar == '\n' ) {
@@ -4008,7 +4029,7 @@ FormatRule* ADLParser::template_parse(void) {
 
           // Collect the parts of the format description
           // (1) strings that are passed through to tty->print
-          // (2) replacement/substitution variable, preceeded by a '$'
+          // (2) replacement/substitution variable, preceded by a '$'
           // (3) multi-token ANSIY C style strings
           while ( true ) {
             if ( _curchar == '%' || _curchar == '\n' ) {
@@ -4462,7 +4483,7 @@ char* ADLParser::find_cpp_block(const char* description) {
     if (_AD._adlocation_debug) {
       char* location = get_line_string(line);
       char* end_loc  = end_line_marker();
-      char* result = (char *)AllocateHeap(strlen(location) + strlen(cppBlock) + strlen(end_loc) + 1);
+      char* result = (char *)AdlAllocateHeap(strlen(location) + strlen(cppBlock) + strlen(end_loc) + 1);
       strcpy(result, location);
       strcat(result, cppBlock);
       strcat(result, end_loc);
@@ -4551,7 +4572,7 @@ char *ADLParser::get_paren_expr(const char *description, bool include_location) 
     // Prepend location descriptor, for debugging.
     char* location = get_line_string(line);
     char* end_loc  = end_line_marker();
-    char* result = (char *)AllocateHeap(strlen(location) + strlen(token2) + strlen(end_loc) + 1);
+    char* result = (char *)AdlAllocateHeap(strlen(location) + strlen(token2) + strlen(end_loc) + 1);
     strcpy(result, location);
     strcat(result, token2);
     strcat(result, end_loc);
@@ -4649,8 +4670,9 @@ char *ADLParser::get_ident_or_literal_constant(const char* description) {
     // Grab a constant expression.
     param = get_paren_expr(description);
     if (param[0] != '(') {
-      char* buf = (char*) AllocateHeap(strlen(param) + 3);
-      sprintf(buf, "(%s)", param);
+      const size_t buf_size = strlen(param) + 3;
+      char* buf = (char*) AdlAllocateHeap(buf_size);
+      snprintf_checked(buf, buf_size, "(%s)", param);
       param = buf;
     }
     assert(is_literal_constant(param),
@@ -5257,8 +5279,9 @@ void ADLParser::next_line() {
 char* ADLParser::get_line_string(int linenum) {
   const char* file = _AD._ADL_file._name;
   int         line = linenum ? linenum : this->linenum();
-  char* location = (char *)AllocateHeap(strlen(file) + 100);
-  sprintf(location, "\n#line %d \"%s\"\n", line, file);
+  const size_t location_size = strlen(file) + 100;
+  char* location = (char *)AdlAllocateHeap(location_size);
+  snprintf_checked(location, location_size, "\n#line %d \"%s\"\n", line, file);
   return location;
 }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -37,7 +37,7 @@ const char* get_basename(const char* filename) {
   const char *basename = filename;
   const char *cp;
   for (cp = basename; *cp; cp++) {
-    if (*cp == '/') {
+    if (*cp == '/' || *cp == '\\') {
       basename = cp+1;
     }
   }
@@ -211,7 +211,7 @@ int main(int argc, char *argv[])
   AD.addInclude(AD._CPP_file, "adfiles", get_basename(AD._VM_file._name));
   AD.addInclude(AD._CPP_file, "adfiles", get_basename(AD._HPP_file._name));
   AD.addInclude(AD._CPP_file, "memory/allocation.inline.hpp");
-  AD.addInclude(AD._CPP_file, "asm/macroAssembler.inline.hpp");
+  AD.addInclude(AD._CPP_file, "code/codeCache.hpp");
   AD.addInclude(AD._CPP_file, "code/compiledIC.hpp");
   AD.addInclude(AD._CPP_file, "code/nativeInst.hpp");
   AD.addInclude(AD._CPP_file, "code/vmreg.inline.hpp");
@@ -221,6 +221,7 @@ int main(int argc, char *argv[])
   AD.addInclude(AD._CPP_file, "oops/markWord.hpp");
   AD.addInclude(AD._CPP_file, "oops/method.hpp");
   AD.addInclude(AD._CPP_file, "oops/oop.inline.hpp");
+  AD.addInclude(AD._CPP_file, "opto/c2_MacroAssembler.hpp");
   AD.addInclude(AD._CPP_file, "opto/cfgnode.hpp");
   AD.addInclude(AD._CPP_file, "opto/intrinsicnode.hpp");
   AD.addInclude(AD._CPP_file, "opto/locknode.hpp");
@@ -228,14 +229,15 @@ int main(int argc, char *argv[])
   AD.addInclude(AD._CPP_file, "opto/regalloc.hpp");
   AD.addInclude(AD._CPP_file, "opto/regmask.hpp");
   AD.addInclude(AD._CPP_file, "opto/runtime.hpp");
-  AD.addInclude(AD._CPP_file, "runtime/biasedLocking.hpp");
   AD.addInclude(AD._CPP_file, "runtime/safepointMechanism.hpp");
   AD.addInclude(AD._CPP_file, "runtime/sharedRuntime.hpp");
   AD.addInclude(AD._CPP_file, "runtime/stubRoutines.hpp");
   AD.addInclude(AD._CPP_file, "utilities/growableArray.hpp");
+  AD.addInclude(AD._CPP_file, "utilities/powerOfTwo.hpp");
   AD.addInclude(AD._HPP_file, "memory/allocation.hpp");
   AD.addInclude(AD._HPP_file, "oops/compressedOops.hpp");
   AD.addInclude(AD._HPP_file, "code/nativeInst.hpp");
+  AD.addInclude(AD._HPP_file, "opto/output.hpp");
   AD.addInclude(AD._HPP_file, "opto/machnode.hpp");
   AD.addInclude(AD._HPP_file, "opto/node.hpp");
   AD.addInclude(AD._HPP_file, "opto/regalloc.hpp");
@@ -248,6 +250,7 @@ int main(int argc, char *argv[])
   AD.addInclude(AD._CPP_EXPAND_file, "oops/compressedOops.hpp");
   AD.addInclude(AD._CPP_FORMAT_file, "precompiled.hpp");
   AD.addInclude(AD._CPP_FORMAT_file, "adfiles", get_basename(AD._HPP_file._name));
+  AD.addInclude(AD._CPP_FORMAT_file, "compiler/oopMap.hpp");
   AD.addInclude(AD._CPP_GEN_file, "precompiled.hpp");
   AD.addInclude(AD._CPP_GEN_file, "adfiles", get_basename(AD._HPP_file._name));
   AD.addInclude(AD._CPP_GEN_file, "opto/cfgnode.hpp");
@@ -268,6 +271,8 @@ int main(int argc, char *argv[])
   AD.addInclude(AD._DFA_file, "opto/narrowptrnode.hpp");
   AD.addInclude(AD._DFA_file, "opto/opcodes.hpp");
   AD.addInclude(AD._DFA_file, "opto/convertnode.hpp");
+  AD.addInclude(AD._DFA_file, "utilities/powerOfTwo.hpp");
+
   // Make sure each .cpp file starts with include lines:
   // files declaring and defining generators for Mach* Objects (hpp,cpp)
   // Generate the result files:
@@ -299,7 +304,7 @@ int main(int argc, char *argv[])
   AD.buildInstructMatchCheck(AD._CPP_file._fp);  // .cpp
   // define methods for machine dependent frame management
   AD.buildFrameMethods(AD._CPP_file._fp);         // .cpp
-  AD.generate_needs_clone_jvms(AD._CPP_file._fp);
+  AD.generate_needs_deep_clone_jvms(AD._CPP_file._fp);
 
   // do this last:
   AD.addPreprocessorChecks(AD._CPP_file._fp);     // .cpp
@@ -342,7 +347,7 @@ static void usage(ArchDesc& AD)
   printf("Usage: adlc [-doqwTs] [-#]* [-D<FLAG>[=<DEF>]] [-U<FLAG>] [-c<CPP_FILE_NAME>] [-h<HPP_FILE_NAME>] [-a<DFA_FILE_NAME>] [-v<GLOBALS_FILE_NAME>] <ADL_FILE_NAME>\n");
   printf(" d  produce DFA debugging info\n");
   printf(" o  no output produced, syntax and semantic checking only\n");
-  printf(" q  quiet mode, supresses all non-essential messages\n");
+  printf(" q  quiet mode, suppresses all non-essential messages\n");
   printf(" w  suppress warning messages\n");
   printf(" T  make DFA as many subroutine calls\n");
   printf(" s  output which instructions are cisc-spillable\n");
@@ -461,7 +466,7 @@ static char *base_plus_suffix(const char* base, const char *suffix)
   int len = (int)strlen(base) + (int)strlen(suffix) + 1;
 
   char* fname = new char[len];
-  sprintf(fname,"%s%s",base,suffix);
+  snprintf_checked(fname,len,"%s%s",base,suffix);
   return fname;
 }
 
@@ -483,8 +488,7 @@ int get_legal_text(FileBuff &fbuf, char **legal_text)
   return (int) (legal_end - legal_start);
 }
 
-// VS2005 has its own definition, identical to this one.
-#if !defined(_WIN32) || defined(_WIN64) || _MSC_VER < 1400
+#if !defined(_WIN32) || defined(_WIN64)
 void *operator new( size_t size, int, const char *, int ) throw() {
   return ::operator new( size );
 }

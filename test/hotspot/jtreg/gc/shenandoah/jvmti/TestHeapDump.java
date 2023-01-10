@@ -1,5 +1,6 @@
 /*
- * Copyright (c) 2017, 2018, Red Hat, Inc. All rights reserved.
+ * Copyright (c) 2017, 2020, Red Hat, Inc. All rights reserved.
+ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
@@ -22,23 +23,47 @@
  */
 
 /**
- * @test TestHeapDump
+ * @test id=aggressive
  * @summary Tests JVMTI heap dumps
- * @key gc
- * @requires vm.gc.Shenandoah & !vm.graal.enabled
+ * @requires vm.gc.Shenandoah
+ * @requires vm.jvmti
  * @compile TestHeapDump.java
- * @run main/othervm/native/timeout=300 -agentlib:TestHeapDump -XX:+UnlockDiagnosticVMOptions -XX:+UnlockExperimentalVMOptions -XX:+UseShenandoahGC -Xmx128m -XX:ShenandoahGCHeuristics=aggressive                        TestHeapDump
+ * @run main/othervm/native/timeout=300 -agentlib:TestHeapDump
+ *      -XX:+UnlockDiagnosticVMOptions -XX:+UnlockExperimentalVMOptions
+ *      -XX:+UseShenandoahGC -Xmx128m
+ *      -XX:ShenandoahGCHeuristics=aggressive
+ *      TestHeapDump
  *
  */
 
 /**
- * @test TestHeapDump
+ * @test id=no-coops-aggressive
  * @summary Tests JVMTI heap dumps
- * @key gc
- * @requires vm.gc.Shenandoah & !vm.graal.enabled & (vm.bits == "64")
+ * @requires vm.gc.Shenandoah
+ * @requires vm.jvmti
+ * @requires vm.bits == "64"
  * @compile TestHeapDump.java
- * @run main/othervm/native/timeout=300 -agentlib:TestHeapDump -XX:+UnlockDiagnosticVMOptions -XX:+UnlockExperimentalVMOptions -XX:+UseShenandoahGC -Xmx128m -XX:ShenandoahGCHeuristics=aggressive -XX:-UseCompressedOops TestHeapDump
+ * @run main/othervm/native/timeout=300 -agentlib:TestHeapDump
+ *      -XX:+UnlockDiagnosticVMOptions -XX:+UnlockExperimentalVMOptions
+ *      -XX:+UseShenandoahGC -Xmx128m
+ *      -XX:ShenandoahGCHeuristics=aggressive
+ *      -XX:-UseCompressedOops TestHeapDump
  */
+
+/**
+ * @test id=aggressive-strdedup
+ * @summary Tests JVMTI heap dumps
+ * @requires vm.gc.Shenandoah
+ * @requires vm.jvmti
+ * @compile TestHeapDump.java
+ * @run main/othervm/native/timeout=300 -agentlib:TestHeapDump
+ *      -XX:+UnlockDiagnosticVMOptions -XX:+UnlockExperimentalVMOptions
+ *      -XX:+UseShenandoahGC -Xmx128m
+ *      -XX:ShenandoahGCHeuristics=aggressive
+ *      -XX:+UseStringDeduplication TestHeapDump
+ */
+
+import java.lang.ref.Reference;
 
 public class TestHeapDump {
 
@@ -86,6 +111,8 @@ public class TestHeapDump {
                 throw new RuntimeException("Expected " + EXPECTED_OBJECTS + " objects, but got " + numObjs);
             }
         }
+        Reference.reachabilityFence(array);
+        Reference.reachabilityFence(localRoot);
     }
 
     // We look for the instances of this class during the heap scan

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,6 +29,7 @@ import java.io.PrintWriter;
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.StringJoiner;
@@ -37,6 +38,7 @@ import jdk.jfr.AnnotationElement;
 import jdk.jfr.DataAmount;
 import jdk.jfr.Frequency;
 import jdk.jfr.MemoryAddress;
+import jdk.jfr.Name;
 import jdk.jfr.Percentage;
 import jdk.jfr.ValueDescriptor;
 import jdk.jfr.consumer.RecordedClass;
@@ -58,8 +60,8 @@ import jdk.jfr.internal.Utils;
  */
 public final class PrettyWriter extends EventPrintWriter {
     private static final String TYPE_OLD_OBJECT = Type.TYPES_PREFIX + "OldObject";
-    private final static DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
-    private final static Long ZERO = 0L;
+    private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm:ss.SSS (yyyy-MM-dd)");
+    private static final Long ZERO = 0L;
     private boolean showIds;
     private RecordedEvent currentEvent;
 
@@ -143,15 +145,17 @@ public final class PrettyWriter extends EventPrintWriter {
 
     private void printAnnotations(int commentIndex, List<AnnotationElement> annotations) {
         for (AnnotationElement a : annotations) {
-            printIndent();
-            print("@");
-            print(makeSimpleType(a.getTypeName()));
-            List<ValueDescriptor> vs = a.getValueDescriptors();
-            if (!vs.isEmpty()) {
-                printAnnotation(a);
-                printCommentRef(commentIndex, a.getTypeId());
-            } else {
-                println();
+            if (!Name.class.getName().equals(a.getTypeName())) {
+                printIndent();
+                print("@");
+                print(makeSimpleType(a.getTypeName()));
+                List<ValueDescriptor> vs = a.getValueDescriptors();
+                if (!vs.isEmpty()) {
+                    printAnnotation(a);
+                    printCommentRef(commentIndex, a.getTypeId());
+                } else {
+                    println();
+                }
             }
         }
     }
@@ -235,14 +239,16 @@ public final class PrettyWriter extends EventPrintWriter {
         List<RecordedFrame> frames = stackTrace.getFrames();
         indent();
         int i = 0;
-        while (i < frames.size() && i < getStackDepth()) {
+        int depth = 0;
+        while (i < frames.size() && depth < getStackDepth()) {
             RecordedFrame frame = frames.get(i);
-            if (frame.isJavaFrame()) {
+            if (frame.isJavaFrame() && !frame.getMethod().isHidden()) {
                 printIndent();
                 printValue(frame, null, "");
                 println();
-                i++;
+                depth++;
             }
+            i++;
         }
         if (stackTrace.isTruncated() || i == getStackDepth()) {
             printIndent();
@@ -288,27 +294,26 @@ public final class PrettyWriter extends EventPrintWriter {
             return;
         }
         if (value instanceof RecordedObject) {
-            if (value instanceof RecordedThread) {
-                printThread((RecordedThread) value, postFix);
+            if (value instanceof RecordedThread rt) {
+                printThread(rt, postFix);
                 return;
             }
-            if (value instanceof RecordedClass) {
-                printClass((RecordedClass) value, postFix);
+            if (value instanceof RecordedClass rc) {
+                printClass(rc, postFix);
                 return;
             }
-            if (value instanceof RecordedClassLoader) {
-                printClassLoader((RecordedClassLoader) value, postFix);
+            if (value instanceof RecordedClassLoader rcl) {
+                printClassLoader(rcl, postFix);
                 return;
             }
-            if (value instanceof RecordedFrame) {
-                RecordedFrame frame = (RecordedFrame) value;
+            if (value instanceof RecordedFrame frame) {
                 if (frame.isJavaFrame()) {
                     printJavaFrame((RecordedFrame) value, postFix);
                     return;
                 }
             }
-            if (value instanceof RecordedMethod) {
-                println(formatMethod((RecordedMethod) value));
+            if (value instanceof RecordedMethod rm) {
+                println(formatMethod(rm));
                 return;
             }
             if (field.getTypeName().equals(TYPE_OLD_OBJECT)) {
@@ -323,29 +328,25 @@ public final class PrettyWriter extends EventPrintWriter {
             return;
         }
 
-        if (value instanceof Double) {
-            Double d = (Double) value;
+        if (value instanceof Double d) {
             if (Double.isNaN(d) || d == Double.NEGATIVE_INFINITY) {
                 println("N/A");
                 return;
             }
         }
-        if (value instanceof Float) {
-            Float f = (Float) value;
+        if (value instanceof Float f) {
             if (Float.isNaN(f) || f == Float.NEGATIVE_INFINITY) {
                 println("N/A");
                 return;
             }
         }
-        if (value instanceof Long) {
-            Long l = (Long) value;
+        if (value instanceof Long l) {
             if (l == Long.MIN_VALUE) {
                 println("N/A");
                 return;
             }
         }
-        if (value instanceof Integer) {
-            Integer i = (Integer) value;
+        if (value instanceof Integer i) {
             if (i == Integer.MIN_VALUE) {
                 println("N/A");
                 return;
@@ -432,13 +433,16 @@ public final class PrettyWriter extends EventPrintWriter {
     private void printClassLoader(RecordedClassLoader cl, String postFix) {
         // Purposely not printing class loader name to avoid cluttered output
         RecordedClass clazz = cl.getType();
-        print(clazz == null ? "null" : clazz.getName());
         if (clazz != null) {
+            print(clazz.getName());
             print(" (");
             print("id = ");
             print(String.valueOf(cl.getId()));
-            println(")");
+            print(")");
+        } else {
+            print("null");
         }
+        println(postFix);
     }
 
     private void printJavaFrame(RecordedFrame f, String postFix) {
@@ -537,37 +541,27 @@ public final class PrettyWriter extends EventPrintWriter {
     private void printThread(RecordedThread thread, String postFix) {
         long javaThreadId = thread.getJavaThreadId();
         if (javaThreadId > 0) {
-            println("\"" + thread.getJavaName() + "\" (javaThreadId = " + thread.getJavaThreadId() + ")" + postFix);
+            String virtualText = thread.isVirtual() ? ", virtual" : "";
+            println("\"" + thread.getJavaName() + "\" (javaThreadId = " + javaThreadId + virtualText + ")" + postFix);
         } else {
             println("\"" + thread.getOSName() + "\" (osThreadId = " + thread.getOSThreadId() + ")" + postFix);
         }
     }
 
     private boolean printFormatted(ValueDescriptor field, Object value) {
-        if (value instanceof Duration) {
-            Duration d = (Duration) value;
+        if (value instanceof Duration d) {
             if (d.getSeconds() == Long.MIN_VALUE && d.getNano() == 0)  {
                 println("N/A");
                 return true;
             }
-            double s = d.toNanosPart() / 1000_000_000.0 + d.toSecondsPart();
-            if (s < 1.0) {
-                if (s < 0.001) {
-                    println(String.format("%.3f", s * 1_000_000) + " us");
-                } else {
-                    println(String.format("%.3f", s * 1_000) + " ms");
-                }
-            } else {
-                if (s < 1000.0) {
-                    println(String.format("%.3f", s) + " s");
-                } else {
-                    println(String.format("%.0f", s) + " s");
-                }
+            if (d.equals(ChronoUnit.FOREVER.getDuration())) {
+                println("Forever");
+                return true;
             }
+            println(Utils.formatDuration(d));
             return true;
         }
-        if (value instanceof OffsetDateTime) {
-            OffsetDateTime odt = (OffsetDateTime) value;
+        if (value instanceof OffsetDateTime odt) {
             if (odt.equals(OffsetDateTime.MIN))  {
                 println("N/A");
                 return true;
@@ -577,16 +571,15 @@ public final class PrettyWriter extends EventPrintWriter {
         }
         Percentage percentage = field.getAnnotation(Percentage.class);
         if (percentage != null) {
-            if (value instanceof Number) {
-                double d = ((Number) value).doubleValue();
+            if (value instanceof Number n) {
+                double d = n.doubleValue();
                 println(String.format("%.2f", d * 100) + "%");
                 return true;
             }
         }
         DataAmount dataAmount = field.getAnnotation(DataAmount.class);
         if (dataAmount != null) {
-            if (value instanceof Number) {
-                Number n = (Number) value;
+            if (value instanceof Number n) {
                 long amount = n.longValue();
                 if (field.getAnnotation(Frequency.class) != null) {
                     if (dataAmount.value().equals(DataAmount.BYTES)) {
@@ -611,8 +604,8 @@ public final class PrettyWriter extends EventPrintWriter {
         }
         MemoryAddress memoryAddress = field.getAnnotation(MemoryAddress.class);
         if (memoryAddress != null) {
-            if (value instanceof Number) {
-                long d = ((Number) value).longValue();
+            if (value instanceof Number n) {
+                long d = n.longValue();
                 println(String.format("0x%08X", d));
                 return true;
             }

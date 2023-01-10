@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2005, 2019, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2012, 2019, SAP SE. All rights reserved.
+ * Copyright (c) 2005, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2019 SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -37,6 +37,8 @@
 #include "ci/ciTypeArrayKlass.hpp"
 #include "runtime/sharedRuntime.hpp"
 #include "runtime/stubRoutines.hpp"
+#include "runtime/vm_version.hpp"
+#include "utilities/powerOfTwo.hpp"
 #include "vmreg_ppc.inline.hpp"
 
 #ifdef ASSERT
@@ -240,12 +242,12 @@ LIR_Address* LIRGenerator::emit_array_address(LIR_Opr array_opr, LIR_Opr index_o
 }
 
 
-LIR_Opr LIRGenerator::load_immediate(int x, BasicType type) {
-  LIR_Opr r = NULL;
+LIR_Opr LIRGenerator::load_immediate(jlong x, BasicType type) {
+  LIR_Opr r;
   if (type == T_LONG) {
     r = LIR_OprFact::longConst(x);
   } else if (type == T_INT) {
-    r = LIR_OprFact::intConst(x);
+    r = LIR_OprFact::intConst(checked_cast<jint>(x));
   } else {
     ShouldNotReachHere();
   }
@@ -289,14 +291,14 @@ void LIRGenerator::cmp_reg_mem(LIR_Condition condition, LIR_Opr reg, LIR_Opr bas
 }
 
 
-bool LIRGenerator::strength_reduce_multiply(LIR_Opr left, int c, LIR_Opr result, LIR_Opr tmp) {
+bool LIRGenerator::strength_reduce_multiply(LIR_Opr left, jint c, LIR_Opr result, LIR_Opr tmp) {
   assert(left != result, "should be different registers");
   if (is_power_of_2(c + 1)) {
-    __ shift_left(left, log2_int(c + 1), result);
+    __ shift_left(left, log2i_exact(c + 1), result);
     __ sub(result, left, result);
     return true;
   } else if (is_power_of_2(c - 1)) {
-    __ shift_left(left, log2_int(c - 1), result);
+    __ shift_left(left, log2i_exact(c - 1), result);
     __ add(result, left, result);
     return true;
   }
@@ -307,12 +309,7 @@ bool LIRGenerator::strength_reduce_multiply(LIR_Opr left, int c, LIR_Opr result,
 void LIRGenerator::store_stack_parameter(LIR_Opr item, ByteSize offset_from_sp) {
   BasicType t = item->type();
   LIR_Opr sp_opr = FrameMap::SP_opr;
-  if ((t == T_LONG || t == T_DOUBLE) &&
-      ((in_bytes(offset_from_sp) - STACK_BIAS) % 8 != 0)) {
-    __ unaligned_move(item, new LIR_Address(sp_opr, in_bytes(offset_from_sp), t));
-  } else {
-    __ move(item, new LIR_Address(sp_opr, in_bytes(offset_from_sp), t));
-  }
+  __ move(item, new LIR_Address(sp_opr, in_bytes(offset_from_sp), t));
 }
 
 
@@ -392,7 +389,7 @@ void LIRGenerator::do_ArithmeticOp_FPU(ArithmeticOp* x) {
     left.load_item();
     right.load_item();
     rlock_result(x);
-    arithmetic_op_fpu(x->op(), x->operand(), left.result(), right.result(), x->is_strictfp());
+    arithmetic_op_fpu(x->op(), x->operand(), left.result(), right.result());
   }
   break;
 
@@ -439,7 +436,7 @@ void LIRGenerator::do_ArithmeticOp_Long(ArithmeticOp* x) {
     if (divisor->is_register()) {
       CodeEmitInfo* null_check_info = state_for(x);
       __ cmp(lir_cond_equal, divisor, LIR_OprFact::longConst(0));
-      __ branch(lir_cond_equal, T_LONG, new DivByZeroStub(null_check_info));
+      __ branch(lir_cond_equal, new DivByZeroStub(null_check_info));
     } else {
       jlong const_divisor = divisor->as_constant_ptr()->as_jlong();
       if (const_divisor == 0) {
@@ -493,7 +490,7 @@ void LIRGenerator::do_ArithmeticOp_Int(ArithmeticOp* x) {
     if (divisor->is_register()) {
       CodeEmitInfo* null_check_info = state_for(x);
       __ cmp(lir_cond_equal, divisor, LIR_OprFact::intConst(0));
-      __ branch(lir_cond_equal, T_INT, new DivByZeroStub(null_check_info));
+      __ branch(lir_cond_equal, new DivByZeroStub(null_check_info));
     } else {
       jint const_divisor = divisor->as_constant_ptr()->as_jint();
       if (const_divisor == 0) {
@@ -574,13 +571,13 @@ inline bool can_handle_logic_op_as_uimm(ValueType *type, Bytecodes::Code bc) {
 
   // see Assembler::andi
   if (bc == Bytecodes::_iand &&
-      (is_power_of_2_long(int_or_long_const+1) ||
-       is_power_of_2_long(int_or_long_const) ||
-       is_power_of_2_long(-int_or_long_const))) return true;
+      (is_power_of_2(int_or_long_const+1) ||
+       is_power_of_2(int_or_long_const) ||
+       is_power_of_2(-int_or_long_const))) return true;
   if (bc == Bytecodes::_land &&
-      (is_power_of_2_long(int_or_long_const+1) ||
-       (Assembler::is_uimm(int_or_long_const, 32) && is_power_of_2_long(int_or_long_const)) ||
-       (int_or_long_const != min_jlong && is_power_of_2_long(-int_or_long_const)))) return true;
+      (is_power_of_2(int_or_long_const+1) ||
+       (Assembler::is_uimm(int_or_long_const, 32) && is_power_of_2(int_or_long_const)) ||
+       (int_or_long_const != min_jlong && is_power_of_2(-int_or_long_const)))) return true;
 
   // special case: xor -1
   if ((bc == Bytecodes::_ixor || bc == Bytecodes::_lxor) &&
@@ -725,7 +722,8 @@ void LIRGenerator::do_MathIntrinsic(Intrinsic* x) {
       __ abs(value.result(), dst, LIR_OprFact::illegalOpr);
       break;
     }
-    case vmIntrinsics::_dsqrt: {
+    case vmIntrinsics::_dsqrt:
+    case vmIntrinsics::_dsqrt_strict: {
       if (VM_Version::has_fsqrt()) {
         assert(x->number_of_arguments() == 1, "wrong type");
         LIRItem value(x->argument_at(0), this);
@@ -746,6 +744,7 @@ void LIRGenerator::do_MathIntrinsic(Intrinsic* x) {
       address runtime_entry = NULL;
       switch (x->id()) {
         case vmIntrinsics::_dsqrt:
+        case vmIntrinsics::_dsqrt_strict:
           runtime_entry = CAST_FROM_FN_PTR(address, SharedRuntime::dsqrt);
           break;
         case vmIntrinsics::_dsin:
@@ -1170,9 +1169,9 @@ void LIRGenerator::do_If(If* x) {
   profile_branch(x, cond);
   move_to_phi(x->state());
   if (x->x()->type()->is_float_kind()) {
-    __ branch(lir_cond(cond), right->type(), x->tsux(), x->usux());
+    __ branch(lir_cond(cond), x->tsux(), x->usux());
   } else {
-    __ branch(lir_cond(cond), right->type(), x->tsux());
+    __ branch(lir_cond(cond), x->tsux());
   }
   assert(x->default_sux() == x->fsux(), "wrong destination above");
   __ jump(x->default_sux());

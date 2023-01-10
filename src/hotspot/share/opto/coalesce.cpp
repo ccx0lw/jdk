@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -324,7 +324,7 @@ void PhaseAggressiveCoalesce::insert_copies( Matcher &matcher ) {
           // Get the chosen name for the Node
           uint name = _phc._lrg_map.find(n);
           assert (name, "no 2-address specials");
-          // Check for name mis-match on the 2-address input
+          // Check for name mismatch on the 2-address input
           Node *m = n->in(idx);
           if (_phc._lrg_map.find(m) != name) {
             Node *copy;
@@ -535,7 +535,7 @@ void PhaseConservativeCoalesce::union_helper( Node *lr1_node, Node *lr2_node, ui
 
 // Factored code from copy_copy that computes extra interferences from
 // lengthening a live range by double-coalescing.
-uint PhaseConservativeCoalesce::compute_separating_interferences(Node *dst_copy, Node *src_copy, Block *b, uint bindex, RegMask &rm, uint reg_degree, uint rm_size, uint lr1, uint lr2 ) {
+uint PhaseConservativeCoalesce::compute_separating_interferences(Node *dst_copy, Node *src_copy, Block *b, uint bindex, RegMask &rm, uint rm_size, uint reg_degree, uint lr1, uint lr2 ) {
 
   assert(!lrgs(lr1)._fat_proj, "cannot coalesce fat_proj");
   assert(!lrgs(lr2)._fat_proj, "cannot coalesce fat_proj");
@@ -602,29 +602,42 @@ void PhaseConservativeCoalesce::update_ifg(uint lr1, uint lr2, IndexSet *n_lr1, 
   // Some original neighbors of lr1 might have gone away
   // because the constrained register mask prevented them.
   // Remove lr1 from such neighbors.
-  IndexSetIterator one(n_lr1);
-  uint neighbor;
+  uint neighbor = 0;
   LRG &lrg1 = lrgs(lr1);
-  while ((neighbor = one.next()) != 0)
-    if( !_ulr.member(neighbor) )
-      if( _phc._ifg->neighbors(neighbor)->remove(lr1) )
-        lrgs(neighbor).inc_degree( -lrg1.compute_degree(lrgs(neighbor)) );
+  if (!n_lr1->is_empty()) {
+    IndexSetIterator one(n_lr1);
+    while ((neighbor = one.next()) != 0) {
+      if (!_ulr.member(neighbor)) {
+        if (_phc._ifg->neighbors(neighbor)->remove(lr1)) {
+          lrgs(neighbor).inc_degree(-lrg1.compute_degree(lrgs(neighbor)));
+        }
+      }
+    }
+  }
 
 
   // lr2 is now called (coalesced into) lr1.
   // Remove lr2 from the IFG.
-  IndexSetIterator two(n_lr2);
   LRG &lrg2 = lrgs(lr2);
-  while ((neighbor = two.next()) != 0)
-    if( _phc._ifg->neighbors(neighbor)->remove(lr2) )
-      lrgs(neighbor).inc_degree( -lrg2.compute_degree(lrgs(neighbor)) );
+  if (!n_lr2->is_empty()) {
+    IndexSetIterator two(n_lr2);
+    while ((neighbor = two.next()) != 0) {
+      if (_phc._ifg->neighbors(neighbor)->remove(lr2)) {
+        lrgs(neighbor).inc_degree(-lrg2.compute_degree(lrgs(neighbor)));
+      }
+    }
+  }
 
   // Some neighbors of intermediate copies now interfere with the
   // combined live range.
-  IndexSetIterator three(&_ulr);
-  while ((neighbor = three.next()) != 0)
-    if( _phc._ifg->neighbors(neighbor)->insert(lr1) )
-      lrgs(neighbor).inc_degree( lrg1.compute_degree(lrgs(neighbor)) );
+  if (!_ulr.is_empty()) {
+    IndexSetIterator three(&_ulr);
+    while ((neighbor = three.next()) != 0) {
+      if (_phc._ifg->neighbors(neighbor)->insert(lr1)) {
+        lrgs(neighbor).inc_degree(lrg1.compute_degree(lrgs(neighbor)));
+      }
+    }
+  }
 }
 
 static void record_bias( const PhaseIFG *ifg, int lr1, int lr2 ) {

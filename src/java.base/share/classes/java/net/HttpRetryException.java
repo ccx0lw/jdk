@@ -35,12 +35,18 @@ import java.io.IOException;
  * @author  Michael McMahon
  * @since   1.5
  */
-public
-class HttpRetryException extends IOException {
+public class HttpRetryException extends IOException {
     @java.io.Serial
     private static final long serialVersionUID = -9186022286469111381L;
 
+    /**
+     * The response code.
+     */
     private int responseCode;
+
+    /**
+     * The URL to be redirected to.
+     */
     private String location;
 
     /**

@@ -27,6 +27,7 @@
 
 #include "opto/node.hpp"
 #include "opto/opcodes.hpp"
+#include "subnode.hpp"
 
 //------------------------------Opaque1Node------------------------------------
 // A node to prevent unwanted optimizations.  Allows constant folding.
@@ -38,6 +39,7 @@ class Opaque1Node : public Node {
   Opaque1Node(Compile* C, Node *n) : Node(NULL, n) {
     // Put it on the Macro nodes list to removed during macro nodes expansion.
     init_flags(Flag_is_macro);
+    init_class_id(Class_Opaque1);
     C->add_macro_node(this);
   }
   // Special version for the pre-loop to hold the original loop limit
@@ -45,6 +47,7 @@ class Opaque1Node : public Node {
   Opaque1Node(Compile* C, Node *n, Node* orig_limit) : Node(NULL, n, orig_limit) {
     // Put it on the Macro nodes list to removed during macro nodes expansion.
     init_flags(Flag_is_macro);
+    init_class_id(Class_Opaque1);
     C->add_macro_node(this);
   }
   Node* original_loop_limit() { return req()==3 ? in(2) : NULL; }
@@ -53,37 +56,52 @@ class Opaque1Node : public Node {
   virtual Node* Identity(PhaseGVN* phase);
 };
 
-//------------------------------Opaque2Node------------------------------------
-// A node to prevent unwanted optimizations.  Allows constant folding.  Stops
-// value-numbering, most Ideal calls or Identity functions.  This Node is
-// specifically designed to prevent the pre-increment value of a loop trip
-// counter from being live out of the bottom of the loop (hence causing the
-// pre- and post-increment values both being live and thus requiring an extra
-// temp register and an extra move).  If we "accidentally" optimize through
-// this kind of a Node, we'll get slightly pessimal, but correct, code.  Thus
-// it's OK to be slightly sloppy on optimizations here.
-class Opaque2Node : public Node {
-  virtual uint hash() const ;                  // { return NO_HASH; }
-  virtual bool cmp( const Node &n ) const;
+// Opaque nodes specific to range check elimination handling
+class OpaqueLoopInitNode : public Opaque1Node {
   public:
-  Opaque2Node( Compile* C, Node *n ) : Node(0,n) {
-    // Put it on the Macro nodes list to removed during macro nodes expansion.
-    init_flags(Flag_is_macro);
-    C->add_macro_node(this);
+  OpaqueLoopInitNode(Compile* C, Node *n) : Opaque1Node(C, n) {
   }
   virtual int Opcode() const;
-  virtual const Type *bottom_type() const { return TypeInt::INT; }
+};
+
+class OpaqueLoopStrideNode : public Opaque1Node {
+  public:
+  OpaqueLoopStrideNode(Compile* C, Node *n) : Opaque1Node(C, n) {
+  }
+  virtual int Opcode() const;
+};
+
+class OpaqueZeroTripGuardNode : public Opaque1Node {
+public:
+  // This captures the test that returns true when the loop is entered. It depends on whether the loop goes up or down.
+  // This is used by CmpINode::Value.
+  BoolTest::mask _loop_entered_mask;
+  OpaqueZeroTripGuardNode(Compile* C, Node* n, BoolTest::mask loop_entered_test) :
+          Opaque1Node(C, n), _loop_entered_mask(loop_entered_test) {
+  }
+  virtual int Opcode() const;
+  virtual uint size_of() const {
+    return sizeof(*this);
+  }
 };
 
 //------------------------------Opaque3Node------------------------------------
 // A node to prevent unwanted optimizations. Will be optimized only during
 // macro nodes expansion.
-class Opaque3Node : public Opaque2Node {
+class Opaque3Node : public Node {
   int _opt; // what optimization it was used for
+  virtual uint hash() const;
+  virtual bool cmp(const Node &n) const;
   public:
   enum { RTM_OPT };
-  Opaque3Node(Compile* C, Node *n, int opt) : Opaque2Node(C, n), _opt(opt) {}
+  Opaque3Node(Compile* C, Node* n, int opt) : Node(0, n), _opt(opt) {
+    // Put it on the Macro nodes list to removed during macro nodes expansion.
+    init_flags(Flag_is_macro);
+    C->add_macro_node(this);
+  }
   virtual int Opcode() const;
+  virtual const Type* bottom_type() const { return TypeInt::INT; }
+  virtual Node* Identity(PhaseGVN* phase);
   bool rtm_opt() const { return (_opt == RTM_OPT); }
 };
 
@@ -98,9 +116,10 @@ class Opaque3Node : public Opaque2Node {
 class Opaque4Node : public Node {
   public:
   Opaque4Node(Compile* C, Node *tst, Node* final_tst) : Node(NULL, tst, final_tst) {
-    // Put it on the Opaque4 nodes list to be removed after all optimizations
-    C->add_opaque4_node(this);
+    init_flags(Flag_is_macro);
+    C->add_macro_node(this);
   }
+
   virtual int Opcode() const;
   virtual const Type *bottom_type() const { return TypeInt::BOOL; }
   virtual const Type* Value(PhaseGVN* phase) const;

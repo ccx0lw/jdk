@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -47,12 +47,12 @@ import java.io.IOException;
  * without incurring the increased cost associated with {@link TreeMap}.  It
  * can be used to produce a copy of a map that has the same order as the
  * original, regardless of the original map's implementation:
- * <pre>
- *     void foo(Map m) {
- *         Map copy = new LinkedHashMap(m);
+ * <pre>{@code
+ *     void foo(Map<String, Integer> m) {
+ *         Map<String, Integer> copy = new LinkedHashMap<>(m);
  *         ...
  *     }
- * </pre>
+ * }</pre>
  * This technique is particularly useful if a module takes a map on input,
  * copies it, and later returns results whose order is determined by that of
  * the copy.  (Clients generally appreciate having things returned in the same
@@ -339,6 +339,10 @@ public class LinkedHashMap<K,V>
      * Constructs an empty insertion-ordered {@code LinkedHashMap} instance
      * with the specified initial capacity and load factor.
      *
+     * @apiNote
+     * To create a {@code LinkedHashMap} with an initial capacity that accommodates
+     * an expected number of mappings, use {@link #newLinkedHashMap(int) newLinkedHashMap}.
+     *
      * @param  initialCapacity the initial capacity
      * @param  loadFactor      the load factor
      * @throws IllegalArgumentException if the initial capacity is negative
@@ -352,6 +356,10 @@ public class LinkedHashMap<K,V>
     /**
      * Constructs an empty insertion-ordered {@code LinkedHashMap} instance
      * with the specified initial capacity and a default load factor (0.75).
+     *
+     * @apiNote
+     * To create a {@code LinkedHashMap} with an initial capacity that accommodates
+     * an expected number of mappings, use {@link #newLinkedHashMap(int) newLinkedHashMap}.
      *
      * @param  initialCapacity the initial capacity
      * @throws IllegalArgumentException if the initial capacity is negative
@@ -438,7 +446,7 @@ public class LinkedHashMap<K,V>
      */
     public V get(Object key) {
         Node<K,V> e;
-        if ((e = getNode(hash(key), key)) == null)
+        if ((e = getNode(key)) == null)
             return null;
         if (accessOrder)
             afterNodeAccess(e);
@@ -450,7 +458,7 @@ public class LinkedHashMap<K,V>
      */
     public V getOrDefault(Object key, V defaultValue) {
        Node<K,V> e;
-       if ((e = getNode(hash(key), key)) == null)
+       if ((e = getNode(key)) == null)
            return defaultValue;
        if (accessOrder)
            afterNodeAccess(e);
@@ -681,16 +689,14 @@ public class LinkedHashMap<K,V>
             return new LinkedEntryIterator();
         }
         public final boolean contains(Object o) {
-            if (!(o instanceof Map.Entry))
+            if (!(o instanceof Map.Entry<?, ?> e))
                 return false;
-            Map.Entry<?,?> e = (Map.Entry<?,?>) o;
             Object key = e.getKey();
-            Node<K,V> candidate = getNode(hash(key), key);
+            Node<K,V> candidate = getNode(key);
             return candidate != null && candidate.equals(e);
         }
         public final boolean remove(Object o) {
-            if (o instanceof Map.Entry) {
-                Map.Entry<?,?> e = (Map.Entry<?,?>) o;
+            if (o instanceof Map.Entry<?, ?> e) {
                 Object key = e.getKey();
                 Object value = e.getValue();
                 return removeNode(hash(key), key, value, true, true) != null;
@@ -790,5 +796,24 @@ public class LinkedHashMap<K,V>
         public final Map.Entry<K,V> next() { return nextNode(); }
     }
 
+    /**
+     * Creates a new, empty, insertion-ordered LinkedHashMap suitable for the expected number of mappings.
+     * The returned map uses the default load factor of 0.75, and its initial capacity is
+     * generally large enough so that the expected number of mappings can be added
+     * without resizing the map.
+     *
+     * @param numMappings the expected number of mappings
+     * @param <K>         the type of keys maintained by the new map
+     * @param <V>         the type of mapped values
+     * @return the newly created map
+     * @throws IllegalArgumentException if numMappings is negative
+     * @since 19
+     */
+    public static <K, V> LinkedHashMap<K, V> newLinkedHashMap(int numMappings) {
+        if (numMappings < 0) {
+            throw new IllegalArgumentException("Negative number of mappings: " + numMappings);
+        }
+        return new LinkedHashMap<>(HashMap.calculateHashMapCapacity(numMappings));
+    }
 
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,6 +28,7 @@
 #include "memory/allocation.hpp"
 #include "utilities/exceptions.hpp"
 #include "utilities/macros.hpp"
+#include "utilities/vmEnums.hpp"
 
 // A Symbol is a canonicalized string.
 // All Symbols reside in global SymbolTable and are reference counted.
@@ -44,8 +45,8 @@
 // saved in persistent storage.  This does not include the pointer
 // in the SymbolTable bucket (the _literal field in HashtableEntry)
 // that points to the Symbol.  All other stores of a Symbol*
-// to a field of a persistent variable (e.g., the _name filed in
-// fieldDescriptor or _ptr in a CPSlot) is reference counted.
+// to a field of a persistent variable (e.g., the _name field in
+// fieldDescriptor or symbol in a constant pool) is reference counted.
 //
 // 1) The lookup of a "name" in the SymbolTable either creates a Symbol F for
 // "name" and returns a pointer to F or finds a pre-existing Symbol F for
@@ -57,7 +58,7 @@
 //                ^ increment on lookup()
 // and not
 //    Symbol* G = lookup()
-//              ^ increment on assignmnet
+//              ^ increment on assignment
 // The reference count must be decremented manually when the copy of the
 // pointer G is destroyed.
 //
@@ -97,24 +98,27 @@ class ClassLoaderData;
 
 // Set _refcount to PERM_REFCOUNT to prevent the Symbol from being freed.
 #ifndef PERM_REFCOUNT
-#define PERM_REFCOUNT ((1 << 16) - 1)
+#define PERM_REFCOUNT 0xffff
 #endif
 
 class Symbol : public MetaspaceObj {
   friend class VMStructs;
   friend class SymbolTable;
+  friend class vmSymbols;
+  friend class JVMCIVMStructs;
 
  private:
 
-  // This is an int because it needs atomic operation on the refcount.  Mask length
+  // This is an int because it needs atomic operation on the refcount.  Mask hash
   // in high half word. length is the number of UTF8 characters in the symbol
-  volatile uint32_t _length_and_refcount;
-  short _identity_hash;
+  volatile uint32_t _hash_and_refcount;
+  u2 _length;
   u1 _body[2];
 
+  static Symbol* _vm_symbols[];
+
   enum {
-    // max_symbol_length must fit into the top 16 bits of _length_and_refcount
-    max_symbol_length = (1 << 16) -1
+    max_symbol_length = 0xffff
   };
 
   static int byte_size(int length) {
@@ -126,22 +130,17 @@ class Symbol : public MetaspaceObj {
     return (int)heap_word_size(byte_size(length));
   }
 
-  void byte_at_put(int index, u1 value) {
-    assert(index >=0 && index < length(), "symbol index overflow");
-    _body[index] = value;
-  }
-
   Symbol(const u1* name, int length, int refcount);
   void* operator new(size_t size, int len) throw();
   void* operator new(size_t size, int len, Arena* arena) throw();
 
   void  operator delete(void* p);
 
-  static int extract_length(uint32_t value)   { return value >> 16; }
+  static short extract_hash(uint32_t value)   { return (short)(value >> 16); }
   static int extract_refcount(uint32_t value) { return value & 0xffff; }
-  static uint32_t pack_length_and_refcount(int length, int refcount);
+  static uint32_t pack_hash_and_refcount(short hash, int refcount);
 
-  int length() const   { return extract_length(_length_and_refcount); }
+  int length() const   { return _length; }
 
  public:
   // Low-level access (used with care, since not GC-safe)
@@ -156,22 +155,33 @@ class Symbol : public MetaspaceObj {
   // Returns the largest size symbol we can safely hold.
   static int max_length() { return max_symbol_length; }
   unsigned identity_hash() const {
-    unsigned addr_bits = (unsigned)((uintptr_t)this >> (LogMinObjAlignmentInBytes + 3));
-    return ((unsigned)_identity_hash & 0xffff) |
+    unsigned addr_bits = (unsigned)((uintptr_t)this >> LogBytesPerWord);
+    return ((unsigned)extract_hash(_hash_and_refcount) & 0xffff) |
            ((addr_bits ^ (length() << 8) ^ (( _body[0] << 8) | _body[1])) << 16);
   }
 
   // Reference counting.  See comments above this class for when to use.
-  int refcount() const { return extract_refcount(_length_and_refcount); }
+  int refcount() const { return extract_refcount(_hash_and_refcount); }
   bool try_increment_refcount();
   void increment_refcount();
   void decrement_refcount();
-  bool is_permanent() {
+  bool is_permanent() const {
     return (refcount() == PERM_REFCOUNT);
   }
-  void set_permanent();
+  void update_identity_hash() NOT_CDS_RETURN;
+  void set_permanent() NOT_CDS_RETURN;
   void make_permanent();
 
+  static void maybe_increment_refcount(Symbol* s) {
+    if (s != NULL) {
+      s->increment_refcount();
+    }
+  }
+  static void maybe_decrement_refcount(Symbol* s) {
+    if (s != NULL) {
+      s->decrement_refcount();
+    }
+  }
   // Function char_at() returns the Symbol's selected u1 byte as a char type.
   //
   // Note that all multi-byte chars have the sign bit set on all their bytes.
@@ -189,23 +199,50 @@ class Symbol : public MetaspaceObj {
   bool equals(const char* str, int len) const {
     int l = utf8_length();
     if (l != len) return false;
-    while (l-- > 0) {
-      if (str[l] != char_at(l))
-        return false;
-    }
-    assert(l == -1, "we should be at the beginning");
-    return true;
+    return contains_utf8_at(0, str, len);
   }
   bool equals(const char* str) const { return equals(str, (int) strlen(str)); }
+  bool is_star_match(const char* pattern) const;
 
   // Tests if the symbol starts with the given prefix.
-  bool starts_with(const char* prefix, int len) const;
+  bool starts_with(const char* prefix, int len) const {
+    return contains_utf8_at(0, prefix, len);
+  }
   bool starts_with(const char* prefix) const {
     return starts_with(prefix, (int) strlen(prefix));
   }
+  bool starts_with(int prefix_char) const {
+    return contains_byte_at(0, prefix_char);
+  }
+  // Tests if the symbol ends with the given suffix.
+  bool ends_with(const char* suffix, int len) const {
+    return contains_utf8_at(utf8_length() - len, suffix, len);
+  }
+  bool ends_with(const char* suffix) const {
+    return ends_with(suffix, (int) strlen(suffix));
+  }
+  bool ends_with(int suffix_char) const {
+    return contains_byte_at(utf8_length() - 1, suffix_char);
+  }
 
-  // Tests if the symbol starts with the given prefix.
-  int index_of_at(int i, const char* str, int len) const;
+  // Tests if the symbol contains the given utf8 substring
+  // at the given byte position.
+  bool contains_utf8_at(int position, const char* substring, int len) const {
+    assert(len >= 0 && substring != NULL, "substring must be valid");
+    if (position < 0)  return false;  // can happen with ends_with
+    if (position + len > utf8_length()) return false;
+    return (memcmp((char*)base() + position, substring, len) == 0);
+  }
+
+  // Tests if the symbol contains the given byte at the given position.
+  bool contains_byte_at(int position, char code_byte) const {
+    if (position < 0)  return false;  // can happen with ends_with
+    if (position >= utf8_length()) return false;
+    return code_byte == char_at(position);
+  }
+
+  // Test if the symbol has the give substring at or after the i-th char.
+  int index_of_at(int i, const char* substr, int substr_len) const;
 
   // Three-way compare for sorting; returns -1/0/1 if receiver is </==/> than arg
   // note that the ordering is not alfabetical
@@ -235,7 +272,7 @@ class Symbol : public MetaspaceObj {
   // 'java.lang.Object[][]'.
   void print_as_signature_external_return_type(outputStream *os);
   // Treating the symbol as a signature, print the parameter types
-  // seperated by ', ' to the outputStream.  Prints external names as
+  // separated by ', ' to the outputStream.  Prints external names as
   //  'double' or 'java.lang.Object[][]'.
   void print_as_signature_external_parameters(outputStream *os);
 
@@ -253,6 +290,17 @@ class Symbol : public MetaspaceObj {
   void print_value() const;
 
   static bool is_valid(Symbol* s);
+
+  static bool is_valid_id(vmSymbolID vm_symbol_id) PRODUCT_RETURN_(return true;);
+
+  static Symbol* vm_symbol_at(vmSymbolID vm_symbol_id) {
+    assert(is_valid_id(vm_symbol_id), "must be");
+    return _vm_symbols[static_cast<int>(vm_symbol_id)];
+  }
+
+  static unsigned int compute_hash(const Symbol* const& name) {
+    return (unsigned int) name->identity_hash();
+  }
 
 #ifndef PRODUCT
   // Empty constructor to create a dummy symbol object on stack

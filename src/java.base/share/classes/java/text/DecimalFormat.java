@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1996, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1996, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -96,9 +96,9 @@ import sun.util.locale.provider.ResourceBundleBasedAdapter;
  * <i>NegativePattern:</i>
  *         <i>Prefix<sub>opt</sub></i> <i>Number</i> <i>Suffix<sub>opt</sub></i>
  * <i>Prefix:</i>
- *         any Unicode characters except &#92;uFFFE, &#92;uFFFF, and special characters
+ *         any Unicode characters except {@code U+FFFE}, {@code U+FFFF}, and special characters
  * <i>Suffix:</i>
- *         any Unicode characters except &#92;uFFFE, &#92;uFFFF, and special characters
+ *         any Unicode characters except {@code U+FFFE}, {@code U+FFFF}, and special characters
  * <i>Number:</i>
  *         <i>Integer</i> <i>Exponent<sub>opt</sub></i>
  *         <i>Integer</i> . <i>Fraction</i> <i>Exponent<sub>opt</sub></i>
@@ -127,7 +127,7 @@ import sun.util.locale.provider.ResourceBundleBasedAdapter;
  * subpattern, for example, {@code "#,##0.00;(#,##0.00)"}.  Each
  * subpattern has a prefix, numeric part, and suffix. The negative subpattern
  * is optional; if absent, then the positive subpattern prefixed with the
- * localized minus sign ({@code '-'} in most locales) is used as the
+ * minus sign ({@code '-' U+002D HYPHEN-MINUS}) is used as the
  * negative subpattern. That is, {@code "0.00"} alone is equivalent to
  * {@code "0.00;-0.00"}.  If there is an explicit negative subpattern, it
  * serves only to specify the negative prefix and suffix; the number of digits,
@@ -136,14 +136,14 @@ import sun.util.locale.provider.ResourceBundleBasedAdapter;
  * the same behavior as {@code "#,##0.0#;(#,##0.0#)"}.
  *
  * <p>The prefixes, suffixes, and various symbols used for infinity, digits,
- * thousands separators, decimal separators, etc. may be set to arbitrary
+ * grouping separators, decimal separators, etc. may be set to arbitrary
  * values, and they will appear properly during formatting.  However, care must
  * be taken that the symbols and strings do not conflict, or parsing will be
  * unreliable.  For example, either the positive and negative prefixes or the
  * suffixes must be distinct for {@code DecimalFormat.parse()} to be able
  * to distinguish positive from negative values.  (If they are identical, then
  * {@code DecimalFormat} will behave as if no negative subpattern was
- * specified.)  Another example is that the decimal separator and thousands
+ * specified.)  Another example is that the decimal separator and grouping
  * separator should be distinct characters, or parsing will be impossible.
  *
  * <p>The grouping separator is commonly used for thousands, but in some
@@ -203,7 +203,7 @@ import sun.util.locale.provider.ResourceBundleBasedAdapter;
  *          <th scope="row">{@code ,}
  *          <td>Number
  *          <td>Yes
- *          <td>Grouping separator
+ *          <td>Grouping separator or monetary grouping separator
  *     <tr style="vertical-align: top">
  *          <th scope="row">{@code E}
  *          <td>Number
@@ -221,18 +221,18 @@ import sun.util.locale.provider.ResourceBundleBasedAdapter;
  *          <td>Yes
  *          <td>Multiply by 100 and show as percentage
  *     <tr style="vertical-align:top">
- *          <th scope="row">{@code &#92;u2030}
+ *          <th scope="row">{@code U+2030}
  *          <td>Prefix or suffix
  *          <td>Yes
  *          <td>Multiply by 1000 and show as per mille value
  *     <tr style="vertical-align: top">
- *          <th scope="row">{@code &#164;} ({@code &#92;u00A4})
+ *          <th scope="row">&#164; ({@code U+00A4})
  *          <td>Prefix or suffix
  *          <td>No
  *          <td>Currency sign, replaced by currency symbol.  If
  *              doubled, replaced by international currency symbol.
- *              If present in a pattern, the monetary decimal separator
- *              is used instead of the decimal separator.
+ *              If present in a pattern, the monetary decimal/grouping separators
+ *              are used instead of the decimal/grouping separators.
  *     <tr style="vertical-align:top">
  *          <th scope="row">{@code '}
  *          <td>Prefix or suffix
@@ -309,12 +309,12 @@ import sun.util.locale.provider.ResourceBundleBasedAdapter;
  * <h4>Special Values</h4>
  *
  * <p>{@code NaN} is formatted as a string, which typically has a single character
- * {@code &#92;uFFFD}.  This string is determined by the
+ * {@code U+FFFD}.  This string is determined by the
  * {@code DecimalFormatSymbols} object.  This is the only value for which
  * the prefixes and suffixes are not used.
  *
  * <p>Infinity is formatted as a string, which typically has a single character
- * {@code &#92;u221E}, with the positive or negative prefixes and suffixes
+ * {@code U+221E}, with the positive or negative prefixes and suffixes
  * applied.  The infinity string is determined by the
  * {@code DecimalFormatSymbols} object.
  *
@@ -338,9 +338,9 @@ import sun.util.locale.provider.ResourceBundleBasedAdapter;
  *
  * <h3>Example</h3>
  *
- * <blockquote><pre>{@code
- * <strong>// Print out a number using the localized number, integer, currency,
- * // and percent format for each locale</strong>
+ * <blockquote><pre><strong>{@code
+ * // Print out a number using the localized number, integer, currency,
+ * // and percent format for each locale}</strong>{@code
  * Locale[] locales = NumberFormat.getAvailableLocales();
  * double myNumber = -1234.56;
  * NumberFormat form;
@@ -1103,7 +1103,9 @@ public class DecimalFormat extends NumberFormat {
             // Sets up the locale specific constants used when formatting.
             // '0' is our default representation of zero.
             fastPathData.zeroDelta = symbols.getZeroDigit() - '0';
-            fastPathData.groupingChar = symbols.getGroupingSeparator();
+            fastPathData.groupingChar = isCurrencyFormat ?
+                    symbols.getMonetaryGroupingSeparator() :
+                    symbols.getGroupingSeparator();
 
             // Sets up fractional constants related to currency/decimal pattern.
             fastPathData.fractionalMaxIntBound = (isCurrencyFormat)
@@ -1530,7 +1532,7 @@ public class DecimalFormat extends NumberFormat {
              cursor--) {
             if (digitsCounter != 0) {
                 // This is a digit char, we must localize it.
-                digitsBuffer[cursor] += fastPathData.zeroDelta;
+                digitsBuffer[cursor] += (char)fastPathData.zeroDelta;
                 digitsCounter--;
             } else {
                 // Decimal separator or grouping char. Reinit counter only.
@@ -1721,7 +1723,7 @@ public class DecimalFormat extends NumberFormat {
         }
     }
 
-    // ======== End fast-path formating logic for double =========================
+    // ======== End fast-path formatting logic for double =========================
 
     /**
      * Complete the formatting of a finite number.  On entry, the digitList must
@@ -1774,7 +1776,9 @@ public class DecimalFormat extends NumberFormat {
             int maxIntDigits, int minIntDigits,
             int maxFraDigits, int minFraDigits) {
 
-        char grouping = symbols.getGroupingSeparator();
+        char grouping = isCurrencyFormat ?
+                symbols.getMonetaryGroupingSeparator() :
+                symbols.getGroupingSeparator();
         char zero = symbols.getZeroDigit();
         int zeroDelta = zero - '0'; // '0' is the DigitList representation of zero
 
@@ -2281,7 +2285,7 @@ public class DecimalFormat extends NumberFormat {
     private final boolean subparse(String text, ParsePosition parsePosition,
                                    String positivePrefix, String negativePrefix,
                                    DigitList digits, boolean isExponent,
-                                   boolean status[]) {
+                                   boolean[] status) {
         int position = parsePosition.index;
         int oldStart = parsePosition.index;
         boolean gotPositive, gotNegative;
@@ -2373,7 +2377,7 @@ public class DecimalFormat extends NumberFormat {
      */
     int subparseNumber(String text, int position,
                        DigitList digits, boolean checkExponent,
-                       boolean isExponent, boolean status[]) {
+                       boolean isExponent, boolean[] status) {
         // process digits or Inf, find decimal position
         status[STATUS_INFINITE] = false;
         if (!isExponent && text.regionMatches(position,symbols.getInfinity(),0,
@@ -2393,7 +2397,9 @@ public class DecimalFormat extends NumberFormat {
             char decimal = isCurrencyFormat ?
                     symbols.getMonetaryDecimalSeparator() :
                     symbols.getDecimalSeparator();
-            char grouping = symbols.getGroupingSeparator();
+            char grouping = isCurrencyFormat ?
+                    symbols.getMonetaryGroupingSeparator() :
+                    symbols.getGroupingSeparator();
             String exponentString = symbols.getExponentSeparator();
             boolean sawDecimal = false;
             boolean sawExponent = false;
@@ -2729,7 +2735,7 @@ public class DecimalFormat extends NumberFormat {
      * For a percent format, set the multiplier to 100 and the suffixes to
      * have '%' (for Arabic, use the Arabic percent sign).
      * For a per mille format, set the multiplier to 1000 and the suffixes to
-     * have '&#92;u2030'.
+     * have '{@code U+2030}'.
      *
      * <P>Example: with multiplier 100, 1.23 is formatted as "123", and
      * "123" is parsed into 1.23.
@@ -2955,8 +2961,8 @@ public class DecimalFormat extends NumberFormat {
      * the expanded affix strings up to date.
      */
     private void expandAffixes() {
-        // Reuse one StringBuffer for better performance
-        StringBuffer buffer = new StringBuffer();
+        // Reuse one StringBuilder for better performance
+        StringBuilder buffer = new StringBuilder();
         if (posPrefixPattern != null) {
             positivePrefix = expandAffix(posPrefixPattern, buffer);
             positivePrefixFieldPositions = null;
@@ -2986,10 +2992,10 @@ public class DecimalFormat extends NumberFormat {
      * itself at the end of the pattern.
      *
      * @param pattern the non-null, possibly empty pattern
-     * @param buffer a scratch StringBuffer; its contents will be lost
+     * @param buffer a scratch StringBuilder; its contents will be lost
      * @return the expanded equivalent of pattern
      */
-    private String expandAffix(String pattern, StringBuffer buffer) {
+    private String expandAffix(String pattern, StringBuilder buffer) {
         buffer.setLength(0);
         for (int i=0; i<pattern.length(); ) {
             char c = pattern.charAt(i++);
@@ -3091,7 +3097,7 @@ public class DecimalFormat extends NumberFormat {
     }
 
     /**
-     * Appends an affix pattern to the given StringBuffer, quoting special
+     * Appends an affix pattern to the given StringBuilder, quoting special
      * characters as needed.  Uses the internal affix pattern, if that exists,
      * or the literal affix, if the internal affix pattern is null.  The
      * appended string will generate the same affix pattern (or literal affix)
@@ -3105,7 +3111,7 @@ public class DecimalFormat extends NumberFormat {
      * @param localized true if the appended pattern should contain localized
      * pattern characters; otherwise, non-localized pattern chars are appended
      */
-    private void appendAffix(StringBuffer buffer, String affixPattern,
+    private void appendAffix(StringBuilder buffer, String affixPattern,
                              String expAffix, boolean localized) {
         if (affixPattern == null) {
             appendAffix(buffer, expAffix, localized);
@@ -3150,11 +3156,11 @@ public class DecimalFormat extends NumberFormat {
     }
 
     /**
-     * Append an affix to the given StringBuffer, using quotes if
+     * Append an affix to the given StringBuilder, using quotes if
      * there are special characters.  Single quotes themselves must be
      * escaped in either case.
      */
-    private void appendAffix(StringBuffer buffer, String affix, boolean localized) {
+    private void appendAffix(StringBuilder buffer, String affix, boolean localized) {
         boolean needQuote;
         if (localized) {
             needQuote = affix.indexOf(symbols.getZeroDigit()) >= 0
@@ -3192,7 +3198,7 @@ public class DecimalFormat extends NumberFormat {
     /**
      * Does the real work of generating a pattern.  */
     private String toPattern(boolean localized) {
-        StringBuffer result = new StringBuffer();
+        StringBuilder result = new StringBuilder();
         for (int j = 1; j >= 0; --j) {
             if (j == 1)
                 appendAffix(result, posPrefixPattern, positivePrefix, localized);
@@ -3204,16 +3210,18 @@ public class DecimalFormat extends NumberFormat {
             for (i = digitCount; i > 0; --i) {
                 if (i != digitCount && isGroupingUsed() && groupingSize != 0 &&
                     i % groupingSize == 0) {
-                    result.append(localized ? symbols.getGroupingSeparator() :
-                                  PATTERN_GROUPING_SEPARATOR);
+                    result.append(localized ?
+                        (isCurrencyFormat ? symbols.getMonetaryGroupingSeparator() : symbols.getGroupingSeparator()) :
+                        PATTERN_GROUPING_SEPARATOR);
                 }
                 result.append(i <= getMinimumIntegerDigits()
                     ? (localized ? symbols.getZeroDigit() : PATTERN_ZERO_DIGIT)
                     : (localized ? symbols.getDigit() : PATTERN_DIGIT));
             }
             if (getMaximumFractionDigits() > 0 || decimalSeparatorAlwaysShown)
-                result.append(localized ? symbols.getDecimalSeparator() :
-                              PATTERN_DECIMAL_SEPARATOR);
+                result.append(localized ?
+                    (isCurrencyFormat ? symbols.getMonetaryDecimalSeparator() : symbols.getDecimalSeparator()) :
+                    PATTERN_DECIMAL_SEPARATOR);
             for (i = 0; i < getMaximumFractionDigits(); ++i) {
                 if (i < getMinimumFractionDigits()) {
                     result.append(localized ? symbols.getZeroDigit() :
@@ -3335,8 +3343,8 @@ public class DecimalFormat extends NumberFormat {
         int start = 0;
         for (int j = 1; j >= 0 && start < pattern.length(); --j) {
             boolean inQuote = false;
-            StringBuffer prefix = new StringBuffer();
-            StringBuffer suffix = new StringBuffer();
+            StringBuilder prefix = new StringBuilder();
+            StringBuilder suffix = new StringBuilder();
             int decimalPos = -1;
             int multiplier = 1;
             int digitLeftCount = 0, zeroDigitCount = 0, digitRightCount = 0;
@@ -3352,7 +3360,7 @@ public class DecimalFormat extends NumberFormat {
             int phase = 0;
 
             // The affix is either the prefix or the suffix.
-            StringBuffer affix = prefix;
+            StringBuilder affix = prefix;
 
             for (int pos = start; pos < pattern.length(); ++pos) {
                 char ch = pattern.charAt(pos);
@@ -3400,16 +3408,14 @@ public class DecimalFormat extends NumberFormat {
                             // opening quote or two quotes, which is a quote
                             // literal. That is, we have the first quote in 'do'
                             // or o''clock.
-                            if (ch == QUOTE) {
-                                if ((pos+1) < pattern.length() &&
-                                    pattern.charAt(pos+1) == QUOTE) {
-                                    ++pos;
-                                    affix.append("''"); // o''clock
-                                } else {
-                                    inQuote = true; // 'do'
-                                }
-                                continue;
+                            if ((pos+1) < pattern.length() &&
+                                pattern.charAt(pos+1) == QUOTE) {
+                                ++pos;
+                                affix.append("''"); // o''clock
+                            } else {
+                                inQuote = true; // 'do'
                             }
+                            continue;
                         } else if (ch == separator) {
                             // Don't allow separators before we see digit
                             // characters of phase 1, and don't allow separators
@@ -4061,7 +4067,7 @@ public class DecimalFormat extends NumberFormat {
 
     /**
      * True if this object represents a currency format.  This determines
-     * whether the monetary decimal separator is used instead of the normal one.
+     * whether the monetary decimal/grouping separators are used instead of the normal ones.
      */
     private transient boolean isCurrencyFormat = false;
 
@@ -4346,8 +4352,8 @@ public class DecimalFormat extends NumberFormat {
      * The CURRENCY_SIGN is the standard Unicode symbol for currency.  It
      * is used in patterns and substituted with either the currency symbol,
      * or if it is doubled, with the international currency symbol.  If the
-     * CURRENCY_SIGN is seen in a pattern, then the decimal separator is
-     * replaced with the monetary decimal separator.
+     * CURRENCY_SIGN is seen in a pattern, then the decimal/grouping separators
+     * are replaced with the monetary decimal/grouping separators.
      *
      * The CURRENCY_SIGN is not localized.
      */

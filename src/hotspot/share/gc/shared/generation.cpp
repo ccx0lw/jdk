@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,19 +23,19 @@
  */
 
 #include "precompiled.hpp"
-#include "gc/shared/blockOffsetTable.inline.hpp"
 #include "gc/shared/cardTableRS.hpp"
 #include "gc/shared/collectedHeap.inline.hpp"
+#include "gc/shared/continuationGCSupport.inline.hpp"
 #include "gc/shared/gcLocker.hpp"
 #include "gc/shared/gcTimer.hpp"
 #include "gc/shared/gcTrace.hpp"
 #include "gc/shared/genCollectedHeap.hpp"
-#include "gc/shared/genOopClosures.hpp"
-#include "gc/shared/genOopClosures.inline.hpp"
 #include "gc/shared/generation.hpp"
 #include "gc/shared/generationSpec.hpp"
+#include "gc/shared/genOopClosures.hpp"
+#include "gc/shared/genOopClosures.inline.hpp"
 #include "gc/shared/space.inline.hpp"
-#include "gc/shared/spaceDecorator.hpp"
+#include "gc/shared/spaceDecorator.inline.hpp"
 #include "logging/log.hpp"
 #include "memory/allocation.inline.hpp"
 #include "oops/oop.inline.hpp"
@@ -50,7 +50,7 @@ Generation::Generation(ReservedSpace rs, size_t initial_size) :
     vm_exit_during_initialization("Could not reserve enough space for "
                     "object heap");
   }
-  // Mangle all of the the initial generation.
+  // Mangle all of the initial generation.
   if (ZapUnusedHeapArea) {
     MemRegion mangle_region((HeapWord*)_virtual_space.low(),
       (HeapWord*)_virtual_space.high());
@@ -68,12 +68,6 @@ size_t Generation::initial_size() {
   return gch->old_gen_spec()->init_size();
 }
 
-// This is for CMS. It returns stable monotonic used space size.
-// Remove this when CMS is removed.
-size_t Generation::used_stable() const {
-  return used();
-}
-
 size_t Generation::max_capacity() const {
   return reserved().byte_size();
 }
@@ -85,9 +79,6 @@ void Generation::ref_processor_init() {
   assert(!_reserved.is_empty(), "empty generation?");
   _span_based_discoverer.set_span(_reserved);
   _ref_processor = new ReferenceProcessor(&_span_based_discoverer);    // a vanilla reference processor
-  if (_ref_processor == NULL) {
-    vm_exit_during_initialization("Could not allocate ReferenceProcessor object");
-  }
 }
 
 void Generation::print() const { print_on(tty); }
@@ -96,7 +87,7 @@ void Generation::print_on(outputStream* st)  const {
   st->print(" %-20s", name());
   st->print(" total " SIZE_FORMAT "K, used " SIZE_FORMAT "K",
              capacity()/K, used()/K);
-  st->print_cr(" [" INTPTR_FORMAT ", " INTPTR_FORMAT ", " INTPTR_FORMAT ")",
+  st->print_cr(" [" PTR_FORMAT ", " PTR_FORMAT ", " PTR_FORMAT ")",
               p2i(_virtual_space.low_boundary()),
               p2i(_virtual_space.high()),
               p2i(_virtual_space.high_boundary()));
@@ -165,7 +156,7 @@ bool Generation::promotion_attempt_is_safe(size_t max_promotion_in_bytes) const 
 
 // Ignores "ref" and calls allocate().
 oop Generation::promote(oop obj, size_t obj_size) {
-  assert(obj_size == (size_t)obj->size(), "bad obj_size passed in");
+  assert(obj_size == obj->size(), "bad obj_size passed in");
 
 #ifndef PRODUCT
   if (GenCollectedHeap::heap()->promotion_should_fail()) {
@@ -173,21 +164,24 @@ oop Generation::promote(oop obj, size_t obj_size) {
   }
 #endif  // #ifndef PRODUCT
 
+  // Allocate new object.
   HeapWord* result = allocate(obj_size, false);
-  if (result != NULL) {
-    Copy::aligned_disjoint_words((HeapWord*)obj, result, obj_size);
-    return oop(result);
-  } else {
-    GenCollectedHeap* gch = GenCollectedHeap::heap();
-    return gch->handle_failed_promotion(this, obj, obj_size);
+  if (result == NULL) {
+    // Promotion of obj into gen failed.  Try to expand and allocate.
+    result = expand_and_allocate(obj_size, false);
+    if (result == NULL) {
+      return NULL;
+    }
   }
-}
 
-oop Generation::par_promote(int thread_num,
-                            oop obj, markWord m, size_t word_sz) {
-  // Could do a bad general impl here that gets a lock.  But no.
-  ShouldNotCallThis();
-  return NULL;
+  // Copy to new location.
+  Copy::aligned_disjoint_words(cast_from_oop<HeapWord*>(obj), result, obj_size);
+  oop new_obj = cast_to_oop<HeapWord*>(result);
+
+  // Transform object if it is a stack chunk.
+  ContinuationGCSupport::transform_stack_chunk(new_obj);
+
+  return new_obj;
 }
 
 Space* Generation::space_containing(const void* p) const {
@@ -273,13 +267,6 @@ void Generation::oop_iterate(OopIterateClosure* cl) {
   space_iterate(&blk);
 }
 
-void Generation::younger_refs_in_space_iterate(Space* sp,
-                                               OopsInGenClosure* cl,
-                                               uint n_threads) {
-  CardTableRS* rs = GenCollectedHeap::heap()->rem_set();
-  rs->younger_refs_in_space_iterate(sp, cl, n_threads);
-}
-
 class GenerationObjIterateClosure : public SpaceClosure {
  private:
   ObjectClosure* _cl;
@@ -292,21 +279,6 @@ class GenerationObjIterateClosure : public SpaceClosure {
 
 void Generation::object_iterate(ObjectClosure* cl) {
   GenerationObjIterateClosure blk(cl);
-  space_iterate(&blk);
-}
-
-class GenerationSafeObjIterateClosure : public SpaceClosure {
- private:
-  ObjectClosure* _cl;
- public:
-  virtual void do_space(Space* s) {
-    s->safe_object_iterate(_cl);
-  }
-  GenerationSafeObjIterateClosure(ObjectClosure* cl) : _cl(cl) {}
-};
-
-void Generation::safe_object_iterate(ObjectClosure* cl) {
-  GenerationSafeObjIterateClosure blk(cl);
   space_iterate(&blk);
 }
 

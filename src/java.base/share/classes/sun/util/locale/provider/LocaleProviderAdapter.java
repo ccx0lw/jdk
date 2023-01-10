@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,6 +25,7 @@
 
 package sun.util.locale.provider;
 
+import java.lang.reflect.InvocationTargetException;
 import java.text.spi.BreakIteratorProvider;
 import java.text.spi.CollatorProvider;
 import java.text.spi.DateFormatProvider;
@@ -32,11 +33,13 @@ import java.text.spi.DateFormatSymbolsProvider;
 import java.text.spi.DecimalFormatSymbolsProvider;
 import java.text.spi.NumberFormatProvider;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.ResourceBundle;
+import java.util.ServiceConfigurationError;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -50,6 +53,8 @@ import sun.security.action.GetPropertyAction;
 import sun.text.spi.JavaTimeDateTimePatternProvider;
 import sun.util.spi.CalendarProvider;
 
+import static java.lang.System.*;
+
 /**
  * The LocaleProviderAdapter abstract class.
  *
@@ -60,7 +65,7 @@ public abstract class LocaleProviderAdapter {
     /**
      * Adapter type.
      */
-    public static enum Type {
+    public enum Type {
         JRE("sun.util.locale.provider.JRELocaleProviderAdapter", "sun.util.resources", "sun.text.resources"),
         CLDR("sun.util.cldr.CLDRLocaleProviderAdapter", "sun.util.resources.cldr", "sun.text.resources.cldr"),
         SPI("sun.util.locale.provider.SPILocaleProviderAdapter"),
@@ -71,11 +76,11 @@ public abstract class LocaleProviderAdapter {
         private final String UTIL_RESOURCES_PACKAGE;
         private final String TEXT_RESOURCES_PACKAGE;
 
-        private Type(String className) {
+        Type(String className) {
             this(className, null, null);
         }
 
-        private Type(String className, String util, String text) {
+        Type(String className, String util, String text) {
             CLASSNAME = className;
             UTIL_RESOURCES_PACKAGE = util;
             TEXT_RESOURCES_PACKAGE = text;
@@ -113,12 +118,13 @@ public abstract class LocaleProviderAdapter {
     /**
      * Adapter lookup cache.
      */
-    private static ConcurrentMap<Class<? extends LocaleServiceProvider>, ConcurrentMap<Locale, LocaleProviderAdapter>>
+    private static final ConcurrentMap<Class<? extends LocaleServiceProvider>, ConcurrentMap<Locale, LocaleProviderAdapter>>
         adapterCache = new ConcurrentHashMap<>();
 
     static {
         String order = GetPropertyAction.privilegedGetProperty("java.locale.providers");
-        List<Type> typeList = new ArrayList<>();
+        ArrayList<Type> typeList = new ArrayList<>();
+        String invalidTypeMessage = null;
 
         // Check user specified adapter preference
         if (order != null && !order.isEmpty()) {
@@ -133,10 +139,9 @@ public abstract class LocaleProviderAdapter {
                     if (!typeList.contains(aType)) {
                         typeList.add(aType);
                     }
-                } catch (IllegalArgumentException | UnsupportedOperationException e) {
-                    // could be caused by the user specifying wrong
-                    // provider name or format in the system property
-                    LocaleServiceProviderPool.config(LocaleProviderAdapter.class, e.toString());
+                } catch (IllegalArgumentException e) {
+                    // construct a log message.
+                    invalidTypeMessage = "Invalid locale provider adapter \"" + type + "\" ignored.";
                 }
             }
         }
@@ -144,7 +149,7 @@ public abstract class LocaleProviderAdapter {
         defaultLocaleProviderAdapter = Type.CLDR;
         if (!typeList.isEmpty()) {
             // bona fide preference exists
-            if (!(typeList.contains(Type.CLDR) || (typeList.contains(Type.JRE)))) {
+            if (!(typeList.contains(Type.CLDR) || typeList.contains(Type.JRE))) {
                 // Append FALLBACK as the last resort when no ResourceBundleBasedAdapter is available.
                 typeList.add(Type.FALLBACK);
                 defaultLocaleProviderAdapter = Type.FALLBACK;
@@ -155,6 +160,15 @@ public abstract class LocaleProviderAdapter {
             typeList.add(Type.JRE);
         }
         adapterPreference = Collections.unmodifiableList(typeList);
+
+        // Emit logs, if any, after 'adapterPreference' is initialized which is needed
+        // for logging.
+        if (invalidTypeMessage != null) {
+            // could be caused by the user specifying wrong
+            // provider name or format in the system property
+            getLogger(LocaleProviderAdapter.class.getCanonicalName())
+                .log(Logger.Level.INFO, invalidTypeMessage);
+        }
     }
 
     /**
@@ -167,30 +181,25 @@ public abstract class LocaleProviderAdapter {
         case SPI:
         case HOST:
         case FALLBACK:
-            LocaleProviderAdapter adapter = null;
-            LocaleProviderAdapter cached = adapterInstances.get(type);
-            if (cached == null) {
+            LocaleProviderAdapter adapter = adapterInstances.get(type);
+            if (adapter == null) {
                 try {
                     // lazily load adapters here
-                    @SuppressWarnings("deprecation")
-                    Object tmp = Class.forName(type.getAdapterClassName()).newInstance();
-                    adapter = (LocaleProviderAdapter)tmp;
-                    cached = adapterInstances.putIfAbsent(type, adapter);
+                    adapter = (LocaleProviderAdapter)Class.forName(type.getAdapterClassName())
+                            .getDeclaredConstructor().newInstance();
+                    LocaleProviderAdapter cached = adapterInstances.putIfAbsent(type, adapter);
                     if (cached != null) {
                         adapter = cached;
                     }
-                } catch (ClassNotFoundException |
+                } catch (NoSuchMethodException |
+                         InvocationTargetException |
+                         ClassNotFoundException |
                          IllegalAccessException |
                          InstantiationException |
                          UnsupportedOperationException e) {
-                    LocaleServiceProviderPool.config(LocaleProviderAdapter.class, e.toString());
-                    adapterInstances.putIfAbsent(type, NONEXISTENT_ADAPTER);
-                    if (defaultLocaleProviderAdapter == type) {
-                        defaultLocaleProviderAdapter = Type.FALLBACK;
-                    }
+                    throw new ServiceConfigurationError("Locale provider adapter \"" +
+                            type + "\"cannot be instantiated.", e);
                 }
-            } else if (cached != NONEXISTENT_ADAPTER) {
-                adapter = cached;
             }
             return adapter;
         default:
@@ -300,23 +309,16 @@ public abstract class LocaleProviderAdapter {
     }
 
     public static Locale[] toLocaleArray(Set<String> tags) {
-        Locale[] locs = new Locale[tags.size() + 1];
-        int index = 0;
-        locs[index++] = Locale.ROOT;
-        for (String tag : tags) {
-            switch (tag) {
-            case "ja-JP-JP":
-                locs[index++] = JRELocaleConstants.JA_JP_JP;
-                break;
-            case "th-TH-TH":
-                locs[index++] = JRELocaleConstants.TH_TH_TH;
-                break;
-            default:
-                locs[index++] = Locale.forLanguageTag(tag);
-                break;
-            }
-        }
-        return locs;
+        return tags.stream()
+            .map(t -> {
+                return switch (t) {
+                    case "ja-JP-JP" -> JRELocaleConstants.JA_JP_JP;
+                    case "no-NO-NY" -> JRELocaleConstants.NO_NO_NY;
+                    case "th-TH-TH" -> JRELocaleConstants.TH_TH_TH;
+                    default -> Locale.forLanguageTag(t);
+                };
+            })
+            .toArray(Locale[]::new);
     }
 
     /**
@@ -440,14 +442,4 @@ public abstract class LocaleProviderAdapter {
     public abstract LocaleResources getLocaleResources(Locale locale);
 
     public abstract Locale[] getAvailableLocales();
-
-    private static final LocaleProviderAdapter NONEXISTENT_ADAPTER = new NonExistentAdapter();
-    private static final class NonExistentAdapter extends FallbackLocaleProviderAdapter {
-        @Override
-        public LocaleProviderAdapter.Type getAdapterType() {
-            return null;
-        }
-
-        private NonExistentAdapter() {};
-    }
 }

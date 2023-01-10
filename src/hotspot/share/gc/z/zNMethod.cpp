@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,12 +27,13 @@
 #include "code/icBuffer.hpp"
 #include "gc/shared/barrierSet.hpp"
 #include "gc/shared/barrierSetNMethod.hpp"
+#include "gc/shared/suspendibleThreadSet.hpp"
+#include "gc/z/zBarrier.inline.hpp"
 #include "gc/z/zGlobals.hpp"
 #include "gc/z/zLock.inline.hpp"
 #include "gc/z/zNMethod.hpp"
 #include "gc/z/zNMethodData.hpp"
 #include "gc/z/zNMethodTable.hpp"
-#include "gc/z/zOopClosures.inline.hpp"
 #include "gc/z/zTask.hpp"
 #include "gc/z/zWorkers.hpp"
 #include "logging/log.hpp"
@@ -40,8 +41,9 @@
 #include "memory/iterator.hpp"
 #include "memory/resourceArea.hpp"
 #include "memory/universe.hpp"
+#include "oops/oop.inline.hpp"
 #include "runtime/atomic.hpp"
-#include "runtime/orderAccess.hpp"
+#include "runtime/continuation.hpp"
 #include "utilities/debug.hpp"
 
 static ZNMethodData* gc_data(const nmethod* nm) {
@@ -56,7 +58,7 @@ void ZNMethod::attach_gc_data(nmethod* nm) {
   GrowableArray<oop*> immediate_oops;
   bool non_immediate_oops = false;
 
-  // Find all oops relocations
+  // Find all oop relocations
   RelocIterator iter(nm);
   while (iter.next()) {
     if (iter.type() != relocInfo::oop_type) {
@@ -125,8 +127,10 @@ void ZNMethod::log_register(const nmethod* nm) {
     oop* const begin = nm->oops_begin();
     oop* const end = nm->oops_end();
     for (oop* p = begin; p < end; p++) {
+      const oop o = Atomic::load(p); // C1 PatchingStub may replace it concurrently.
+      const char* external_name = (o == nullptr) ? "N/A" : o->klass()->external_name();
       log_oops.print("           Oop[" SIZE_FORMAT "] " PTR_FORMAT " (%s)",
-                     (p - begin), p2i(*p), (*p)->klass()->external_name());
+                     (p - begin), p2i(o), external_name);
     }
   }
 
@@ -164,44 +168,52 @@ void ZNMethod::register_nmethod(nmethod* nm) {
   ZNMethodTable::register_nmethod(nm);
 
   // Disarm nmethod entry barrier
-  disarm_nmethod(nm);
+  disarm(nm);
 }
 
 void ZNMethod::unregister_nmethod(nmethod* nm) {
-  assert(CodeCache_lock->owned_by_self(), "Lock must be held");
-
-  if (Thread::current()->is_Code_cache_sweeper_thread()) {
-    // The sweeper must wait for any ongoing iteration to complete
-    // before it can unregister an nmethod.
-    ZNMethodTable::wait_until_iteration_done();
-  }
-
   ResourceMark rm;
 
   log_unregister(nm);
 
   ZNMethodTable::unregister_nmethod(nm);
-}
 
-void ZNMethod::flush_nmethod(nmethod* nm) {
   // Destroy GC data
   delete gc_data(nm);
 }
 
-void ZNMethod::disarm_nmethod(nmethod* nm) {
+bool ZNMethod::supports_entry_barrier(nmethod* nm) {
   BarrierSetNMethod* const bs = BarrierSet::barrier_set()->barrier_set_nmethod();
-  if (bs != NULL) {
-    bs->disarm(nm);
-  }
+  return bs->supports_entry_barrier(nm);
+}
+
+bool ZNMethod::is_armed(nmethod* nm) {
+  BarrierSetNMethod* const bs = BarrierSet::barrier_set()->barrier_set_nmethod();
+  return bs->is_armed(nm);
+}
+
+void ZNMethod::disarm(nmethod* nm) {
+  BarrierSetNMethod* const bs = BarrierSet::barrier_set()->barrier_set_nmethod();
+  bs->disarm(nm);
+}
+
+void ZNMethod::set_guard_value(nmethod* nm, int value) {
+  BarrierSetNMethod* const bs = BarrierSet::barrier_set()->barrier_set_nmethod();
+  bs->set_guard_value(nm, value);
 }
 
 void ZNMethod::nmethod_oops_do(nmethod* nm, OopClosure* cl) {
+  ZLocker<ZReentrantLock> locker(ZNMethod::lock_for_nmethod(nm));
+  ZNMethod::nmethod_oops_do_inner(nm, cl);
+}
+
+void ZNMethod::nmethod_oops_do_inner(nmethod* nm, OopClosure* cl) {
   // Process oops table
   {
     oop* const begin = nm->oops_begin();
     oop* const end = nm->oops_end();
     for (oop* p = begin; p < end; p++) {
-      if (*p != Universe::non_oop_word()) {
+      if (!Universe::contains_non_oop_word(p)) {
         cl->do_oop(p);
       }
     }
@@ -214,7 +226,7 @@ void ZNMethod::nmethod_oops_do(nmethod* nm, OopClosure* cl) {
     oop** const begin = oops->immediates_begin();
     oop** const end = oops->immediates_end();
     for (oop** p = begin; p < end; p++) {
-      if (**p != Universe::non_oop_word()) {
+      if (*p != Universe::non_oop_word()) {
         cl->do_oop(*p);
       }
     }
@@ -226,30 +238,36 @@ void ZNMethod::nmethod_oops_do(nmethod* nm, OopClosure* cl) {
   }
 }
 
-class ZNMethodToOopsDoClosure : public NMethodClosure {
-private:
-  OopClosure* _cl;
-
+class ZNMethodOopClosure : public OopClosure {
 public:
-  ZNMethodToOopsDoClosure(OopClosure* cl) :
-      _cl(cl) {}
+  virtual void do_oop(oop* p) {
+    if (ZResurrection::is_blocked()) {
+      ZBarrier::keep_alive_barrier_on_phantom_root_oop_field(p);
+    } else {
+      ZBarrier::load_barrier_on_root_oop_field(p);
+    }
+  }
 
-  virtual void do_nmethod(nmethod* nm) {
-    ZNMethod::nmethod_oops_do(nm, _cl);
+  virtual void do_oop(narrowOop* p) {
+    ShouldNotReachHere();
   }
 };
 
-void ZNMethod::oops_do_begin() {
+void ZNMethod::nmethod_oops_barrier(nmethod* nm) {
+  ZNMethodOopClosure cl;
+  nmethod_oops_do_inner(nm, &cl);
+}
+
+void ZNMethod::nmethods_do_begin() {
   ZNMethodTable::nmethods_do_begin();
 }
 
-void ZNMethod::oops_do_end() {
+void ZNMethod::nmethods_do_end() {
   ZNMethodTable::nmethods_do_end();
 }
 
-void ZNMethod::oops_do(OopClosure* cl) {
-  ZNMethodToOopsDoClosure nmethod_cl(cl);
-  ZNMethodTable::nmethods_do(&nmethod_cl);
+void ZNMethod::nmethods_do(NMethodClosure* cl) {
+  ZNMethodTable::nmethods_do(cl);
 }
 
 class ZNMethodUnlinkClosure : public NMethodClosure {
@@ -258,26 +276,7 @@ private:
   volatile bool _failed;
 
   void set_failed() {
-    Atomic::store(true, &_failed);
-  }
-
-  void unlink(nmethod* nm) {
-    // Unlinking of the dependencies must happen before the
-    // handshake separating unlink and purge.
-    nm->flush_dependencies(false /* delete_immediately */);
-
-    // unlink_from_method will take the CompiledMethod_lock.
-    // In this case we don't strictly need it when unlinking nmethods from
-    // the Method, because it is only concurrently unlinked by
-    // the entry barrier, which acquires the per nmethod lock.
-    nm->unlink_from_method();
-
-    if (nm->is_osr_method()) {
-      // Invalidate the osr nmethod before the handshake. The nmethod
-      // will be made unloaded after the handshake. Then invalidate_osr_method()
-      // will be called again, which will be a no-op.
-      nm->invalidate_osr_method();
-    }
+    Atomic::store(&_failed, true);
   }
 
 public:
@@ -290,22 +289,19 @@ public:
       return;
     }
 
-    if (!nm->is_alive()) {
-      return;
-    }
-
     if (nm->is_unloading()) {
       ZLocker<ZReentrantLock> locker(ZNMethod::lock_for_nmethod(nm));
-      unlink(nm);
+      nm->unlink();
       return;
     }
 
     ZLocker<ZReentrantLock> locker(ZNMethod::lock_for_nmethod(nm));
 
-    // Heal oops and disarm
-    ZNMethodOopClosure cl;
-    ZNMethod::nmethod_oops_do(nm, &cl);
-    ZNMethod::disarm_nmethod(nm);
+    if (ZNMethod::is_armed(nm)) {
+      // Heal oops and arm phase invariantly
+      ZNMethod::nmethod_oops_barrier(nm);
+      ZNMethod::set_guard_value(nm, 0);
+    }
 
     // Clear compiled ICs and exception caches
     if (!nm->unload_nmethod_caches(_unloading_occurred)) {
@@ -351,7 +347,7 @@ void ZNMethod::unlink(ZWorkers* workers, bool unloading_occurred) {
 
     {
       ZNMethodUnlinkTask task(unloading_occurred, &verifier);
-      workers->run_concurrent(&task);
+      workers->run(&task);
       if (task.success()) {
         return;
       }
@@ -365,36 +361,6 @@ void ZNMethod::unlink(ZWorkers* workers, bool unloading_occurred) {
   }
 }
 
-class ZNMethodPurgeClosure : public NMethodClosure {
-public:
-  virtual void do_nmethod(nmethod* nm) {
-    if (nm->is_alive() && nm->is_unloading()) {
-      nm->make_unloaded();
-    }
-  }
-};
-
-class ZNMethodPurgeTask : public ZTask {
-private:
-  ZNMethodPurgeClosure _cl;
-
-public:
-  ZNMethodPurgeTask() :
-      ZTask("ZNMethodPurgeTask"),
-      _cl() {
-    ZNMethodTable::nmethods_do_begin();
-  }
-
-  ~ZNMethodPurgeTask() {
-    ZNMethodTable::nmethods_do_end();
-  }
-
-  virtual void work() {
-    ZNMethodTable::nmethods_do(&_cl);
-  }
-};
-
-void ZNMethod::purge(ZWorkers* workers) {
-  ZNMethodPurgeTask task;
-  workers->run_concurrent(&task);
+void ZNMethod::purge() {
+  CodeCache::flush_unlinked_nmethods();
 }

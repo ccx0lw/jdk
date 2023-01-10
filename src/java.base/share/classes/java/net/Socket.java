@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1995, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1995, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,13 +28,13 @@ package java.net;
 import sun.security.util.SecurityConstants;
 
 import java.io.InputStream;
+import java.io.InterruptedIOException;
 import java.io.OutputStream;
 import java.io.IOException;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
+import java.nio.channels.ClosedByInterruptException;
 import java.nio.channels.SocketChannel;
-import java.security.AccessController;
-import java.security.PrivilegedAction;
 import java.util.Objects;
 import java.util.Set;
 import java.util.Collections;
@@ -45,19 +45,59 @@ import java.util.Collections;
  * between two machines.
  * <p>
  * The actual work of the socket is performed by an instance of the
- * {@code SocketImpl} class. An application, by changing
- * the socket factory that creates the socket implementation,
- * can configure itself to create sockets appropriate to the local
- * firewall.
+ * {@code SocketImpl} class.
  *
- * @author  unascribed
- * @see     java.net.Socket#setSocketImplFactory(java.net.SocketImplFactory)
+ * <p> The {@code Socket} class defines convenience
+ * methods to set and get several socket options. This class also
+ * defines the {@link #setOption(SocketOption, Object) setOption}
+ * and {@link #getOption(SocketOption) getOption} methods to set
+ * and query socket options.
+ * A {@code Socket} support the following options:
+ * <blockquote>
+ * <table class="striped">
+ * <caption style="display:none">Socket options</caption>
+ * <thead>
+ *   <tr>
+ *     <th scope="col">Option Name</th>
+ *     <th scope="col">Description</th>
+ *   </tr>
+ * </thead>
+ * <tbody>
+ *   <tr>
+ *     <th scope="row"> {@link java.net.StandardSocketOptions#SO_SNDBUF SO_SNDBUF} </th>
+ *     <td> The size of the socket send buffer </td>
+ *   </tr>
+ *   <tr>
+ *     <th scope="row"> {@link java.net.StandardSocketOptions#SO_RCVBUF SO_RCVBUF} </th>
+ *     <td> The size of the socket receive buffer </td>
+ *   </tr>
+ *   <tr>
+ *     <th scope="row"> {@link java.net.StandardSocketOptions#SO_KEEPALIVE SO_KEEPALIVE} </th>
+ *     <td> Keep connection alive </td>
+ *   </tr>
+ *   <tr>
+ *     <th scope="row"> {@link java.net.StandardSocketOptions#SO_REUSEADDR SO_REUSEADDR} </th>
+ *     <td> Re-use address </td>
+ *   </tr>
+ *   <tr>
+ *     <th scope="row"> {@link java.net.StandardSocketOptions#SO_LINGER SO_LINGER} </th>
+ *     <td> Linger on close if data is present (when configured in blocking mode
+ *          only) </td>
+ *   </tr>
+ *   <tr>
+ *     <th scope="row"> {@link java.net.StandardSocketOptions#TCP_NODELAY TCP_NODELAY} </th>
+ *     <td> Disable the Nagle algorithm </td>
+ *   </tr>
+ * </tbody>
+ * </table>
+ * </blockquote>
+ * Additional (implementation specific) options may also be supported.
+ *
  * @see     java.net.SocketImpl
  * @see     java.nio.channels.SocketChannel
  * @since   1.0
  */
-public
-class Socket implements java.io.Closeable {
+public class Socket implements java.io.Closeable {
     /**
      * Various states of this socket.
      */
@@ -142,6 +182,7 @@ class Socket implements java.io.Closeable {
                                           : sun.net.ApplicationProxy.create(proxy);
         Proxy.Type type = p.type();
         if (type == Proxy.Type.SOCKS || type == Proxy.Type.HTTP) {
+            @SuppressWarnings("removal")
             SecurityManager security = System.getSecurityManager();
             InetSocketAddress epoint = (InetSocketAddress) p.address();
             if (epoint.getAddress() != null) {
@@ -199,6 +240,7 @@ class Socket implements java.io.Closeable {
         if (impl == null) {
             return null;
         }
+        @SuppressWarnings("removal")
         SecurityManager sm = System.getSecurityManager();
         if (sm != null) {
             sm.checkPermission(SecurityConstants.SET_SOCKETIMPL_PERMISSION);
@@ -238,9 +280,7 @@ class Socket implements java.io.Closeable {
      * @throws     IllegalArgumentException if the port parameter is outside
      *             the specified range of valid port values, which is between
      *             0 and 65535, inclusive.
-     * @see        java.net.Socket#setSocketImplFactory(java.net.SocketImplFactory)
      * @see        java.net.SocketImpl
-     * @see        java.net.SocketImplFactory#createSocketImpl()
      * @see        SecurityManager#checkConnect
      */
     public Socket(String host, int port)
@@ -274,9 +314,7 @@ class Socket implements java.io.Closeable {
      *             the specified range of valid port values, which is between
      *             0 and 65535, inclusive.
      * @throws     NullPointerException if {@code address} is null.
-     * @see        java.net.Socket#setSocketImplFactory(java.net.SocketImplFactory)
      * @see        java.net.SocketImpl
-     * @see        java.net.SocketImplFactory#createSocketImpl()
      * @see        SecurityManager#checkConnect
      */
     public Socket(InetAddress address, int port) throws IOException {
@@ -404,9 +442,7 @@ class Socket implements java.io.Closeable {
      * @throws     IllegalArgumentException if the port parameter is outside
      *             the specified range of valid port values, which is between
      *             0 and 65535, inclusive.
-     * @see        java.net.Socket#setSocketImplFactory(java.net.SocketImplFactory)
      * @see        java.net.SocketImpl
-     * @see        java.net.SocketImplFactory#createSocketImpl()
      * @see        SecurityManager#checkConnect
      * @deprecated Use DatagramSocket instead for UDP transport.
      */
@@ -448,9 +484,7 @@ class Socket implements java.io.Closeable {
      *             the specified range of valid port values, which is between
      *             0 and 65535, inclusive.
      * @throws     NullPointerException if {@code host} is null.
-     * @see        java.net.Socket#setSocketImplFactory(java.net.SocketImplFactory)
      * @see        java.net.SocketImpl
-     * @see        java.net.SocketImplFactory#createSocketImpl()
      * @see        SecurityManager#checkConnect
      * @deprecated Use DatagramSocket instead for UDP transport.
      */
@@ -488,7 +522,7 @@ class Socket implements java.io.Closeable {
      *
      * @param stream a {@code boolean} value : {@code true} for a TCP socket,
      *               {@code false} for UDP.
-     * @throws IOException if creation fails
+     * @throws SocketException if creation fails
      * @since 1.4
      */
      void createImpl(boolean stream) throws SocketException {
@@ -497,8 +531,10 @@ class Socket implements java.io.Closeable {
         try {
             impl.create(stream);
             created = true;
+        } catch (SocketException e) {
+            throw e;
         } catch (IOException e) {
-            throw new SocketException(e.getMessage());
+            throw new SocketException(e.getMessage(), e);
         }
     }
 
@@ -538,6 +574,21 @@ class Socket implements java.io.Closeable {
     /**
      * Connects this socket to the server.
      *
+     * <p> This method is {@linkplain Thread#interrupt() interruptible} in the
+     * following circumstances:
+     * <ol>
+     *   <li> The socket is {@linkplain SocketChannel#socket() associated} with
+     *        a {@link SocketChannel SocketChannel}.
+     *        In that case, interrupting a thread establishing a connection will
+     *        close the underlying channel and cause this method to throw
+     *        {@link ClosedByInterruptException} with the interrupt status set.
+     *   <li> The socket uses the system-default socket implementation and a
+     *        {@linkplain Thread#isVirtual() virtual thread} is establishing a
+     *        connection. In that case, interrupting the virtual thread will
+     *        cause it to wakeup and close the socket. This method will then throw
+     *        {@code SocketException} with the interrupt status set.
+     * </ol>
+     *
      * @param   endpoint the {@code SocketAddress}
      * @throws  IOException if an error occurs during the connection
      * @throws  java.nio.channels.IllegalBlockingModeException
@@ -546,7 +597,6 @@ class Socket implements java.io.Closeable {
      * @throws  IllegalArgumentException if endpoint is null or is a
      *          SocketAddress subclass not supported by this socket
      * @since 1.4
-     * @spec JSR-51
      */
     public void connect(SocketAddress endpoint) throws IOException {
         connect(endpoint, 0);
@@ -556,6 +606,21 @@ class Socket implements java.io.Closeable {
      * Connects this socket to the server with a specified timeout value.
      * A timeout of zero is interpreted as an infinite timeout. The connection
      * will then block until established or an error occurs.
+     *
+     * <p> This method is {@linkplain Thread#interrupt() interruptible} in the
+     * following circumstances:
+     * <ol>
+     *   <li> The socket is {@linkplain SocketChannel#socket() associated} with
+     *        a {@link SocketChannel SocketChannel}.
+     *        In that case, interrupting a thread establishing a connection will
+     *        close the underlying channel and cause this method to throw
+     *        {@link ClosedByInterruptException} with the interrupt status set.
+     *   <li> The socket uses the system-default socket implementation and a
+     *        {@linkplain Thread#isVirtual() virtual thread} is establishing a
+     *        connection. In that case, interrupting the virtual thread will
+     *        cause it to wakeup and close the socket. This method will then throw
+     *        {@code SocketException} with the interrupt status set.
+     * </ol>
      *
      * @param   endpoint the {@code SocketAddress}
      * @param   timeout  the timeout value to be used in milliseconds.
@@ -568,7 +633,6 @@ class Socket implements java.io.Closeable {
      *          SocketAddress subclass not supported by this socket, or
      *          if {@code timeout} is negative
      * @since 1.4
-     * @spec JSR-51
      */
     public void connect(SocketAddress endpoint, int timeout) throws IOException {
         if (endpoint == null)
@@ -583,14 +647,14 @@ class Socket implements java.io.Closeable {
         if (isConnected())
             throw new SocketException("already connected");
 
-        if (!(endpoint instanceof InetSocketAddress))
+        if (!(endpoint instanceof InetSocketAddress epoint))
             throw new IllegalArgumentException("Unsupported address type");
 
-        InetSocketAddress epoint = (InetSocketAddress) endpoint;
         InetAddress addr = epoint.getAddress ();
         int port = epoint.getPort();
         checkAddress(addr, "connect");
 
+        @SuppressWarnings("removal")
         SecurityManager security = System.getSecurityManager();
         if (security != null) {
             if (epoint.isUnresolved())
@@ -600,7 +664,18 @@ class Socket implements java.io.Closeable {
         }
         if (!created)
             createImpl(true);
-        impl.connect(epoint, timeout);
+        try {
+            impl.connect(epoint, timeout);
+        } catch (SocketTimeoutException e) {
+            throw e;
+        } catch (InterruptedIOException e) {
+            Thread thread = Thread.currentThread();
+            if (thread.isVirtual() && thread.isInterrupted()) {
+                close();
+                throw new SocketException("Closed by interrupt");
+            }
+            throw e;
+        }
         connected = true;
         /*
          * If the socket was not bound before the connect, it is now because
@@ -644,6 +719,7 @@ class Socket implements java.io.Closeable {
         InetAddress addr = epoint.getAddress();
         int port = epoint.getPort();
         checkAddress (addr, "bind");
+        @SuppressWarnings("removal")
         SecurityManager security = System.getSecurityManager();
         if (security != null) {
             security.checkListen(port);
@@ -712,6 +788,7 @@ class Socket implements java.io.Closeable {
         InetAddress in = null;
         try {
             in = (InetAddress) getImpl().getOption(SocketOptions.SO_BINDADDR);
+            @SuppressWarnings("removal")
             SecurityManager sm = System.getSecurityManager();
             if (sm != null)
                 sm.checkConnect(in.getHostAddress(), -1);
@@ -776,7 +853,6 @@ class Socket implements java.io.Closeable {
      * then this method will continue to return the connected address
      * after the socket is closed.
      *
-
      * @return a {@code SocketAddress} representing the remote endpoint of this
      *         socket, or {@code null} if it is not connected yet.
      * @see #getInetAddress()
@@ -842,7 +918,6 @@ class Socket implements java.io.Closeable {
      *          for a channel
      *
      * @since 1.4
-     * @spec JSR-51
      */
     public SocketChannel getChannel() {
         return null;
@@ -855,6 +930,22 @@ class Socket implements java.io.Closeable {
      * stream delegates all of its operations to the channel.  If the channel
      * is in non-blocking mode then the input stream's {@code read} operations
      * will throw an {@link java.nio.channels.IllegalBlockingModeException}.
+     *
+     * <p> Reading from the input stream is {@linkplain Thread#interrupt()
+     * interruptible} in the following circumstances:
+     * <ol>
+     *   <li> The socket is {@linkplain SocketChannel#socket() associated} with
+     *        a {@link SocketChannel SocketChannel}.
+     *        In that case, interrupting a thread reading from the input stream
+     *        will close the underlying channel and cause the read method to
+     *        throw {@link ClosedByInterruptException} with the interrupt
+     *        status set.
+     *   <li> The socket uses the system-default socket implementation and a
+     *        {@linkplain Thread#isVirtual() virtual thread} is reading from the
+     *        input stream. In that case, interrupting the virtual thread will
+     *        cause it to wakeup and close the socket. The read method will then
+     *        throw {@code SocketException} with the interrupt status set.
+     * </ol>
      *
      * <p>Under abnormal conditions the underlying connection may be
      * broken by the remote host or the network software (for example
@@ -891,7 +982,6 @@ class Socket implements java.io.Closeable {
      *             using {@link #shutdownInput()}
      *
      * @revised 1.4
-     * @spec JSR-51
      */
     public InputStream getInputStream() throws IOException {
         if (isClosed())
@@ -921,7 +1011,6 @@ class Socket implements java.io.Closeable {
     private static class SocketInputStream extends InputStream {
         private final Socket parent;
         private final InputStream in;
-
         SocketInputStream(Socket parent, InputStream in) {
             this.parent = parent;
             this.in = in;
@@ -933,14 +1022,24 @@ class Socket implements java.io.Closeable {
             return (n > 0) ? (a[0] & 0xff) : -1;
         }
         @Override
-        public int read(byte b[], int off, int len) throws IOException {
-            return in.read(b, off, len);
+        public int read(byte[] b, int off, int len) throws IOException {
+            try {
+                return in.read(b, off, len);
+            } catch (SocketTimeoutException e) {
+                throw e;
+            } catch (InterruptedIOException e) {
+                Thread thread = Thread.currentThread();
+                if (thread.isVirtual() && thread.isInterrupted()) {
+                    close();
+                    throw new SocketException("Closed by interrupt");
+                }
+                throw e;
+            }
         }
         @Override
         public int available() throws IOException {
             return in.available();
         }
-
         @Override
         public void close() throws IOException {
             parent.close();
@@ -956,6 +1055,22 @@ class Socket implements java.io.Closeable {
      * operations will throw an {@link
      * java.nio.channels.IllegalBlockingModeException}.
      *
+     * <p> Writing to the output stream is {@linkplain Thread#interrupt()
+     * interruptible} in the following circumstances:
+     * <ol>
+     *   <li> The socket is {@linkplain SocketChannel#socket() associated} with
+     *        a {@link SocketChannel SocketChannel}.
+     *        In that case, interrupting a thread writing to the output stream
+     *        will close the underlying channel and cause the write method to
+     *        throw {@link ClosedByInterruptException} with the interrupt status
+     *        set.
+     *   <li> The socket uses the system-default socket implementation and a
+     *        {@linkplain Thread#isVirtual() virtual thread} is writing to the
+     *        output stream. In that case, interrupting the virtual thread will
+     *        cause it to wakeup and close the socket. The write method will then
+     *        throw {@code SocketException} with the interrupt status set.
+     * </ol>
+     *
      * <p> Closing the returned {@link java.io.OutputStream OutputStream}
      * will close the associated socket.
      *
@@ -963,7 +1078,6 @@ class Socket implements java.io.Closeable {
      * @throws     IOException  if an I/O error occurs when creating the
      *               output stream or if the socket is not connected.
      * @revised 1.4
-     * @spec JSR-51
      */
     public OutputStream getOutputStream() throws IOException {
         if (isClosed())
@@ -1003,10 +1117,18 @@ class Socket implements java.io.Closeable {
             write(a, 0, 1);
         }
         @Override
-        public void write(byte b[], int off, int len) throws IOException {
-            out.write(b, off, len);
+        public void write(byte[] b, int off, int len) throws IOException {
+            try {
+                out.write(b, off, len);
+            } catch (InterruptedIOException e) {
+                Thread thread = Thread.currentThread();
+                if (thread.isVirtual() && thread.isInterrupted()) {
+                    close();
+                    throw new SocketException("Closed by interrupt");
+                }
+                throw e;
+            }
         }
-
         @Override
         public void close() throws IOException {
             parent.close();
@@ -1171,13 +1293,12 @@ class Socket implements java.io.Closeable {
     /**
      *  Enable/disable {@link SocketOptions#SO_TIMEOUT SO_TIMEOUT}
      *  with the specified timeout, in milliseconds. With this option set
-     *  to a non-zero timeout, a read() call on the InputStream associated with
+     *  to a positive timeout value, a read() call on the InputStream associated with
      *  this Socket will block for only this amount of time.  If the timeout
      *  expires, a <B>java.net.SocketTimeoutException</B> is raised, though the
-     *  Socket is still valid. The option <B>must</B> be enabled
-     *  prior to entering the blocking operation to have effect. The
-     *  timeout must be {@code > 0}.
-     *  A timeout of zero is interpreted as an infinite timeout.
+     *  Socket is still valid. A timeout of zero is interpreted as an infinite timeout.
+     *  The option <B>must</B> be enabled prior to entering the blocking operation
+     *  to have effect.
      *
      * @param timeout the specified timeout, in milliseconds.
      * @throws  SocketException if there is an error in the underlying protocol,
@@ -1538,7 +1659,6 @@ class Socket implements java.io.Closeable {
      *
      * @throws     IOException  if an I/O error occurs when closing this socket.
      * @revised 1.4
-     * @spec JSR-51
      * @see #isClosed
      */
     public synchronized void close() throws IOException {
@@ -1725,13 +1845,24 @@ class Socket implements java.io.Closeable {
      *             {@code checkSetFactory} method doesn't allow the operation.
      * @see        java.net.SocketImplFactory#createSocketImpl()
      * @see        SecurityManager#checkSetFactory
+     * @deprecated Use a {@link javax.net.SocketFactory} and subclass {@code Socket}
+     *    directly.
+     *    <br> This method provided a way in early JDK releases to replace the
+     *    system wide implementation of {@code Socket}. It has been mostly
+     *    obsolete since Java 1.4. If required, a {@code Socket} can be
+     *    created to use a custom implementation by extending {@code Socket}
+     *    and using the {@linkplain #Socket(SocketImpl) protected
+     *    constructor} that takes an {@linkplain SocketImpl implementation}
+     *    as a parameter.
      */
+    @Deprecated(since = "17")
     public static synchronized void setSocketImplFactory(SocketImplFactory fac)
         throws IOException
     {
         if (factory != null) {
             throw new SocketException("factory already defined");
         }
+        @SuppressWarnings("removal")
         SecurityManager security = System.getSecurityManager();
         if (security != null) {
             security.checkSetFactory();

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -32,15 +32,19 @@ import java.security.spec.AlgorithmParameterSpec;
 
 import javax.crypto.MacSpi;
 
+import jdk.internal.access.JavaNioAccess;
+import jdk.internal.access.SharedSecrets;
 import sun.nio.ch.DirectBuffer;
 
 import sun.security.pkcs11.wrapper.*;
 import static sun.security.pkcs11.wrapper.PKCS11Constants.*;
+import static sun.security.pkcs11.wrapper.PKCS11Exception.RV.*;
 
 /**
  * MAC implementation class. This class currently supports HMAC using
- * MD5, SHA-1, SHA-224, SHA-256, SHA-384, and SHA-512 and the SSL3 MAC
- * using MD5 and SHA-1.
+ * MD5, SHA-1, SHA-2 family (SHA-224, SHA-256, SHA-384, and SHA-512),
+ * SHA-3 family (SHA3-224, SHA3-256, SHA3-384, and SHA3-512), and the
+ * SSL3 MAC using MD5 and SHA-1.
  *
  * Note that unlike other classes (e.g. Signature), this does not
  * composite various operations if the token only supports part of the
@@ -52,6 +56,8 @@ import static sun.security.pkcs11.wrapper.PKCS11Constants.*;
  * @since   1.5
  */
 final class P11Mac extends MacSpi {
+
+    private static final JavaNioAccess NIO_ACCESS = SharedSecrets.getJavaNioAccess();
 
     // token instance
     private final Token token;
@@ -83,38 +89,23 @@ final class P11Mac extends MacSpi {
         this.token = token;
         this.algorithm = algorithm;
         Long params = null;
-        switch ((int)mechanism) {
-        case (int)CKM_MD5_HMAC:
-            macLength = 16;
-            break;
-        case (int)CKM_SHA_1_HMAC:
-            macLength = 20;
-            break;
-        case (int)CKM_SHA224_HMAC:
-        case (int)CKM_SHA512_224_HMAC:
-            macLength = 28;
-            break;
-        case (int)CKM_SHA256_HMAC:
-        case (int)CKM_SHA512_256_HMAC:
-            macLength = 32;
-            break;
-        case (int)CKM_SHA384_HMAC:
-            macLength = 48;
-            break;
-        case (int)CKM_SHA512_HMAC:
-            macLength = 64;
-            break;
-        case (int)CKM_SSL3_MD5_MAC:
-            macLength = 16;
-            params = Long.valueOf(16);
-            break;
-        case (int)CKM_SSL3_SHA1_MAC:
-            macLength = 20;
-            params = Long.valueOf(20);
-            break;
-        default:
-            throw new ProviderException("Unknown mechanism: " + mechanism);
-        }
+        macLength = switch ((int) mechanism) {
+            case (int) CKM_MD5_HMAC -> 16;
+            case (int) CKM_SHA_1_HMAC -> 20;
+            case (int) CKM_SHA224_HMAC, (int) CKM_SHA512_224_HMAC, (int) CKM_SHA3_224_HMAC -> 28;
+            case (int) CKM_SHA256_HMAC, (int) CKM_SHA512_256_HMAC, (int) CKM_SHA3_256_HMAC -> 32;
+            case (int) CKM_SHA384_HMAC, (int) CKM_SHA3_384_HMAC -> 48;
+            case (int) CKM_SHA512_HMAC, (int) CKM_SHA3_512_HMAC -> 64;
+            case (int) CKM_SSL3_MD5_MAC -> {
+                params = Long.valueOf(16);
+                yield 16;
+            }
+            case (int) CKM_SSL3_SHA1_MAC -> {
+                params = Long.valueOf(20);
+                yield 20;
+            }
+            default -> throw new ProviderException("Unknown mechanism: " + mechanism);
+        };
         ckMechanism = new CK_MECHANISM(mechanism, params);
     }
 
@@ -124,10 +115,12 @@ final class P11Mac extends MacSpi {
             return;
         }
         initialized = false;
+
         try {
             if (session == null) {
                 return;
             }
+
             if (doCancel && token.explicitCancel) {
                 cancelOperation();
             }
@@ -139,15 +132,24 @@ final class P11Mac extends MacSpi {
 
     private void cancelOperation() {
         token.ensureValid();
-        if (session.hasObjects() == false) {
-            session = token.killSession(session);
+
+        if (P11Util.trySessionCancel(token, session, CKF_SIGN)) {
             return;
-        } else {
-            try {
-                token.p11.C_SignFinal(session.id(), 0);
-            } catch (PKCS11Exception e) {
-                throw new ProviderException("Cancel failed", e);
+        }
+
+        // cancel by finishing operations; avoid killSession as some
+        // hardware vendors may require re-login
+        try {
+            token.p11.C_SignFinal(session.id(), 0);
+        } catch (PKCS11Exception e) {
+            if (e.match(CKR_OPERATION_NOT_INITIALIZED)) {
+                // Cancel Operation may be invoked after an error on a PKCS#11
+                // call. If the operation inside the token was already cancelled,
+                // do not fail here. This is part of a defensive mechanism for
+                // PKCS#11 libraries that do not strictly follow the standard.
+                return;
             }
+            throw new ProviderException("Cancel failed", e);
         }
     }
 
@@ -209,7 +211,12 @@ final class P11Mac extends MacSpi {
             ensureInitialized();
             return token.p11.C_SignFinal(session.id(), 0);
         } catch (PKCS11Exception e) {
-            reset(true);
+            // As per the PKCS#11 standard, C_SignFinal may only
+            // keep the operation active on CKR_BUFFER_TOO_SMALL errors or
+            // successful calls to determine the output length. However,
+            // these cases are handled at OpenJDK's libj2pkcs11 native
+            // library. Thus, P11Mac::reset can be called with a 'false'
+            // doCancel argument from here.
             throw new ProviderException("doFinal() failed", e);
         } finally {
             reset(false);
@@ -243,13 +250,17 @@ final class P11Mac extends MacSpi {
             if (len <= 0) {
                 return;
             }
-            if (byteBuffer instanceof DirectBuffer == false) {
+            if (!(byteBuffer instanceof DirectBuffer dByteBuffer)) {
                 super.engineUpdate(byteBuffer);
                 return;
             }
-            long addr = ((DirectBuffer)byteBuffer).address();
             int ofs = byteBuffer.position();
-            token.p11.C_SignUpdate(session.id(), addr + ofs, null, 0, len);
+            NIO_ACCESS.acquireSession(byteBuffer);
+            try  {
+                token.p11.C_SignUpdate(session.id(), dByteBuffer.address() + ofs, null, 0, len);
+            } finally {
+                NIO_ACCESS.releaseSession(byteBuffer);
+            }
             byteBuffer.position(ofs + len);
         } catch (PKCS11Exception e) {
             throw new ProviderException("update() failed", e);

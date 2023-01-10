@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -30,10 +30,14 @@
 #include "memory/resourceArea.hpp"
 #include "memory/universe.hpp"
 #include "oops/compressedOops.inline.hpp"
+#include "oops/oop.inline.hpp"
 #include "runtime/flags/flagSetting.hpp"
 #include "runtime/stubCodeGenerator.hpp"
+#include "utilities/align.hpp"
 #include "utilities/copy.hpp"
-#include "oops/oop.inline.hpp"
+
+#include <new>
+#include <type_traits>
 
 const RelocationHolder RelocationHolder::none; // its type is relocInfo::none
 
@@ -41,15 +45,18 @@ const RelocationHolder RelocationHolder::none; // its type is relocInfo::none
 // Implementation of relocInfo
 
 #ifdef ASSERT
-relocInfo::relocInfo(relocType t, int off, int f) {
-  assert(t != data_prefix_tag, "cannot build a prefix this way");
-  assert((t & type_mask) == t, "wrong type");
-  assert((f & format_mask) == f, "wrong format");
-  assert(off >= 0 && off < offset_limit(), "offset out off bounds");
-  assert((off & (offset_unit-1)) == 0, "misaligned offset");
-  (*this) = relocInfo(t, RAW_BITS, off, f);
+relocInfo::relocType relocInfo::check_relocType(relocType type) {
+  assert(type != data_prefix_tag, "cannot build a prefix this way");
+  assert((type & type_mask) == type, "wrong type");
+  return type;
 }
-#endif
+
+void relocInfo::check_offset_and_format(int offset, int format) {
+  assert(offset >= 0 && offset < offset_limit(), "offset out off bounds");
+  assert(is_aligned(offset, offset_unit), "misaligned offset");
+  assert((format & format_mask) == format, "wrong format");
+}
+#endif // ASSERT
 
 void relocInfo::initialize(CodeSection* dest, Relocation* reloc) {
   relocInfo* data = this+1;  // here's where the data might go
@@ -79,7 +86,7 @@ relocInfo* relocInfo::finish_prefix(short* prefix_limit) {
     return this+1;
   }
   // cannot compact, so just update the count and return the limit pointer
-  (*this) = prefix_relocInfo(plen);   // write new datalen
+  (*this) = prefix_info(plen);       // write new datalen
   assert(data() + datalen() == prefix_limit, "pointers must line up");
   return (relocInfo*)prefix_limit;
 }
@@ -183,7 +190,7 @@ void RelocIterator::set_limits(address begin, address limit) {
     }
     // At this point, either we are at the first matching record,
     // or else there is no such record, and !has_current().
-    // In either case, revert to the immediatly preceding state.
+    // In either case, revert to the immediately preceding state.
     _current = backup;
     _addr    = backup_addr;
     set_has_current(false);
@@ -231,12 +238,44 @@ Relocation* RelocIterator::reloc() {
   APPLY_TO_RELOCATIONS(EACH_TYPE);
   #undef EACH_TYPE
   assert(t == relocInfo::none, "must be padding");
-  return new(_rh) Relocation();
+  _rh = RelocationHolder::none;
+  return _rh.reloc();
 }
 
+// Verify all the destructors are trivial, so we don't need to worry about
+// destroying old contents of a RelocationHolder being assigned or destroyed.
+#define VERIFY_TRIVIALLY_DESTRUCTIBLE_AUX(Reloc) \
+  static_assert(std::is_trivially_destructible<Reloc>::value, "must be");
 
-//////// Methods for flyweight Relocation types
+#define VERIFY_TRIVIALLY_DESTRUCTIBLE(name) \
+  VERIFY_TRIVIALLY_DESTRUCTIBLE_AUX(PASTE_TOKENS(name, _Relocation));
 
+APPLY_TO_RELOCATIONS(VERIFY_TRIVIALLY_DESTRUCTIBLE)
+VERIFY_TRIVIALLY_DESTRUCTIBLE_AUX(Relocation)
+
+#undef VERIFY_TRIVIALLY_DESTRUCTIBLE_AUX
+#undef VERIFY_TRIVIALLY_DESTRUCTIBLE
+
+// Define all the copy_into functions.  These rely on all Relocation types
+// being trivially destructible (verified above).  So it doesn't matter
+// whether the target holder has been previously initialized or not.  There's
+// no need to consider that distinction and destruct the relocation in an
+// already initialized holder.
+#define DEFINE_COPY_INTO_AUX(Reloc)                             \
+  void Reloc::copy_into(RelocationHolder& holder) const {       \
+    copy_into_helper(*this, holder);                            \
+  }
+
+#define DEFINE_COPY_INTO(name) \
+  DEFINE_COPY_INTO_AUX(PASTE_TOKENS(name, _Relocation))
+
+APPLY_TO_RELOCATIONS(DEFINE_COPY_INTO)
+DEFINE_COPY_INTO_AUX(Relocation)
+
+#undef DEFINE_COPY_INTO_AUX
+#undef DEFINE_COPY_INTO
+
+//////// Methods for RelocationHolder
 
 RelocationHolder RelocationHolder::plus(int offset) const {
   if (offset != 0) {
@@ -260,12 +299,9 @@ RelocationHolder RelocationHolder::plus(int offset) const {
   return (*this);
 }
 
+//////// Methods for flyweight Relocation types
 
-void Relocation::guarantee_size() {
-  guarantee(false, "Make _relocbuf bigger!");
-}
-
-    // some relocations can compute their own values
+// some relocations can compute their own values
 address Relocation::value() {
   ShouldNotReachHere();
   return NULL;
@@ -279,7 +315,7 @@ void Relocation::set_value(address x) {
 void Relocation::const_set_data_value(address x) {
 #ifdef _LP64
   if (format() == relocInfo::narrow_oop_in_const) {
-    *(narrowOop*)addr() = CompressedOops::encode((oop) x);
+    *(narrowOop*)addr() = CompressedOops::encode(cast_to_oop(x));
   } else {
 #endif
     *(address*)addr() = x;
@@ -291,7 +327,7 @@ void Relocation::const_set_data_value(address x) {
 void Relocation::const_verify_data_value(address x) {
 #ifdef _LP64
   if (format() == relocInfo::narrow_oop_in_const) {
-    guarantee(*(narrowOop*)addr() == CompressedOops::encode((oop) x), "must agree");
+    guarantee(*(narrowOop*)addr() == CompressedOops::encode(cast_to_oop(x)), "must agree");
   } else {
 #endif
     guarantee(*(address*)addr() == x, "must agree");
@@ -416,18 +452,14 @@ void static_stub_Relocation::pack_data_to(CodeSection* dest) {
   short* p = (short*) dest->locs_end();
   CodeSection* insts = dest->outer()->insts();
   normalize_address(_static_call, insts);
-  jint is_aot = _is_aot ? 1 : 0;
-  p = pack_2_ints_to(p, scaled_offset(_static_call, insts->start()), is_aot);
+  p = pack_1_int_to(p, scaled_offset(_static_call, insts->start()));
   dest->set_locs_end((relocInfo*) p);
 }
 
 void static_stub_Relocation::unpack_data() {
   address base = binding()->section_start(CodeBuffer::SECT_INSTS);
-  jint offset;
-  jint is_aot;
-  unpack_2_ints(offset, is_aot);
+  jint offset = unpack_1_int();
   _static_call = address_from_scaled_offset(offset, base);
-  _is_aot = (is_aot == 1);
 }
 
 void trampoline_stub_Relocation::pack_data_to(CodeSection* dest ) {
@@ -542,10 +574,11 @@ oop* oop_Relocation::oop_addr() {
 
 
 oop oop_Relocation::oop_value() {
-  oop v = *oop_addr();
   // clean inline caches store a special pseudo-null
-  if (v == Universe::non_oop_word())  v = NULL;
-  return v;
+  if (Universe::contains_non_oop_word(oop_addr())) {
+    return NULL;
+  }
+  return *oop_addr();
 }
 
 
@@ -648,14 +681,14 @@ bool opt_virtual_call_Relocation::clear_inline_cache() {
   return set_to_clean_no_ic_refill(icache);
 }
 
-address opt_virtual_call_Relocation::static_stub(bool is_aot) {
+address opt_virtual_call_Relocation::static_stub() {
   // search for the static stub who points back to this static call
   address static_call_addr = addr();
   RelocIterator iter(code());
   while (iter.next()) {
     if (iter.type() == relocInfo::static_stub_type) {
       static_stub_Relocation* stub_reloc = iter.static_stub_reloc();
-      if (stub_reloc->static_call() == static_call_addr && stub_reloc->is_aot() == is_aot) {
+      if (stub_reloc->static_call() == static_call_addr) {
         return iter.addr();
       }
     }
@@ -689,14 +722,14 @@ bool static_call_Relocation::clear_inline_cache() {
 }
 
 
-address static_call_Relocation::static_stub(bool is_aot) {
+address static_call_Relocation::static_stub() {
   // search for the static stub who points back to this static call
   address static_call_addr = addr();
   RelocIterator iter(code());
   while (iter.next()) {
     if (iter.type() == relocInfo::static_stub_type) {
       static_stub_Relocation* stub_reloc = iter.static_stub_reloc();
-      if (stub_reloc->static_call() == static_call_addr && stub_reloc->is_aot() == is_aot) {
+      if (stub_reloc->static_call() == static_call_addr) {
         return iter.addr();
       }
     }
@@ -733,16 +766,16 @@ bool static_stub_Relocation::clear_inline_cache() {
 
 
 void external_word_Relocation::fix_relocation_after_move(const CodeBuffer* src, CodeBuffer* dest) {
-  address target = _target;
-  if (target == NULL) {
-    // An absolute embedded reference to an external location,
-    // which means there is nothing to fix here.
-    return;
+  if (_target != NULL) {
+    // Probably this reference is absolute,  not relative, so the following is
+    // probably a no-op.
+    set_value(_target);
   }
-  // Probably this reference is absolute, not relative, so the
-  // following is probably a no-op.
-  assert(src->section_index_of(target) == CodeBuffer::SECT_NONE, "sanity");
-  set_value(target);
+  // If target is NULL, this is  an absolute embedded reference to an external
+  // location, which means  there is nothing to fix here.  In either case, the
+  // resulting target should be an "external" address.
+  postcond(src->section_index_of(target()) == CodeBuffer::SECT_NONE);
+  postcond(dest->section_index_of(target()) == CodeBuffer::SECT_NONE);
 }
 
 

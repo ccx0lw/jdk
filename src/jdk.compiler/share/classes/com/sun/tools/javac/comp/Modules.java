@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -165,6 +165,7 @@ public class Modules extends JCTree.Visitor {
     private final String limitModsOpt;
     private final Set<String> extraLimitMods = new HashSet<>();
     private final String moduleVersionOpt;
+    private final boolean sourceLauncher;
 
     private final boolean lintOptions;
 
@@ -214,9 +215,8 @@ public class Modules extends JCTree.Visitor {
         addModsOpt = options.get(Option.ADD_MODULES);
         limitModsOpt = options.get(Option.LIMIT_MODULES);
         moduleVersionOpt = options.get(Option.MODULE_VERSION);
+        sourceLauncher = options.isSet("sourceLauncher");
     }
-    //where
-        private static final String XMODULES_PREFIX = "-Xmodule:";
 
     int depth = -1;
 
@@ -331,7 +331,7 @@ public class Modules extends JCTree.Visitor {
                 }
             }
             sym.completer = getSourceCompleter(toplevel);
-            sym.module_info.sourcefile = toplevel.sourcefile;
+            sym.module_info.classfile = sym.module_info.sourcefile = toplevel.sourcefile;
             decl.sym = sym;
 
             if (multiModuleMode || modules.isEmpty()) {
@@ -632,15 +632,19 @@ public class Modules extends JCTree.Visitor {
 
             if (msym.kind == ERR) {
                 //make sure the module is initialized:
-                msym.directives = List.nil();
-                msym.exports = List.nil();
-                msym.provides = List.nil();
-                msym.requires = List.nil();
-                msym.uses = List.nil();
+                initErrModule(msym);
             } else if ((msym.flags_field & Flags.AUTOMATIC_MODULE) != 0) {
                 setupAutomaticModule(msym);
             } else {
-                msym.module_info.complete();
+                try {
+                    msym.module_info.complete();
+                } catch (CompletionFailure cf) {
+                    msym.kind = ERR;
+                    //make sure the module is initialized:
+                    initErrModule(msym);
+                    completeModule(msym);
+                    throw cf;
+                }
             }
 
             // If module-info comes from a .java file, the underlying
@@ -653,6 +657,14 @@ public class Modules extends JCTree.Visitor {
             if (msym.module_info.classfile == null || msym.module_info.classfile.getKind() == Kind.CLASS) {
                 completeModule(msym);
             }
+        }
+
+        private void initErrModule(ModuleSymbol msym) {
+            msym.directives = List.nil();
+            msym.exports = List.nil();
+            msym.provides = List.nil();
+            msym.requires = List.nil();
+            msym.uses = List.nil();
         }
 
         @Override
@@ -1128,6 +1140,7 @@ public class Modules extends JCTree.Visitor {
         public void visitRequires(JCRequires tree) {
             if (tree.directive != null && allModules().contains(tree.directive.module)) {
                 chk.checkDeprecated(tree.moduleName.pos(), msym, tree.directive.module);
+                chk.checkPreview(tree.moduleName.pos(), msym, tree.directive.module);
                 chk.checkModuleRequires(tree.moduleName.pos(), tree.directive);
                 msym.directives = msym.directives.prepend(tree.directive);
             }
@@ -1160,7 +1173,7 @@ public class Modules extends JCTree.Visitor {
                      */
                     PackageSymbol implementationDefiningPackage = impl.packge();
                     if (implementationDefiningPackage.modle != msym) {
-                        // TODO: should use tree for the implentation name, not the entire provides tree
+                        // TODO: should use tree for the implementation name, not the entire provides tree
                         // TODO: should improve error message to identify the implementation type
                         log.error(tree.pos(), Errors.ServiceImplementationNotInRightModule(implementationDefiningPackage.modle));
                     }
@@ -1209,6 +1222,10 @@ public class Modules extends JCTree.Visitor {
     private void setupAllModules() {
         Assert.checkNonNull(rootModules);
         Assert.checkNull(allModules);
+
+        //java.base may not be completed yet and computeTransitiveClosure
+        //may not complete it either, make sure it is completed:
+        syms.java_base.complete();
 
         Set<ModuleSymbol> observable;
 
@@ -1330,9 +1347,9 @@ public class Modules extends JCTree.Visitor {
                 .forEach(result::add);
         }
 
-        String incubatingModules = result.stream()
+        String incubatingModules = filterAlreadyWarnedIncubatorModules(result.stream()
                 .filter(msym -> msym.resolutionFlags.contains(ModuleResolutionFlags.WARN_INCUBATING))
-                .map(msym -> msym.name.toString())
+                .map(msym -> msym.name.toString()))
                 .collect(Collectors.joining(","));
 
         if (!incubatingModules.isEmpty()) {
@@ -1348,6 +1365,15 @@ public class Modules extends JCTree.Visitor {
         }
     }
     //where:
+        private Stream<String> filterAlreadyWarnedIncubatorModules(Stream<String> incubatingModules) {
+            if (!sourceLauncher) return incubatingModules;
+            Set<String> bootModules = ModuleLayer.boot()
+                                                 .modules()
+                                                 .stream()
+                                                 .map(Module::getName)
+                                                 .collect(Collectors.toSet());
+            return incubatingModules.filter(module -> !bootModules.contains(module));
+        }
         private static final Predicate<ModuleSymbol> IS_AUTOMATIC =
                 m -> (m.flags_field & Flags.AUTOMATIC_MODULE) != 0;
 

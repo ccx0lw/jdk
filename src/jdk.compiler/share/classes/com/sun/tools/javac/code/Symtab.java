@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -54,6 +54,7 @@ import com.sun.tools.javac.code.Type.MethodType;
 import com.sun.tools.javac.code.Type.UnknownType;
 import com.sun.tools.javac.code.Types.UniqueType;
 import com.sun.tools.javac.comp.Modules;
+import com.sun.tools.javac.jvm.Target;
 import com.sun.tools.javac.util.Assert;
 import com.sun.tools.javac.util.Context;
 import com.sun.tools.javac.util.Convert;
@@ -161,6 +162,7 @@ public class Symtab {
     /** Predefined types.
      */
     public final Type objectType;
+    public final Type objectMethodsType;
     public final Type objectsType;
     public final Type classType;
     public final Type classLoaderType;
@@ -187,6 +189,8 @@ public class Symtab {
     public final Type assertionErrorType;
     public final Type incompatibleClassChangeErrorType;
     public final Type cloneNotSupportedExceptionType;
+    public final Type matchExceptionType;
+    public final Type nullPointerExceptionType;
     public final Type annotationType;
     public final TypeSymbol enumSym;
     public final Type listType;
@@ -214,6 +218,21 @@ public class Symtab {
     public final Type documentedType;
     public final Type elementTypeType;
     public final Type functionalInterfaceType;
+    public final Type previewFeatureType;
+    public final Type previewFeatureInternalType;
+    public final Type typeDescriptorType;
+    public final Type recordType;
+    public final Type switchBootstrapsType;
+    public final Type valueBasedType;
+    public final Type valueBasedInternalType;
+
+    // For serialization lint checking
+    public final Type objectStreamFieldType;
+    public final Type objectInputStreamType;
+    public final Type objectOutputStreamType;
+    public final Type ioExceptionType;
+    public final Type objectStreamExceptionType;
+    public final Type externalizableType;
 
     /** The symbol representing the length field of an array.
      */
@@ -385,7 +404,10 @@ public class Symtab {
 
         MissingInfoHandler missingInfoHandler = MissingInfoHandler.instance(context);
 
-        rootPackage = new RootPackageSymbol(names.empty, null, missingInfoHandler);
+        Target target = Target.instance(context);
+        rootPackage = new RootPackageSymbol(names.empty, null,
+                                            missingInfoHandler,
+                                            target.runtimeUseNestAccess());
 
         // create the basic builtin symbols
         unnamedModule = new ModuleSymbol(names.empty, null) {
@@ -508,6 +530,7 @@ public class Symtab {
 
         // Enter predefined classes. All are assumed to be in the java.base module.
         objectType = enterClass("java.lang.Object");
+        objectMethodsType = enterClass("java.lang.runtime.ObjectMethods");
         objectsType = enterClass("java.util.Objects");
         classType = enterClass("java.lang.Class");
         stringType = enterClass("java.lang.String");
@@ -532,6 +555,8 @@ public class Symtab {
         assertionErrorType = enterClass("java.lang.AssertionError");
         incompatibleClassChangeErrorType = enterClass("java.lang.IncompatibleClassChangeError");
         cloneNotSupportedExceptionType = enterClass("java.lang.CloneNotSupportedException");
+        matchExceptionType = enterClass("java.lang.MatchException");
+        nullPointerExceptionType = enterClass("java.lang.NullPointerException");
         annotationType = enterClass("java.lang.annotation.Annotation");
         classLoaderType = enterClass("java.lang.ClassLoader");
         enumSym = enterClass(java_base, names.java_lang_Enum);
@@ -570,6 +595,20 @@ public class Symtab {
         lambdaMetafactory = enterClass("java.lang.invoke.LambdaMetafactory");
         stringConcatFactory = enterClass("java.lang.invoke.StringConcatFactory");
         functionalInterfaceType = enterClass("java.lang.FunctionalInterface");
+        previewFeatureType = enterClass("jdk.internal.javac.PreviewFeature");
+        previewFeatureInternalType = enterSyntheticAnnotation("jdk.internal.PreviewFeature+Annotation");
+        typeDescriptorType = enterClass("java.lang.invoke.TypeDescriptor");
+        recordType = enterClass("java.lang.Record");
+        switchBootstrapsType = enterClass("java.lang.runtime.SwitchBootstraps");
+        valueBasedType = enterClass("jdk.internal.ValueBased");
+        valueBasedInternalType = enterSyntheticAnnotation("jdk.internal.ValueBased+Annotation");
+        // For serialization lint checking
+        objectStreamFieldType = enterClass("java.io.ObjectStreamField");
+        objectInputStreamType = enterClass("java.io.ObjectInputStream");
+        objectOutputStreamType = enterClass("java.io.ObjectOutputStream");
+        ioExceptionType = enterClass("java.io.IOException");
+        objectStreamExceptionType = enterClass("java.io.ObjectStreamException");
+        externalizableType = enterClass("java.io.Externalizable");
 
         synthesizeEmptyInterfaceIfMissing(autoCloseableType);
         synthesizeEmptyInterfaceIfMissing(cloneableType);
@@ -636,7 +675,8 @@ public class Symtab {
         if (c == null) {
             c = defineClass(name, owner);
             doEnterClass(msym, c);
-        } else if ((c.name != name || c.owner != owner) && owner.kind == TYP && c.owner.kind == PCK) {
+        } else if ((c.name != name || c.owner != owner) && owner.kind == TYP &&
+                   c.owner.kind == PCK && ((c.flags_field & FROM_SOURCE) == 0)) {
             // reassign fields of classes that might have been loaded with
             // their flat names.
             c.owner.members().remove(c);
@@ -653,6 +693,10 @@ public class Symtab {
     }
 
     public PackageSymbol lookupPackage(ModuleSymbol msym, Name flatName) {
+        return lookupPackage(msym, flatName, false);
+    }
+
+    private PackageSymbol lookupPackage(ModuleSymbol msym, Name flatName, boolean onlyExisting) {
         Assert.checkNonNull(msym);
 
         if (flatName.isEmpty()) {
@@ -675,7 +719,7 @@ public class Symtab {
 
         pack = getPackage(msym, flatName);
 
-        if (pack != null && pack.exists())
+        if ((pack != null && pack.exists()) || onlyExisting)
             return pack;
 
         boolean dependsOnUnnamed = msym.requires != null &&
@@ -747,7 +791,8 @@ public class Symtab {
      */
     public boolean packageExists(ModuleSymbol msym, Name fullname) {
         Assert.checkNonNull(msym);
-        return lookupPackage(msym, fullname).exists();
+        PackageSymbol pack = lookupPackage(msym, fullname, true);
+        return pack != null && pack.exists();
     }
 
     /** Make a package, given its fully qualified name.
@@ -783,6 +828,7 @@ public class Symtab {
         unnamedPackage.modle = module;
         //we cannot use a method reference below, as initialCompleter might be null now
         unnamedPackage.completer = s -> initialCompleter.complete(s);
+        unnamedPackage.flags_field |= EXISTS;
         module.unnamedPackage = unnamedPackage;
     }
 

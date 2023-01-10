@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,6 +27,7 @@
 #include "memory/universe.hpp"
 #include "oops/compressedOops.hpp"
 #include "opto/machnode.hpp"
+#include "opto/output.hpp"
 #include "opto/regalloc.hpp"
 #include "utilities/vmError.hpp"
 
@@ -154,7 +155,7 @@ uint MachNode::size(PhaseRegAlloc *ra_) const {
 uint MachNode::emit_size(PhaseRegAlloc *ra_) const {
   // Emit into a trash buffer and count bytes emitted.
   assert(ra_ == ra_->C->regalloc(), "sanity");
-  return ra_->C->scratch_emit_size(this);
+  return ra_->C->output()->scratch_emit_size(this);
 }
 
 
@@ -294,7 +295,7 @@ const Node* MachNode::get_base_and_disp(intptr_t &offset, const TypePtr* &adr_ty
     }
     offset = disp;
 
-    // In i486.ad, indOffset32X uses base==RegI and disp==RegP,
+    // In x86_32.ad, indOffset32X uses base==RegI and disp==RegP,
     // this will prevent alias analysis without the following support:
     // Lookup the TypePtr used by indOffset32X, a compile-time constant oop,
     // Add the offset determined by the "base", or use Type::OffsetBot.
@@ -387,10 +388,10 @@ const class TypePtr *MachNode::adr_type() const {
 
 
 //-----------------------------operand_index---------------------------------
-int MachNode::operand_index( uint operand ) const {
-  if( operand < 1 )  return -1;
+int MachNode::operand_index(uint operand) const {
+  if (operand < 1)  return -1;
   assert(operand < num_opnds(), "oob");
-  if( _opnds[operand]->num_edges() == 0 )  return -1;
+  if (_opnds[operand]->num_edges() == 0)  return -1;
 
   uint skipped   = oper_input_base(); // Sum of leaves skipped so far
   for (uint opcnt = 1; opcnt < operand; opcnt++) {
@@ -412,10 +413,24 @@ int MachNode::operand_index(const MachOper *oper) const {
   return skipped;
 }
 
+int MachNode::operand_index(Node* def) const {
+  uint skipped = oper_input_base(); // Sum of leaves skipped so far
+  for (uint opcnt = 1; opcnt < num_opnds(); opcnt++) {
+    uint num_edges = _opnds[opcnt]->num_edges(); // leaves for operand
+    for (uint i = 0; i < num_edges; i++) {
+      if (in(skipped + i) == def) {
+        return opcnt;
+      }
+    }
+    skipped += num_edges;
+  }
+  return -1;
+}
+
 //------------------------------peephole---------------------------------------
 // Apply peephole rule(s) to this instruction
-MachNode *MachNode::peephole(Block *block, int block_index, PhaseRegAlloc *ra_, int &deleted) {
-  return NULL;
+int MachNode::peephole(Block *block, int block_index, PhaseCFG* cfg_, PhaseRegAlloc *ra_) {
+  return -1;
 }
 
 //------------------------------add_case_label---------------------------------
@@ -459,14 +474,15 @@ bool MachNode::rematerialize() const {
   }
 
   // Stretching lots of inputs - don't do it.
-  if (req() > 2) {
+  // A MachContant has the last input being the constant base
+  if (req() > (is_MachConstant() ? 3U : 2U)) {
     return false;
   }
 
-  if (req() == 2 && in(1) && in(1)->ideal_reg() == Op_RegFlags) {
+  if (req() >= 2 && in(1) && in(1)->ideal_reg() == Op_RegFlags) {
     // In(1) will be rematerialized, too.
     // Stretching lots of inputs - don't do it.
-    if (in(1)->req() > 2) {
+    if (in(1)->req() > (in(1)->is_MachConstant() ? 3U : 2U)) {
       return false;
     }
   }
@@ -476,7 +492,7 @@ bool MachNode::rematerialize() const {
   uint idx = oper_input_base();
   if (req() > idx) {
     const RegMask &rm = in_RegMask(idx);
-    if (rm.is_bound(ideal_reg())) {
+    if (rm.is_NotEmpty() && rm.is_bound(ideal_reg())) {
       return false;
     }
   }
@@ -527,13 +543,13 @@ void MachTypeNode::dump_spec(outputStream *st) const {
 int MachConstantNode::constant_offset() {
   // Bind the offset lazily.
   if (_constant.offset() == -1) {
-    Compile::ConstantTable& constant_table = Compile::current()->constant_table();
+    ConstantTable& constant_table = Compile::current()->output()->constant_table();
     int offset = constant_table.find_offset(_constant);
     // If called from Compile::scratch_emit_size return the
     // pre-calculated offset.
     // NOTE: If the AD file does some table base offset optimizations
     // later the AD file needs to take care of this fact.
-    if (Compile::current()->in_scratch_emit_size()) {
+    if (Compile::current()->output()->in_scratch_emit_size()) {
       return constant_table.calculate_table_base_offset() + offset;
     }
     _constant.set_offset(constant_table.table_base_offset() + offset);
@@ -639,8 +655,7 @@ const RegMask &MachSafePointNode::in_RegMask( uint idx ) const {
   // _in_rms array of RegMasks.
   if( idx < TypeFunc::Parms ) return _in_rms[idx];
 
-  if (SafePointNode::needs_polling_address_input() &&
-      idx == TypeFunc::Parms &&
+  if (idx == TypeFunc::Parms &&
       ideal_Opcode() == Op_SafePoint) {
     return MachNode::in_RegMask(idx);
   }
@@ -667,6 +682,7 @@ void MachCallNode::dump_spec(outputStream *st) const {
 }
 #endif
 
+#ifndef _LP64
 bool MachCallNode::return_value_is_used() const {
   if (tf()->range()->cnt() == TypeFunc::Parms) {
     // void return
@@ -683,6 +699,7 @@ bool MachCallNode::return_value_is_used() const {
   }
   return false;
 }
+#endif
 
 // Similar to cousin class CallNode::returns_pointer
 // Because this is used in deoptimization, we want the type info, not the data

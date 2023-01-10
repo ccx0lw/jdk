@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1996, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1996, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -32,8 +32,9 @@ import java.util.StringJoiner;
  * constants to decode class and member access modifiers.  The sets of
  * modifiers are represented as integers with distinct bit positions
  * representing different modifiers.  The values for the constants
- * representing the modifiers are taken from the tables in sections 4.1, 4.4, 4.5, and 4.7 of
- * <cite>The Java&trade; Virtual Machine Specification</cite>.
+ * representing the modifiers are taken from the tables in sections
+ * {@jvms 4.1}, {@jvms 4.4}, {@jvms 4.5}, and {@jvms 4.7} of
+ * <cite>The Java Virtual Machine Specification</cite>.
  *
  * @see Class#getModifiers()
  * @see Member#getModifiers()
@@ -46,8 +47,7 @@ public class Modifier {
     /**
      * Do not call.
      */
-    @Deprecated(forRemoval=true, since="14")
-    public Modifier() {}
+    private Modifier() {throw new AssertionError();}
 
 
     /**
@@ -202,7 +202,7 @@ public class Modifier {
      * </pre></blockquote>
      * The modifier names are returned in an order consistent with the
      * suggested modifier orderings given in sections 8.1.1, 8.3.1, 8.4.3, 8.8.3, and 9.1.1 of
-     * <cite>The Java&trade; Language Specification</cite>.
+     * <cite>The Java Language Specification</cite>.
      * The full modifier ordering used by this method is:
      * <blockquote> {@code
      * public protected private abstract static final transient
@@ -248,78 +248,90 @@ public class Modifier {
 
     /*
      * Access modifier flag constants from tables 4.1, 4.4, 4.5, and 4.7 of
-     * <cite>The Java&trade; Virtual Machine Specification</cite>
+     * <cite>The Java Virtual Machine Specification</cite>
      */
 
     /**
      * The {@code int} value representing the {@code public}
      * modifier.
+     * @see AccessFlag#PUBLIC
      */
     public static final int PUBLIC           = 0x00000001;
 
     /**
      * The {@code int} value representing the {@code private}
      * modifier.
+     * @see AccessFlag#PRIVATE
      */
     public static final int PRIVATE          = 0x00000002;
 
     /**
      * The {@code int} value representing the {@code protected}
      * modifier.
+     * @see AccessFlag#PROTECTED
      */
     public static final int PROTECTED        = 0x00000004;
 
     /**
      * The {@code int} value representing the {@code static}
      * modifier.
+     * @see AccessFlag#STATIC
      */
     public static final int STATIC           = 0x00000008;
 
     /**
      * The {@code int} value representing the {@code final}
      * modifier.
+     * @see AccessFlag#FINAL
      */
     public static final int FINAL            = 0x00000010;
 
     /**
      * The {@code int} value representing the {@code synchronized}
      * modifier.
+     * @see AccessFlag#SYNCHRONIZED
      */
     public static final int SYNCHRONIZED     = 0x00000020;
 
     /**
      * The {@code int} value representing the {@code volatile}
      * modifier.
+     * @see AccessFlag#VOLATILE
      */
     public static final int VOLATILE         = 0x00000040;
 
     /**
      * The {@code int} value representing the {@code transient}
      * modifier.
+     * @see AccessFlag#TRANSIENT
      */
     public static final int TRANSIENT        = 0x00000080;
 
     /**
      * The {@code int} value representing the {@code native}
      * modifier.
+     * @see AccessFlag#NATIVE
      */
     public static final int NATIVE           = 0x00000100;
 
     /**
      * The {@code int} value representing the {@code interface}
      * modifier.
+     * @see AccessFlag#INTERFACE
      */
     public static final int INTERFACE        = 0x00000200;
 
     /**
      * The {@code int} value representing the {@code abstract}
      * modifier.
+     * @see AccessFlag#ABSTRACT
      */
     public static final int ABSTRACT         = 0x00000400;
 
     /**
      * The {@code int} value representing the {@code strictfp}
      * modifier.
+     * @see AccessFlag#STRICT
      */
     public static final int STRICT           = 0x00000800;
 
@@ -378,7 +390,7 @@ public class Modifier {
 
     /**
      * The Java source modifiers that can be applied to a method.
-     * @jls8.4.3  Method Modifiers
+     * @jls 8.4.3  Method Modifiers
      */
     private static final int METHOD_MODIFIERS =
         Modifier.PUBLIC         | Modifier.PROTECTED    | Modifier.PRIVATE |
@@ -401,9 +413,6 @@ public class Modifier {
     private static final int PARAMETER_MODIFIERS =
         Modifier.FINAL;
 
-    /**
-     *
-     */
     static final int ACCESS_MODIFIERS =
         Modifier.PUBLIC | Modifier.PROTECTED | Modifier.PRIVATE;
 

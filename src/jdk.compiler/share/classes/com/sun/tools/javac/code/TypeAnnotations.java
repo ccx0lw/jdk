@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -30,9 +30,9 @@ import javax.lang.model.element.ElementKind;
 import javax.lang.model.type.TypeKind;
 import javax.tools.JavaFileObject;
 
-import com.sun.tools.javac.code.Attribute.Array;
 import com.sun.tools.javac.code.Attribute.TypeCompound;
 import com.sun.tools.javac.code.Symbol.ClassSymbol;
+import com.sun.tools.javac.code.Symbol.RecordComponent;
 import com.sun.tools.javac.code.Symbol.TypeSymbol;
 import com.sun.tools.javac.code.Type.ArrayType;
 import com.sun.tools.javac.code.Type.CapturedType;
@@ -57,18 +57,27 @@ import com.sun.tools.javac.comp.AttrContext;
 import com.sun.tools.javac.comp.Env;
 import com.sun.tools.javac.resources.CompilerProperties.Errors;
 import com.sun.tools.javac.tree.JCTree;
-import com.sun.tools.javac.tree.TreeInfo;
+import com.sun.tools.javac.tree.JCTree.JCAnnotatedType;
+import com.sun.tools.javac.tree.JCTree.JCAnnotation;
+import com.sun.tools.javac.tree.JCTree.JCArrayTypeTree;
 import com.sun.tools.javac.tree.JCTree.JCBlock;
 import com.sun.tools.javac.tree.JCTree.JCClassDecl;
 import com.sun.tools.javac.tree.JCTree.JCExpression;
+import com.sun.tools.javac.tree.JCTree.JCFieldAccess;
 import com.sun.tools.javac.tree.JCTree.JCLambda;
+import com.sun.tools.javac.tree.JCTree.JCMemberReference;
 import com.sun.tools.javac.tree.JCTree.JCMethodDecl;
 import com.sun.tools.javac.tree.JCTree.JCMethodInvocation;
+import com.sun.tools.javac.tree.JCTree.JCNewArray;
 import com.sun.tools.javac.tree.JCTree.JCNewClass;
 import com.sun.tools.javac.tree.JCTree.JCTypeApply;
+import com.sun.tools.javac.tree.JCTree.JCTypeIntersection;
+import com.sun.tools.javac.tree.JCTree.JCTypeParameter;
+import com.sun.tools.javac.tree.JCTree.JCTypeUnion;
 import com.sun.tools.javac.tree.JCTree.JCVariableDecl;
+import com.sun.tools.javac.tree.JCTree.Tag;
+import com.sun.tools.javac.tree.TreeInfo;
 import com.sun.tools.javac.tree.TreeScanner;
-import com.sun.tools.javac.tree.JCTree.*;
 import com.sun.tools.javac.util.Assert;
 import com.sun.tools.javac.util.Context;
 import com.sun.tools.javac.util.List;
@@ -76,6 +85,7 @@ import com.sun.tools.javac.util.ListBuffer;
 import com.sun.tools.javac.util.Log;
 import com.sun.tools.javac.util.Names;
 
+import static com.sun.tools.javac.code.Flags.RECORD;
 import static com.sun.tools.javac.code.Kinds.Kind.*;
 
 /**
@@ -155,11 +165,11 @@ public class TypeAnnotations {
         }
 
         Attribute atValue = atTarget.member(names.value);
-        if (!(atValue instanceof Attribute.Array)) {
+        if (!(atValue instanceof Attribute.Array arrayVal)) {
             return null;
         }
 
-        List<Attribute> targets = ((Array)atValue).getValue();
+        List<Attribute> targets = arrayVal.getValue();
         if (targets.stream().anyMatch(a -> !(a instanceof Attribute.Enum))) {
             return null;
         }
@@ -200,7 +210,7 @@ public class TypeAnnotations {
         if (e.value.name == names.TYPE) {
             if (s.kind == TYP)
                 return AnnotationType.DECLARATION;
-        } else if (e.value.name == names.FIELD) {
+        } else if (e.value.name == names.FIELD || e.value.name == names.RECORD_COMPONENT) {
             if (s.kind == VAR &&
                     s.owner.kind != MTH)
                 return AnnotationType.DECLARATION;
@@ -389,23 +399,28 @@ public class TypeAnnotations {
             if (sym.getKind() == ElementKind.PARAMETER ||
                 sym.getKind() == ElementKind.LOCAL_VARIABLE ||
                 sym.getKind() == ElementKind.RESOURCE_VARIABLE ||
-                sym.getKind() == ElementKind.EXCEPTION_PARAMETER) {
-                // Make sure all type annotations from the symbol are also
-                // on the owner. If the owner is an initializer block, propagate
-                // to the type.
-                final long ownerFlags = sym.owner.flags();
-                if ((ownerFlags & Flags.BLOCK) != 0) {
-                    // Store init and clinit type annotations with the ClassSymbol
-                    // to allow output in Gen.normalizeDefs.
-                    ClassSymbol cs = (ClassSymbol) sym.owner.owner;
-                    if ((ownerFlags & Flags.STATIC) != 0) {
-                        cs.appendClassInitTypeAttributes(typeAnnotations);
-                    } else {
-                        cs.appendInitTypeAttributes(typeAnnotations);
-                    }
+                sym.getKind() == ElementKind.EXCEPTION_PARAMETER ||
+                sym.getKind() == ElementKind.BINDING_VARIABLE) {
+                appendTypeAnnotationsToOwner(sym, typeAnnotations);
+            }
+        }
+
+        private void appendTypeAnnotationsToOwner(Symbol sym, List<Attribute.TypeCompound> typeAnnotations) {
+            // Make sure all type annotations from the symbol are also
+            // on the owner. If the owner is an initializer block, propagate
+            // to the type.
+            final long ownerFlags = sym.owner.flags();
+            if ((ownerFlags & Flags.BLOCK) != 0) {
+                // Store init and clinit type annotations with the ClassSymbol
+                // to allow output in Gen.normalizeDefs.
+                ClassSymbol cs = (ClassSymbol) sym.owner.owner;
+                if ((ownerFlags & Flags.STATIC) != 0) {
+                    cs.appendClassInitTypeAttributes(typeAnnotations);
                 } else {
-                    sym.owner.appendUniqueTypeAttributes(sym.getRawTypeAttributes());
+                    cs.appendInitTypeAttributes(typeAnnotations);
                 }
+            } else {
+                sym.owner.appendUniqueTypeAttributes(typeAnnotations);
             }
         }
 
@@ -544,6 +559,9 @@ public class TypeAnnotations {
          */
         private Type rewriteArrayType(ArrayType type, List<TypeCompound> annotations, TypeAnnotationPosition pos) {
             ArrayType tomodify = new ArrayType(type);
+            if (type.isVarargs()) {
+                tomodify = tomodify.makeVarargs();
+            }
             ArrayType res = tomodify;
 
             List<TypePathEntry> loc = List.nil();
@@ -766,6 +784,7 @@ public class TypeAnnotations {
                 case CLASS:
                 case ENUM:
                 case INTERFACE:
+                case RECORD:
                     if (((JCClassDecl)frame).extending == tree) {
                         return TypeAnnotationPosition
                             .classExtends(location.toList(), currentLambda,
@@ -944,11 +963,12 @@ public class TypeAnnotations {
                     }
 
                 case VARIABLE:
-                    VarSymbol v = ((JCVariableDecl)frame).sym;
+                    VarSymbol v = ((JCVariableDecl) frame).sym;
                     if (v.getKind() != ElementKind.FIELD) {
-                        v.owner.appendUniqueTypeAttributes(v.getRawTypeAttributes());
+                        appendTypeAnnotationsToOwner(v, v.getRawTypeAttributes());
                     }
                     switch (v.getKind()) {
+                        case BINDING_VARIABLE:
                         case LOCAL_VARIABLE:
                             return TypeAnnotationPosition
                                 .localVariable(location.toList(), currentLambda,
@@ -1066,7 +1086,11 @@ public class TypeAnnotations {
                                         newPath, currentLambda,
                                         outer_type_index, location);
                 }
-
+                case DECONSTRUCTION_PATTERN: {
+                    // TODO: Treat case labels as full type contexts for complete type annotation support in Record Patterns
+                    //    https://bugs.openjdk.org/browse/JDK-8298154
+                    return TypeAnnotationPosition.unknown;
+                }
                 default:
                     throw new AssertionError("Unresolved frame: " + frame +
                                              " of kind: " + frame.getKind() +
@@ -1122,6 +1146,9 @@ public class TypeAnnotations {
                 scan(tree.implementing);
             }
             scan(tree.defs);
+            if (tree.sym.isRecord()) {
+                tree.sym.getRecordComponents().forEach(rc -> scan(rc.accessorMeth));
+            }
         }
 
         /**
@@ -1211,7 +1238,9 @@ public class TypeAnnotations {
                                 .methodParameter(tree, i, param.vartype.pos);
                         push(param);
                         try {
-                            separateAnnotationsKinds(param.vartype, param.sym.type, param.sym, pos);
+                            if (!param.declaredUsingVar()) {
+                                separateAnnotationsKinds(param.vartype, param.sym.type, param.sym, pos);
+                            }
                         } finally {
                             pop();
                         }
@@ -1249,9 +1278,14 @@ public class TypeAnnotations {
                 final TypeAnnotationPosition pos =
                     TypeAnnotationPosition.localVariable(currentLambda,
                                                          tree.pos);
-                if (!tree.isImplicitlyTyped()) {
+                if (!tree.declaredUsingVar()) {
                     separateAnnotationsKinds(tree.vartype, tree.sym.type, tree.sym, pos);
                 }
+            } else if (tree.sym.getKind() == ElementKind.BINDING_VARIABLE) {
+                final TypeAnnotationPosition pos =
+                    TypeAnnotationPosition.localVariable(currentLambda,
+                                                         tree.pos);
+                separateAnnotationsKinds(tree.vartype, tree.sym.type, tree.sym, pos);
             } else if (tree.sym.getKind() == ElementKind.EXCEPTION_PARAMETER) {
                 final TypeAnnotationPosition pos =
                     TypeAnnotationPosition.exceptionParameter(currentLambda,
@@ -1266,13 +1300,23 @@ public class TypeAnnotations {
                 // No type annotations can occur here.
             } else {
                 // There is nothing else in a variable declaration that needs separation.
-                Assert.error("Unhandled variable kind");
+                Assert.error("Unhandled variable kind: " + tree.sym.getKind());
             }
 
             scan(tree.mods);
             scan(tree.vartype);
             if (!sigOnly) {
                 scan(tree.init);
+            }
+
+            // Now that type and declaration annotations have been segregated into their own buckets ...
+            if (sigOnly) {
+                if (tree.sym != null && tree.sym.getKind() == ElementKind.FIELD && (tree.sym.flags_field & RECORD) != 0) {
+                    RecordComponent rc = ((ClassSymbol)tree.sym.owner).getRecordComponent(tree.sym);
+                    rc.setTypeAttributes(tree.sym.getRawTypeAttributes());
+                    // to get all the type annotations applied to the type
+                    rc.type = tree.sym.type;
+                }
             }
         }
 
@@ -1334,7 +1378,7 @@ public class TypeAnnotations {
             scan(tree.typeargs);
             if (tree.def == null) {
                 scan(tree.clazz);
-            } // else super type will already have been scanned in the context of the anonymous class.
+            } // else supertype will already have been scanned in the context of the anonymous class.
             scan(tree.args);
 
             // The class body will already be scanned.

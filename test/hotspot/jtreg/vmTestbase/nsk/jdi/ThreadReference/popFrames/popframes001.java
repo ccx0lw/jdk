@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -91,20 +91,9 @@ import java.io.*;
  * has to be incremented one more time.                                 <BR>
  */
 
-public class popframes001 {
+public class popframes001 extends JDIBase {
 
-    //----------------------------------------------------- templete section
-    static final int PASSED = 0;
-    static final int FAILED = 2;
-    static final int PASS_BASE = 95;
-
-    //----------------------------------------------------- templete parameters
-    static final String
-    sHeader1 = "\n==> nsk/jdi/ThreadReference/popFrames/popframes001 ",
-    sHeader2 = "--> debugger: ",
-    sHeader3 = "##> debugger: ";
-
-    //----------------------------------------------------- main method
+    static boolean vthreadMode = "Virtual".equals(System.getProperty("main.wrapper"));
 
     public static void main (String argv[]) {
 
@@ -123,50 +112,14 @@ public class popframes001 {
         return testExitCode;
     }
 
-    //--------------------------------------------------   log procedures
-
-    private static Log  logHandler;
-
-    private static void log1(String message) {
-        logHandler.display(sHeader1 + message);
-    }
-    private static void log2(String message) {
-        logHandler.display(sHeader2 + message);
-    }
-    private static void log3(String message) {
-        logHandler.complain(sHeader3 + message);
-    }
-
     //  ************************************************    test parameters
 
     private String debuggeeName =
         "nsk.jdi.ThreadReference.popFrames.popframes001a";
 
     //====================================================== test program
-    //------------------------------------------------------ common section
-
-    static Debugee          debuggee;
-    static ArgumentHandler  argsHandler;
-
-    static int waitTime;
-
-    static VirtualMachine      vm            = null;
-    static EventRequestManager eventRManager = null;
-    static EventQueue          eventQueue    = null;
-    static EventSet            eventSet      = null;
-    static EventIterator       eventIterator = null;
-
-    static ReferenceType       debuggeeClass = null;
-
-    static int  testExitCode = PASSED;
 
     BreakpointRequest breakpointRequest;
-
-    class JDITestRuntimeException extends RuntimeException {
-        JDITestRuntimeException(String str) {
-            super("JDITestRuntimeException : " + str);
-        }
-    }
 
     //------------------------------------------------------ methods
 
@@ -268,6 +221,10 @@ public class popframes001 {
         try {
             testRun();
 
+            if (vthreadMode) {
+                return 0; // just exit. we already got the expected OpaqueFrameException
+            }
+
             log2("waiting for VMDeathEvent");
             getEventSet();
             if (eventIterator.nextEvent() instanceof VMDeathEvent)
@@ -312,7 +269,7 @@ public class popframes001 {
         BreakpointRequest bpRequest;
 
         try {
-            bpRequest = settingBreakpoint(threadByName("main"),
+            bpRequest = settingBreakpoint(debuggee.threadByNameOrThrow("main"),
                                           debuggeeClass,
                                           bPointMethod, lineForComm, "zero");
         } catch ( Exception e ) {
@@ -360,7 +317,7 @@ public class popframes001 {
             }
 
             String thread2Name         = "thread2";
-            ThreadReference thread2Ref = threadByName(thread2Name);
+            ThreadReference thread2Ref = debuggee.threadByNameOrThrow(thread2Name);
 
 
             String poppedMethod    = "poppedMethod";
@@ -369,7 +326,7 @@ public class popframes001 {
 
             log2("......setting breakpoint in poppedMethod");
             try {
-                breakpointRequest = settingBreakpoint(threadByName(thread2Name),
+                breakpointRequest = settingBreakpoint(debuggee.threadByNameOrThrow(thread2Name),
                                           debuggeeClass,
                                           poppedMethod, breakpointLine, "one");
             } catch ( Exception e ) {
@@ -399,10 +356,24 @@ public class popframes001 {
             log2("......thread2Ref.popFrames(stackFrame);");
             try {
                 thread2Ref.popFrames(stackFrame);
-            } catch ( IncompatibleThreadStateException e ) {
-                log3("ERROR: IncompatibleThreadStateException");
-                testExitCode = FAILED;
-                break;
+                if (vthreadMode) {
+                    log3("ERROR: Expected OpaqueFrameException");
+                    testExitCode = FAILED;
+                }
+            } catch ( Exception e ) {
+                if (vthreadMode && (e instanceof OpaqueFrameException)) {
+                    // pass. resume thread and exit
+                    log2("......got expected OpaqueFrameException");
+                    log2("......thread2Ref.resume();");
+                    thread2Ref.resume();
+                    breakpointForCommunication();
+                    vm.resume();
+                    break;
+                } else {
+                    log3("ERROR: " + e.getClass().getSimpleName());
+                    testExitCode = FAILED;
+                    throw e;
+                }
             }
 
             log2("......thread2Ref.resume();");
@@ -426,111 +397,6 @@ public class popframes001 {
         }
         log1("    TESTING ENDS");
         return;
-    }
-
-    private ThreadReference threadByName(String name)
-                 throws JDITestRuntimeException {
-
-        List         all = vm.allThreads();
-        ListIterator li  = all.listIterator();
-
-        for (; li.hasNext(); ) {
-            ThreadReference thread = (ThreadReference) li.next();
-            if (thread.name().equals(name))
-                return thread;
-        }
-        throw new JDITestRuntimeException("** Thread IS NOT found ** : " + name);
-    }
-
-   /*
-    * private BreakpointRequest settingBreakpoint(ThreadReference, ReferenceType,
-    *                                             String, String, String)
-    *
-    * It sets up a breakpoint at given line number within a given method in a given class
-    * for a given thread.
-    *
-    * Return value: BreakpointRequest object  in case of success
-    *
-    * JDITestRuntimeException   in case of an Exception thrown within the method
-    */
-
-    private BreakpointRequest settingBreakpoint ( ThreadReference thread,
-                                                  ReferenceType testedClass,
-                                                  String methodName,
-                                                  String bpLine,
-                                                  String property)
-            throws JDITestRuntimeException {
-
-        log2("......setting up a breakpoint:");
-        log2("       thread: " + thread + "; class: " + testedClass +
-                        "; method: " + methodName + "; line: " + bpLine);
-
-        List              alllineLocations = null;
-        Location          lineLocation     = null;
-        BreakpointRequest breakpRequest    = null;
-
-        try {
-            Method  method  = (Method) testedClass.methodsByName(methodName).get(0);
-
-            alllineLocations = method.allLineLocations();
-
-            int n =
-                ( (IntegerValue) testedClass.getValue(testedClass.fieldByName(bpLine) ) ).value();
-            if (n > alllineLocations.size()) {
-                log3("ERROR:  TEST_ERROR_IN_settingBreakpoint(): number is out of bound of method's lines");
-            } else {
-                lineLocation = (Location) alllineLocations.get(n);
-                try {
-                    breakpRequest = eventRManager.createBreakpointRequest(lineLocation);
-                    breakpRequest.putProperty("number", property);
-                    breakpRequest.addThreadFilter(thread);
-                    breakpRequest.setSuspendPolicy( EventRequest.SUSPEND_EVENT_THREAD);
-                } catch ( Exception e1 ) {
-                    log3("ERROR: inner Exception within settingBreakpoint() : " + e1);
-                    breakpRequest    = null;
-                }
-            }
-        } catch ( Exception e2 ) {
-            log3("ERROR: ATTENTION:  outer Exception within settingBreakpoint() : " + e2);
-            breakpRequest    = null;
-        }
-
-        if (breakpRequest == null) {
-            log2("      A BREAKPOINT HAS NOT BEEN SET UP");
-            throw new JDITestRuntimeException("**FAILURE to set up a breakpoint**");
-        }
-
-        log2("      a breakpoint has been set up");
-        return breakpRequest;
-    }
-
-
-    private void getEventSet()
-                 throws JDITestRuntimeException {
-        try {
-//            log2("       eventSet = eventQueue.remove(waitTime);");
-            eventSet = eventQueue.remove(waitTime);
-            if (eventSet == null) {
-                throw new JDITestRuntimeException("** TIMEOUT while waiting for event **");
-            }
-//            log2("       eventIterator = eventSet.eventIterator;");
-            eventIterator = eventSet.eventIterator();
-        } catch ( Exception e ) {
-            throw new JDITestRuntimeException("** EXCEPTION while waiting for event ** : " + e);
-        }
-    }
-
-
-    private void breakpointForCommunication()
-                 throws JDITestRuntimeException {
-
-        log2("breakpointForCommunication");
-        getEventSet();
-
-        if (eventIterator.nextEvent() instanceof BreakpointEvent)
-            return;
-
-        throw new JDITestRuntimeException("** event IS NOT a breakpoint **");
     }
 
     // ============================== test's additional methods

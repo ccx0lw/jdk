@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,7 +22,7 @@
  */
 
 /* @test
-   @bug 4074875 4063511 8230342
+   @bug 4074875 4063511 8235792
    @summary Make sure LineNumberReader.read(char, int , int) will increase
             the linenumber correctly.
    */
@@ -69,7 +69,7 @@ public class Read {
                 throw new RuntimeException(e);
             }
         };
-        testEof(c, string, 1);
+        testEof(c, string, 2);
 
         c = (LineNumberReader r) -> {
             try {
@@ -80,7 +80,7 @@ public class Read {
                 throw new RuntimeException(e);
             }
         };
-        testEof(c, string, 1);
+        testEof(c, string, 2);
 
         c = (LineNumberReader r) -> {
             try {
@@ -90,7 +90,7 @@ public class Read {
                 throw new RuntimeException(e);
             }
         };
-        testEof(c, string, 1);
+        testEof(c, string, 2);
     }
 
     private static void testEof(Consumer<LineNumberReader> c, String s, int n)

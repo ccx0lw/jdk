@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,9 +23,6 @@
 package jdk.vm.ci.services;
 
 import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -33,20 +30,20 @@ import java.util.Formatter;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Properties;
 import java.util.ServiceLoader;
 import java.util.Set;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
+import jdk.internal.misc.TerminatingThreadLocal;
 import jdk.internal.misc.VM;
-import jdk.internal.reflect.Reflection;
 
 /**
  * Provides utilities needed by JVMCI clients.
  */
 public final class Services {
-
-    // This class must be compilable and executable on JDK 8 since it's used in annotation
-    // processors while building JDK 9 so use of API added in JDK 9 is made via reflection.
 
     /**
      * Guards code that should be run when building an JVMCI shared library but should be excluded
@@ -73,8 +70,12 @@ public final class Services {
     private Services() {
     }
 
-    private static volatile Map<String, String> savedProperties = VM.getSavedProperties();
-    static final boolean JVMCI_ENABLED = Boolean.parseBoolean(savedProperties.get("jdk.internal.vm.ci.enabled"));
+    /**
+     * In a native image, this field is initialized by {@link #initializeSavedProperties(byte[])}.
+     */
+    private static volatile Map<String, String> savedProperties;
+
+    static final boolean JVMCI_ENABLED = Boolean.parseBoolean(VM.getSavedProperties().get("jdk.internal.vm.ci.enabled"));
 
     /**
      * Checks that JVMCI is enabled in the VM and throws an error if it isn't.
@@ -90,9 +91,23 @@ public final class Services {
      */
     public static Map<String, String> getSavedProperties() {
         checkJVMCIEnabled();
-        SecurityManager sm = System.getSecurityManager();
-        if (sm != null) {
-            sm.checkPermission(new JVMCIPermission());
+        if (IS_IN_NATIVE_IMAGE) {
+            if (savedProperties == null) {
+                throw new InternalError("Saved properties not initialized");
+            }
+        } else {
+            if (savedProperties == null) {
+                synchronized (Services.class) {
+                    if (savedProperties == null) {
+                        @SuppressWarnings("removal")
+                        SecurityManager sm = System.getSecurityManager();
+                        if (sm != null) {
+                            sm.checkPermission(new JVMCIPermission());
+                        }
+                        savedProperties = VM.getSavedProperties();
+                    }
+                }
+            }
         }
         return savedProperties;
     }
@@ -123,29 +138,6 @@ public final class Services {
         }
     }
 
-    private static boolean jvmciEnabled = true;
-
-    /**
-     * When {@code -XX:-UseJVMCIClassLoader} is in use, JVMCI classes are loaded via the boot class
-     * loader. When {@code null} is the second argument to
-     * {@link ServiceLoader#load(Class, ClassLoader)}, service lookup will use the system class
-     * loader and thus find application classes which violates the API of {@link #load} and
-     * {@link #loadSingle}. To avoid this, a class loader that simply delegates to the boot class
-     * loader is used.
-     */
-    static class LazyBootClassPath {
-        static final ClassLoader bootClassPath = new ClassLoader(null) {
-        };
-    }
-
-    private static ClassLoader findBootClassLoaderChild(ClassLoader start) {
-        ClassLoader cl = start;
-        while (cl.getParent() != null) {
-            cl = cl.getParent();
-        }
-        return cl;
-    }
-
     private static final Map<Class<?>, List<?>> servicesCache = IS_BUILDING_NATIVE_IMAGE ? new HashMap<>() : null;
 
     @SuppressWarnings("unchecked")
@@ -160,33 +152,7 @@ public final class Services {
             }
         }
 
-        Iterable<S> providers = Collections.emptyList();
-        if (jvmciEnabled) {
-            ClassLoader cl = null;
-            try {
-                cl = getJVMCIClassLoader();
-                if (cl == null) {
-                    cl = LazyBootClassPath.bootClassPath;
-                    // JVMCI classes are loaded via the boot class loader.
-                    // If we use null as the second argument to ServiceLoader.load,
-                    // service loading will use the system class loader
-                    // and find classes on the application class path. Since we
-                    // don't want this, we use a loader that is as close to the
-                    // boot class loader as possible (since it is impossible
-                    // to force service loading to use only the boot class loader).
-                    cl = findBootClassLoaderChild(ClassLoader.getSystemClassLoader());
-                }
-                providers = ServiceLoader.load(service, cl);
-            } catch (UnsatisfiedLinkError e) {
-                jvmciEnabled = false;
-            } catch (InternalError e) {
-                if (e.getMessage().equals("JVMCI is not enabled")) {
-                    jvmciEnabled = false;
-                } else {
-                    throw e;
-                }
-            }
-        }
+        Iterable<S> providers = ServiceLoader.load(service, ClassLoader.getSystemClassLoader());
         if (IS_BUILDING_NATIVE_IMAGE) {
             synchronized (servicesCache) {
                 ArrayList<S> providersList = new ArrayList<>();
@@ -223,6 +189,7 @@ public final class Services {
      *             {@link RuntimePermission}("jvmci")</tt>
      */
     public static <S> Iterable<S> load(Class<S> service) {
+        @SuppressWarnings("removal")
         SecurityManager sm = System.getSecurityManager();
         if (sm != null) {
             sm.checkPermission(new JVMCIPermission());
@@ -240,6 +207,7 @@ public final class Services {
      *             {@link RuntimePermission}("jvmci")</tt>
      */
     public static <S> S loadSingle(Class<S> service, boolean required) {
+        @SuppressWarnings("removal")
         SecurityManager sm = System.getSecurityManager();
         if (sm != null) {
             sm.checkPermission(new JVMCIPermission());
@@ -265,127 +233,50 @@ public final class Services {
         return singleProvider;
     }
 
-    static {
-        Reflection.registerMethodsToFilter(Services.class, Set.of("getJVMCIClassLoader"));
-    }
-
     /**
-     * Gets the JVMCI class loader.
+     * Creates a thread-local variable that notifies {@code onThreadTermination} when a thread
+     * terminates and it has been initialized in the terminating thread (even if it was initialized
+     * with a null value). A typical use is to release resources associated with a thread.
      *
-     * @throws InternalError with the {@linkplain Throwable#getMessage() message}
-     *             {@code "JVMCI is not enabled"} iff JVMCI is not enabled
+     * @param initialValue a supplier to be used to determine the initial value
+     * @param onThreadTermination a consumer invoked by a thread when terminating and the
+     *            thread-local has an associated value for the terminating thread. The current
+     *            thread's value of the thread-local variable is passed as a parameter to the
+     *            consumer.
      */
-    private static ClassLoader getJVMCIClassLoader() {
-        if (IS_IN_NATIVE_IMAGE) {
-            return null;
-        }
-        return ClassLoader.getSystemClassLoader();
+    public static <T> ThreadLocal<T> createTerminatingThreadLocal(Supplier<T> initialValue, Consumer<T> onThreadTermination) {
+        Objects.requireNonNull(initialValue, "initialValue must be non null.");
+        Objects.requireNonNull(onThreadTermination, "onThreadTermination must be non null.");
+        return new TerminatingThreadLocal<>() {
+
+            @Override
+            protected T initialValue() {
+                return initialValue.get();
+            }
+
+            @Override
+            protected void threadTerminated(T value) {
+                onThreadTermination.accept(value);
+            }
+        };
     }
 
     /**
-     * A Java {@code char} has a maximal UTF8 length of 3.
-     */
-    private static final int MAX_UNICODE_IN_UTF8_LENGTH = 3;
-
-    /**
-     * {@link DataOutputStream#writeUTF(String)} only supports values whose UTF8 encoding length is
-     * less than 65535.
-     */
-    private static final int MAX_UTF8_PROPERTY_STRING_LENGTH = 65535 / MAX_UNICODE_IN_UTF8_LENGTH;
-
-    /**
-     * Serializes the {@linkplain #getSavedProperties() saved system properties} to a byte array for
-     * the purpose of {@linkplain #initializeSavedProperties(byte[]) initializing} the initial
-     * properties in the JVMCI shared library.
-     */
-    @VMEntryPoint
-    private static byte[] serializeSavedProperties() throws IOException {
-        if (IS_IN_NATIVE_IMAGE) {
-            throw new InternalError("Can only serialize saved properties in HotSpot runtime");
-        }
-        return serializeProperties(Services.getSavedProperties());
-    }
-
-    private static byte[] serializeProperties(Map<String, String> props) throws IOException {
-        // Compute size of output on the assumption that
-        // all system properties have ASCII names and values
-        int estimate = 4 + 4;
-        int nonUtf8Props = 0;
-        for (Map.Entry<String, String> e : props.entrySet()) {
-            String name = e.getKey();
-            String value = e.getValue();
-            estimate += (2 + (name.length())) + (2 + (value.length()));
-            if (name.length() > MAX_UTF8_PROPERTY_STRING_LENGTH || value.length() > MAX_UTF8_PROPERTY_STRING_LENGTH) {
-                nonUtf8Props++;
-            }
-        }
-
-        ByteArrayOutputStream baos = new ByteArrayOutputStream(estimate);
-        DataOutputStream out = new DataOutputStream(baos);
-        out.writeInt(props.size() - nonUtf8Props);
-        out.writeInt(nonUtf8Props);
-        for (Map.Entry<String, String> e : props.entrySet()) {
-            String name = e.getKey();
-            String value = e.getValue();
-            if (name.length() <= MAX_UTF8_PROPERTY_STRING_LENGTH && value.length() <= MAX_UTF8_PROPERTY_STRING_LENGTH) {
-                out.writeUTF(name);
-                out.writeUTF(value);
-            }
-        }
-        if (nonUtf8Props != 0) {
-            for (Map.Entry<String, String> e : props.entrySet()) {
-                String name = e.getKey();
-                String value = e.getValue();
-                if (name.length() > MAX_UTF8_PROPERTY_STRING_LENGTH || value.length() > MAX_UTF8_PROPERTY_STRING_LENGTH) {
-                    byte[] utf8Name = name.getBytes("UTF-8");
-                    byte[] utf8Value = value.getBytes("UTF-8");
-                    out.writeInt(utf8Name.length);
-                    out.write(utf8Name);
-                    out.writeInt(utf8Value.length);
-                    out.write(utf8Value);
-                }
-            }
-        }
-        return baos.toByteArray();
-    }
-
-    /**
-     * Initialized the {@linkplain #getSavedProperties() saved system properties} in the JVMCI
-     * shared library from the {@linkplain #serializeSavedProperties() serialized saved properties}
-     * in the HotSpot runtime.
+     * Initializes {@link #savedProperties} from the byte array returned by
+     * {@code jdk.internal.vm.VMSupport.serializeSavedPropertiesToByteArray()}.
      */
     @VMEntryPoint
     private static void initializeSavedProperties(byte[] serializedProperties) throws IOException {
         if (!IS_IN_NATIVE_IMAGE) {
             throw new InternalError("Can only initialize saved properties in JVMCI shared library runtime");
         }
-        savedProperties = Collections.unmodifiableMap(deserializeProperties(serializedProperties));
-    }
-
-    private static Map<String, String> deserializeProperties(byte[] serializedProperties) throws IOException {
-        DataInputStream in = new DataInputStream(new ByteArrayInputStream(serializedProperties));
-        int utf8Props = in.readInt();
-        int nonUtf8Props = in.readInt();
-        Map<String, String> props = new HashMap<>(utf8Props + nonUtf8Props);
-        int index = 0;
-        while (in.available() != 0) {
-            if (index < utf8Props) {
-                String name = in.readUTF();
-                String value = in.readUTF();
-                props.put(name, value);
-            } else {
-                int nameLen = in.readInt();
-                byte[] nameBytes = new byte[nameLen];
-                in.read(nameBytes);
-                int valueLen = in.readInt();
-                byte[] valueBytes = new byte[valueLen];
-                in.read(valueBytes);
-                String name = new String(nameBytes, "UTF-8");
-                String value = new String(valueBytes, "UTF-8");
-                props.put(name, value);
-            }
-            index++;
+        Properties props = new Properties();
+        props.load(new ByteArrayInputStream(serializedProperties));
+        Map<String, String> map = new HashMap<>(props.size());
+        for (var e : props.entrySet()) {
+            map.put((String) e.getKey(), (String) e.getValue());
         }
-        return props;
+
+        savedProperties = Collections.unmodifiableMap(map);
     }
 }

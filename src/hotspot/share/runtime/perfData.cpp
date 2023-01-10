@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,8 +23,8 @@
  */
 
 #include "precompiled.hpp"
-#include "jvm.h"
 #include "classfile/vmSymbols.hpp"
+#include "jvm.h"
 #include "logging/log.hpp"
 #include "memory/allocation.inline.hpp"
 #include "oops/oop.inline.hpp"
@@ -84,7 +84,8 @@ PerfData::PerfData(CounterNS ns, const char* name, Units u, Variability v)
 
   const char* prefix = PerfDataManager::ns_to_string(ns);
 
-  _name = NEW_C_HEAP_ARRAY(char, strlen(name) + strlen(prefix) + 2, mtInternal);
+  const size_t _name_size = strlen(name) + strlen(prefix) + 2;
+  _name = NEW_C_HEAP_ARRAY(char, _name_size, mtInternal);
   assert(strlen(name) != 0, "invalid name");
 
   if (ns == NULL_NS) {
@@ -100,7 +101,7 @@ PerfData::PerfData(CounterNS ns, const char* name, Units u, Variability v)
      }
   }
   else {
-    sprintf(_name, "%s.%s", prefix, name);
+    os::snprintf_checked(_name, _name_size, "%s.%s", prefix, name);
     // set the F_Supported flag based on the given namespace.
     if (PerfDataManager::is_stable_supported(ns) ||
         PerfDataManager::is_unstable_supported(ns)) {
@@ -190,10 +191,6 @@ PerfLong::PerfLong(CounterNS ns, const char* namep, Units u, Variability v)
   create_entry(T_LONG, sizeof(jlong));
 }
 
-int PerfLong::format(char* buffer, int length) {
-  return jio_snprintf(buffer, length, JLONG_FORMAT, *(jlong*)_valuep);
-}
-
 PerfLongVariant::PerfLongVariant(CounterNS ns, const char* namep, Units u,
                                  Variability v, jlong* sampled)
                                 : PerfLong(ns, namep, u, v),
@@ -231,10 +228,6 @@ void PerfString::set_string(const char* s2) {
 
   // assure the string is null terminated when strlen(s2) >= _length
   ((char*)_valuep)[_length-1] = '\0';
-}
-
-int PerfString::format(char* buffer, int length) {
-  return jio_snprintf(buffer, length, "%s", (char*)_valuep);
 }
 
 PerfStringConstant::PerfStringConstant(CounterNS ns, const char* namep,
@@ -276,6 +269,10 @@ void PerfDataManager::destroy() {
   _has_PerfData = false;
   os::naked_short_sleep(1);  // 1ms sleep to let other thread(s) run
 
+  log_debug(perf, datacreation)("Total = %d, Sampled = %d, Constants = %d",
+                                _all->length(), _sampled == NULL ? 0 : _sampled->length(),
+                                _constants == NULL ? 0 : _constants->length());
+
   for (int index = 0; index < _all->length(); index++) {
     PerfData* p = _all->at(index);
     delete p;
@@ -294,8 +291,9 @@ void PerfDataManager::add_item(PerfData* p, bool sampled) {
 
   MutexLocker ml(PerfDataManager_lock);
 
+  // Default sizes determined using -Xlog:perf+datacreation=debug
   if (_all == NULL) {
-    _all = new PerfDataList(100);
+    _all = new PerfDataList(191);
     _has_PerfData = true;
   }
 
@@ -306,7 +304,7 @@ void PerfDataManager::add_item(PerfData* p, bool sampled) {
 
   if (p->variability() == PerfData::V_Constant) {
     if (_constants == NULL) {
-      _constants = new PerfDataList(25);
+      _constants = new PerfDataList(51);
     }
     _constants->append(p);
     return;
@@ -314,30 +312,10 @@ void PerfDataManager::add_item(PerfData* p, bool sampled) {
 
   if (sampled) {
     if (_sampled == NULL) {
-      _sampled = new PerfDataList(25);
+      _sampled = new PerfDataList(1);
     }
     _sampled->append(p);
   }
-}
-
-PerfData* PerfDataManager::find_by_name(const char* name) {
-  // if add_item hasn't been called the list won't be initialized
-  if (_all != NULL) {
-    return _all->find_by_name(name);
-  } else {
-    return NULL;
-  }
-}
-
-PerfDataList* PerfDataManager::all() {
-
-  MutexLocker ml(PerfDataManager_lock);
-
-  if (_all == NULL)
-    return NULL;
-
-  PerfDataList* clone = _all->clone();
-  return clone;
 }
 
 PerfDataList* PerfDataManager::sampled() {
@@ -351,24 +329,13 @@ PerfDataList* PerfDataManager::sampled() {
   return clone;
 }
 
-PerfDataList* PerfDataManager::constants() {
-
-  MutexLocker ml(PerfDataManager_lock);
-
-  if (_constants == NULL)
-    return NULL;
-
-  PerfDataList* clone = _constants->clone();
-  return clone;
-}
-
 char* PerfDataManager::counter_name(const char* ns, const char* name) {
    assert(ns != NULL, "ns string required");
    assert(name != NULL, "name string required");
 
    size_t len = strlen(ns) + strlen(name) + 2;
    char* result = NEW_RESOURCE_ARRAY(char, len);
-   sprintf(result, "%s.%s", ns, name);
+   os::snprintf_checked(result, len, "%s.%s", ns, name);
    return result;
 }
 
@@ -465,27 +432,6 @@ PerfLongVariable* PerfDataManager::create_long_variable(CounterNS ns,
 PerfLongVariable* PerfDataManager::create_long_variable(CounterNS ns,
                                                         const char* name,
                                                         PerfData::Units u,
-                                                        jlong* sp, TRAPS) {
-
-  // Sampled counters not supported if UsePerfData is false
-  if (!UsePerfData) return NULL;
-
-  PerfLongVariable* p = new PerfLongVariable(ns, name, u, sp);
-
-  if (!p->is_valid()) {
-    // allocation of native resources failed.
-    delete p;
-    THROW_0(vmSymbols::java_lang_OutOfMemoryError());
-  }
-
-  add_item(p, true);
-
-  return p;
-}
-
-PerfLongVariable* PerfDataManager::create_long_variable(CounterNS ns,
-                                                        const char* name,
-                                                        PerfData::Units u,
                                                         PerfSampleHelper* sh,
                                                         TRAPS) {
 
@@ -526,27 +472,6 @@ PerfLongCounter* PerfDataManager::create_long_counter(CounterNS ns,
 PerfLongCounter* PerfDataManager::create_long_counter(CounterNS ns,
                                                       const char* name,
                                                       PerfData::Units u,
-                                                      jlong* sp, TRAPS) {
-
-  // Sampled counters not supported if UsePerfData is false
-  if (!UsePerfData) return NULL;
-
-  PerfLongCounter* p = new PerfLongCounter(ns, name, u, sp);
-
-  if (!p->is_valid()) {
-    // allocation of native resources failed.
-    delete p;
-    THROW_0(vmSymbols::java_lang_OutOfMemoryError());
-  }
-
-  add_item(p, true);
-
-  return p;
-}
-
-PerfLongCounter* PerfDataManager::create_long_counter(CounterNS ns,
-                                                      const char* name,
-                                                      PerfData::Units u,
                                                       PerfSampleHelper* sh,
                                                       TRAPS) {
 
@@ -568,12 +493,12 @@ PerfLongCounter* PerfDataManager::create_long_counter(CounterNS ns,
 
 PerfDataList::PerfDataList(int length) {
 
-  _set = new(ResourceObj::C_HEAP, mtInternal) PerfDataArray(length, true);
+  _set = new (mtInternal) PerfDataArray(length, mtInternal);
 }
 
 PerfDataList::PerfDataList(PerfDataList* p) {
 
-  _set = new(ResourceObj::C_HEAP, mtInternal) PerfDataArray(p->length(), true);
+  _set = new (mtInternal) PerfDataArray(p->length(), mtInternal);
 
   _set->appendAll(p->get_impl());
 }
@@ -612,8 +537,7 @@ PerfDataList* PerfDataList::clone() {
 }
 
 PerfTraceTime::~PerfTraceTime() {
-  if (!UsePerfData || (_recursion_counter != NULL &&
-      --(*_recursion_counter) > 0)) return;
+  if (!UsePerfData) return;
   _t.stop();
   _timerp->inc(_t.ticks());
 }

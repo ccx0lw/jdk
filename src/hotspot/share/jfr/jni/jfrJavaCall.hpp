@@ -25,9 +25,10 @@
 #ifndef SHARE_JFR_JNI_JFRJAVACALL_HPP
 #define SHARE_JFR_JNI_JFRJAVACALL_HPP
 
-#include "jni.h"
 #include "jfr/utilities/jfrAllocation.hpp"
+#include "jni.h"
 #include "utilities/exceptions.hpp"
+#include "utilities/globalDefinitions.hpp"
 
 class JavaCallArguments;
 class JavaThread;
@@ -86,8 +87,7 @@ class JfrJavaArguments : public StackObj {
     int _java_stack_slots;
 
     Parameters();
-    Parameters(const Parameters&); // no impl
-    Parameters& operator=(const Parameters&); // no impl
+    NONCOPYABLE(Parameters);
 
     void push(const JavaValue& value);
     void push_large(const JavaValue& value);

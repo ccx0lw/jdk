@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,11 +25,14 @@
 #ifndef SHARE_GC_SHARED_THREADLOCALALLOCBUFFER_INLINE_HPP
 #define SHARE_GC_SHARED_THREADLOCALALLOCBUFFER_INLINE_HPP
 
-#include "gc/shared/collectedHeap.hpp"
 #include "gc/shared/threadLocalAllocBuffer.hpp"
+
+#include "gc/shared/collectedHeap.hpp"
+#include "gc/shared/tlab_globals.hpp"
 #include "memory/universe.hpp"
 #include "logging/log.hpp"
-#include "runtime/thread.hpp"
+#include "runtime/javaThread.hpp"
+#include "runtime/osThread.hpp"
 #include "utilities/copy.hpp"
 
 inline HeapWord* ThreadLocalAllocBuffer::allocate(size_t size) {
@@ -88,7 +91,7 @@ void ThreadLocalAllocBuffer::record_slow_allocation(size_t obj_size) {
 
   _slow_allocations++;
 
-  log_develop_trace(gc, tlab)("TLAB: %s thread: " INTPTR_FORMAT " [id: %2d]"
+  log_develop_trace(gc, tlab)("TLAB: %s thread: " PTR_FORMAT " [id: %2d]"
                               " obj: " SIZE_FORMAT
                               " free: " SIZE_FORMAT
                               " waste: " SIZE_FORMAT,

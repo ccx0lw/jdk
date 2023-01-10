@@ -54,6 +54,8 @@ LIR_Opr FrameMap::map_to_opr(BasicType type, VMRegPair* reg, bool) {
       opr = as_oop_opr(reg);
     } else if (type == T_METADATA) {
       opr = as_metadata_opr(reg);
+    } else if (type == T_ADDRESS) {
+      opr = as_address_opr(reg);
     } else {
       opr = as_opr(reg);
     }
@@ -140,11 +142,11 @@ LIR_Opr FrameMap::r13_metadata_opr;
 LIR_Opr FrameMap::r14_metadata_opr;
 #endif // _LP64
 
-LIR_Opr FrameMap::_caller_save_cpu_regs[] = { 0, };
-LIR_Opr FrameMap::_caller_save_fpu_regs[] = { 0, };
-LIR_Opr FrameMap::_caller_save_xmm_regs[] = { 0, };
+LIR_Opr FrameMap::_caller_save_cpu_regs[] = {};
+LIR_Opr FrameMap::_caller_save_fpu_regs[] = {};
+LIR_Opr FrameMap::_caller_save_xmm_regs[] = {};
 
-XMMRegister FrameMap::_xmm_regs [] = { 0, };
+XMMRegister FrameMap::_xmm_regs[] = {};
 
 XMMRegister FrameMap::nr2xmmreg(int rnr) {
   assert(_init_done, "tables not initialized");
@@ -297,7 +299,7 @@ void FrameMap::initialize() {
 
   VMRegPair regs;
   BasicType sig_bt = T_OBJECT;
-  SharedRuntime::java_calling_convention(&sig_bt, &regs, 1, true);
+  SharedRuntime::java_calling_convention(&sig_bt, &regs, 1);
   receiver_opr = as_oop_opr(regs.first()->as_Register());
 
 }

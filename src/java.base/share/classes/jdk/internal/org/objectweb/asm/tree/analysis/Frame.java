@@ -56,6 +56,7 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 package jdk.internal.org.objectweb.asm.tree.analysis;
 
 import java.util.ArrayList;
@@ -80,6 +81,9 @@ import jdk.internal.org.objectweb.asm.tree.VarInsnNode;
  */
 public class Frame<V extends Value> {
 
+    /** The maximum size of the operand stack of any method. */
+    private static final int MAX_STACK_SIZE = 65536;
+
     /**
       * The expected return type of the analyzed method, or {@literal null} if the method returns void.
       */
@@ -88,26 +92,43 @@ public class Frame<V extends Value> {
     /**
       * The local variables and the operand stack of this frame. The first {@link #numLocals} elements
       * correspond to the local variables. The following {@link #numStack} elements correspond to the
-      * operand stack.
+      * operand stack. Long and double values are represented with two elements in the local variables
+      * section, and with one element in the operand stack section.
       */
     private V[] values;
 
-    /** The number of local variables of this frame. */
+    /**
+      * The number of local variables of this frame. Long and double values are represented with two
+      * elements.
+      */
     private int numLocals;
 
-    /** The number of elements in the operand stack. */
+    /**
+      * The number of elements in the operand stack. Long and double values are represented with a
+      * single element.
+      */
     private int numStack;
+
+    /**
+      * The maximum number of elements in the operand stack. Long and double values are represented
+      * with a single element.
+      */
+    private int maxStack;
 
     /**
       * Constructs a new frame with the given size.
       *
-      * @param numLocals the maximum number of local variables of the frame.
-      * @param numStack the maximum stack size of the frame.
+      * @param numLocals the number of local variables of the frame. Long and double values are
+      *     represented with two elements.
+      * @param maxStack the maximum number of elements in the operand stack, or -1 if there is no
+      *     maximum value. Long and double values are represented with a single element.
       */
     @SuppressWarnings("unchecked")
-    public Frame(final int numLocals, final int numStack) {
-        this.values = (V[]) new Value[numLocals + numStack];
+    public Frame(final int numLocals, final int maxStack) {
+        this.values = (V[]) new Value[numLocals + (maxStack >= 0 ? maxStack : 4)];
         this.numLocals = numLocals;
+        this.numStack = 0;
+        this.maxStack = maxStack >= 0 ? maxStack : MAX_STACK_SIZE;
     }
 
     /**
@@ -128,8 +149,14 @@ public class Frame<V extends Value> {
       */
     public Frame<V> init(final Frame<? extends V> frame) {
         returnValue = frame.returnValue;
-        System.arraycopy(frame.values, 0, values, 0, values.length);
+        if (values.length < frame.values.length) {
+            values = frame.values.clone();
+        } else {
+            System.arraycopy(frame.values, 0, values, 0, frame.values.length);
+        }
+        numLocals = frame.numLocals;
         numStack = frame.numStack;
+        maxStack = frame.maxStack;
         return this;
     }
 
@@ -151,7 +178,9 @@ public class Frame<V extends Value> {
       *     this frame corresponds to the successor of the jump instruction (i.e. the next instruction
       *     in the instructions sequence).
       */
-    public void initJumpTarget(final int opcode, final LabelNode target) {}
+    public void initJumpTarget(final int opcode, final LabelNode target) {
+        // Does nothing by default.
+    }
 
     /**
       * Sets the expected return type of the analyzed method.
@@ -164,7 +193,8 @@ public class Frame<V extends Value> {
     }
 
     /**
-      * Returns the maximum number of local variables of this frame.
+      * Returns the maximum number of local variables of this frame. Long and double values are
+      * represented with two variables.
       *
       * @return the maximum number of local variables of this frame.
       */
@@ -173,16 +203,18 @@ public class Frame<V extends Value> {
     }
 
     /**
-      * Returns the maximum stack size of this frame.
+      * Returns the maximum number of elements in the operand stack of this frame. Long and double
+      * values are represented with a single element.
       *
-      * @return the maximum stack size of this frame.
+      * @return the maximum number of elements in the operand stack of this frame.
       */
     public int getMaxStackSize() {
-        return values.length - numLocals;
+        return maxStack;
     }
 
     /**
-      * Returns the value of the given local variable.
+      * Returns the value of the given local variable. Long and double values are represented with two
+      * variables.
       *
       * @param index a local variable index.
       * @return the value of the given local variable.
@@ -190,13 +222,14 @@ public class Frame<V extends Value> {
       */
     public V getLocal(final int index) {
         if (index >= numLocals) {
-            throw new IndexOutOfBoundsException("Trying to access an inexistant local variable");
+            throw new IndexOutOfBoundsException("Trying to get an inexistant local variable " + index);
         }
         return values[index];
     }
 
     /**
-      * Sets the value of the given local variable.
+      * Sets the value of the given local variable. Long and double values are represented with two
+      * variables.
       *
       * @param index a local variable index.
       * @param value the new value of this local variable.
@@ -204,16 +237,16 @@ public class Frame<V extends Value> {
       */
     public void setLocal(final int index, final V value) {
         if (index >= numLocals) {
-            throw new IndexOutOfBoundsException("Trying to access an inexistant local variable " + index);
+            throw new IndexOutOfBoundsException("Trying to set an inexistant local variable " + index);
         }
         values[index] = value;
     }
 
     /**
-      * Returns the number of values in the operand stack of this frame. Long and double values are
-      * treated as single values.
+      * Returns the number of elements in the operand stack of this frame. Long and double values are
+      * represented with a single element.
       *
-      * @return the number of values in the operand stack of this frame.
+      * @return the number of elements in the operand stack of this frame.
       */
     public int getStackSize() {
         return numStack;
@@ -237,7 +270,7 @@ public class Frame<V extends Value> {
       * @param value the new value of the stack slot.
       * @throws IndexOutOfBoundsException if the stack slot does not exist.
       */
-    public void setStack(final int index, final V value) throws IndexOutOfBoundsException {
+    public void setStack(final int index, final V value) {
         values[numLocals + index] = value;
     }
 
@@ -265,9 +298,15 @@ public class Frame<V extends Value> {
       * @param value the value that must be pushed into the stack.
       * @throws IndexOutOfBoundsException if the operand stack is full.
       */
+    @SuppressWarnings("unchecked")
     public void push(final V value) {
         if (numLocals + numStack >= values.length) {
-            throw new IndexOutOfBoundsException("Insufficient maximum stack size.");
+            if (numLocals + numStack >= maxStack) {
+                throw new IndexOutOfBoundsException("Insufficient maximum stack size.");
+            }
+            V[] oldValues = values;
+            values = (V[]) new Value[2 * values.length];
+            System.arraycopy(oldValues, 0, values, 0, oldValues.length);
         }
         values[numLocals + (numStack++)] = value;
     }
@@ -286,7 +325,7 @@ public class Frame<V extends Value> {
         V value2;
         V value3;
         V value4;
-        int var;
+        int varIndex;
 
         switch (insn.getOpcode()) {
             case Opcodes.NOP:
@@ -324,15 +363,15 @@ public class Frame<V extends Value> {
             case Opcodes.DSTORE:
             case Opcodes.ASTORE:
                 value1 = interpreter.copyOperation(insn, pop());
-                var = ((VarInsnNode) insn).var;
-                setLocal(var, value1);
+                varIndex = ((VarInsnNode) insn).var;
+                setLocal(varIndex, value1);
                 if (value1.getSize() == 2) {
-                    setLocal(var + 1, interpreter.newEmptyValue(var + 1));
+                    setLocal(varIndex + 1, interpreter.newEmptyValue(varIndex + 1));
                 }
-                if (var > 0) {
-                    Value local = getLocal(var - 1);
+                if (varIndex > 0) {
+                    Value local = getLocal(varIndex - 1);
                     if (local != null && local.getSize() == 2) {
-                        setLocal(var - 1, interpreter.newEmptyValue(var - 1));
+                        setLocal(varIndex - 1, interpreter.newEmptyValue(varIndex - 1));
                     }
                 }
                 break;
@@ -379,23 +418,8 @@ public class Frame<V extends Value> {
                 break;
             case Opcodes.DUP_X2:
                 value1 = pop();
-                if (value1.getSize() == 1) {
-                    value2 = pop();
-                    if (value2.getSize() == 1) {
-                        value3 = pop();
-                        if (value3.getSize() == 1) {
-                            push(interpreter.copyOperation(insn, value1));
-                            push(value3);
-                            push(value2);
-                            push(value1);
-                            break;
-                        }
-                    } else {
-                        push(interpreter.copyOperation(insn, value1));
-                        push(value2);
-                        push(value1);
-                        break;
-                    }
+                if (value1.getSize() == 1 && executeDupX2(insn, value1, interpreter)) {
+                    break;
                 }
                 throw new AnalyzerException(insn, "Illegal use of DUP_X2");
             case Opcodes.DUP2:
@@ -466,23 +490,8 @@ public class Frame<V extends Value> {
                             break;
                         }
                     }
-                } else {
-                    value2 = pop();
-                    if (value2.getSize() == 1) {
-                        value3 = pop();
-                        if (value3.getSize() == 1) {
-                            push(interpreter.copyOperation(insn, value1));
-                            push(value3);
-                            push(value2);
-                            push(value1);
-                            break;
-                        }
-                    } else {
-                        push(interpreter.copyOperation(insn, value1));
-                        push(value2);
-                        push(value1);
-                        break;
-                    }
+                } else if (executeDupX2(insn, value1, interpreter)) {
+                    break;
                 }
                 throw new AnalyzerException(insn, "Illegal use of DUP2_X2");
             case Opcodes.SWAP:
@@ -550,8 +559,8 @@ public class Frame<V extends Value> {
                 push(interpreter.unaryOperation(insn, pop()));
                 break;
             case Opcodes.IINC:
-                var = ((IincInsnNode) insn).var;
-                setLocal(var, interpreter.unaryOperation(insn, getLocal(var)));
+                varIndex = ((IincInsnNode) insn).var;
+                setLocal(varIndex, interpreter.unaryOperation(insn, getLocal(varIndex)));
                 break;
             case Opcodes.I2L:
             case Opcodes.I2F:
@@ -629,36 +638,11 @@ public class Frame<V extends Value> {
             case Opcodes.INVOKESPECIAL:
             case Opcodes.INVOKESTATIC:
             case Opcodes.INVOKEINTERFACE:
-                {
-                    List<V> valueList = new ArrayList<V>();
-                    String methodDescriptor = ((MethodInsnNode) insn).desc;
-                    for (int i = Type.getArgumentTypes(methodDescriptor).length; i > 0; --i) {
-                        valueList.add(0, pop());
-                    }
-                    if (insn.getOpcode() != Opcodes.INVOKESTATIC) {
-                        valueList.add(0, pop());
-                    }
-                    if (Type.getReturnType(methodDescriptor) == Type.VOID_TYPE) {
-                        interpreter.naryOperation(insn, valueList);
-                    } else {
-                        push(interpreter.naryOperation(insn, valueList));
-                    }
-                    break;
-                }
+                executeInvokeInsn(insn, ((MethodInsnNode) insn).desc, interpreter);
+                break;
             case Opcodes.INVOKEDYNAMIC:
-                {
-                    List<V> valueList = new ArrayList<V>();
-                    String methodDesccriptor = ((InvokeDynamicInsnNode) insn).desc;
-                    for (int i = Type.getArgumentTypes(methodDesccriptor).length; i > 0; --i) {
-                        valueList.add(0, pop());
-                    }
-                    if (Type.getReturnType(methodDesccriptor) == Type.VOID_TYPE) {
-                        interpreter.naryOperation(insn, valueList);
-                    } else {
-                        push(interpreter.naryOperation(insn, valueList));
-                    }
-                    break;
-                }
+                executeInvokeInsn(insn, ((InvokeDynamicInsnNode) insn).desc, interpreter);
+                break;
             case Opcodes.NEW:
                 push(interpreter.newOperation(insn));
                 break;
@@ -679,7 +663,7 @@ public class Frame<V extends Value> {
                 interpreter.unaryOperation(insn, pop());
                 break;
             case Opcodes.MULTIANEWARRAY:
-                List<V> valueList = new ArrayList<V>();
+                List<V> valueList = new ArrayList<>();
                 for (int i = ((MultiANewArrayInsnNode) insn).dims; i > 0; --i) {
                     valueList.add(0, pop());
                 }
@@ -691,6 +675,45 @@ public class Frame<V extends Value> {
                 break;
             default:
                 throw new AnalyzerException(insn, "Illegal opcode " + insn.getOpcode());
+        }
+    }
+
+    private boolean executeDupX2(
+            final AbstractInsnNode insn, final V value1, final Interpreter<V> interpreter)
+            throws AnalyzerException {
+        V value2 = pop();
+        if (value2.getSize() == 1) {
+            V value3 = pop();
+            if (value3.getSize() == 1) {
+                push(interpreter.copyOperation(insn, value1));
+                push(value3);
+                push(value2);
+                push(value1);
+                return true;
+            }
+        } else {
+            push(interpreter.copyOperation(insn, value1));
+            push(value2);
+            push(value1);
+            return true;
+        }
+        return false;
+    }
+
+    private void executeInvokeInsn(
+            final AbstractInsnNode insn, final String methodDescriptor, final Interpreter<V> interpreter)
+            throws AnalyzerException {
+        ArrayList<V> valueList = new ArrayList<>();
+        for (int i = Type.getArgumentTypes(methodDescriptor).length; i > 0; --i) {
+            valueList.add(0, pop());
+        }
+        if (insn.getOpcode() != Opcodes.INVOKESTATIC && insn.getOpcode() != Opcodes.INVOKEDYNAMIC) {
+            valueList.add(0, pop());
+        }
+        if (Type.getReturnType(methodDescriptor) == Type.VOID_TYPE) {
+            interpreter.naryOperation(insn, valueList);
+        } else {
+            push(interpreter.naryOperation(insn, valueList));
         }
     }
 
@@ -759,3 +782,4 @@ public class Frame<V extends Value> {
         return stringBuilder.toString();
     }
 }
+

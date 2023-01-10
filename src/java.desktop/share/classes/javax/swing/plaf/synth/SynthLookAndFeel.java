@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2002, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,24 +22,51 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
 package javax.swing.plaf.synth;
 
-import java.awt.*;
-import java.beans.*;
-import java.io.*;
-import java.lang.ref.*;
-import java.net.*;
-import java.security.*;
-import java.text.*;
-import java.util.*;
-import javax.swing.*;
-import javax.swing.plaf.*;
-import javax.swing.plaf.basic.*;
+import java.awt.Color;
+import java.awt.Component;
+import java.awt.Container;
+import java.awt.Dimension;
+import java.awt.Frame;
+import java.awt.Graphics;
+import java.awt.Insets;
+import java.awt.KeyboardFocusManager;
+import java.awt.Rectangle;
+import java.awt.Toolkit;
+import java.awt.Window;
+import java.beans.PropertyChangeEvent;
+import java.beans.PropertyChangeListener;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.NotSerializableException;
+import java.io.Serial;
+import java.io.Serializable;
+import java.lang.ref.ReferenceQueue;
+import java.lang.ref.WeakReference;
+import java.net.URL;
+import java.text.ParseException;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
 
-import sun.awt.*;
-import sun.security.action.*;
-import sun.swing.*;
-import sun.swing.plaf.synth.*;
+import javax.swing.JComponent;
+import javax.swing.JMenu;
+import javax.swing.LookAndFeel;
+import javax.swing.SwingUtilities;
+import javax.swing.UIDefaults;
+import javax.swing.UIManager;
+import javax.swing.plaf.ComponentUI;
+import javax.swing.plaf.InsetsUIResource;
+import javax.swing.plaf.basic.BasicLookAndFeel;
+
+import sun.awt.AppContext;
+import sun.awt.SunToolkit;
+import sun.swing.DefaultLookup;
+import sun.swing.SwingAccessor;
+import sun.swing.SwingUtilities2;
+import sun.swing.plaf.synth.SynthFileChooserUI;
 
 /**
  * SynthLookAndFeel provides the basis for creating a customized look and
@@ -252,7 +279,7 @@ public class SynthLookAndFeel extends BasicLookAndFeel {
     }
 
     /**
-     * A convience method that will reset the Style of StyleContext if
+     * A convenience method that will reset the Style of StyleContext if
      * necessary.
      *
      * @return newStyle
@@ -694,6 +721,15 @@ public class SynthLookAndFeel extends BasicLookAndFeel {
                 "KP_RIGHT", "selectParent",
                   });
 
+        table.put("Menu.shortcutKeys",
+                  new int[] {
+                          SwingUtilities2.getSystemMnemonicKeyMask(),
+                          SwingUtilities2.setAltGraphMask(
+                             SwingUtilities2.getSystemMnemonicKeyMask())
+                  });
+
+        table.put("PasswordField.echoChar", '*');
+
         // enabled antialiasing depending on desktop settings
         flushUnreferenced();
         SwingUtilities2.putAATextInfo(useLAFConditions(), table);
@@ -914,6 +950,7 @@ public class SynthLookAndFeel extends BasicLookAndFeel {
         }
     }
 
+    @Serial
     private void writeObject(java.io.ObjectOutputStream out)
             throws IOException {
         throw new NotSerializableException(this.getClass().getName());
@@ -965,6 +1002,9 @@ public class SynthLookAndFeel extends BasicLookAndFeel {
                 SynthStyle style = context.getStyle();
                 int state = context.getComponentState();
 
+                if (style == null) {
+                    return;
+                }
                 // Get the current background color.
                 Color currBG = style.getColor(context, ColorType.BACKGROUND);
 

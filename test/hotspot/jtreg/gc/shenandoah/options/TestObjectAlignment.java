@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2017, 2018, Red Hat, Inc. All rights reserved.
+ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
@@ -22,9 +23,8 @@
  */
 
 /*
- * @test TestObjectAlignment
- * @key gc
- * @requires vm.gc.Shenandoah & !vm.graal.enabled
+ * @test id=default
+ * @requires vm.gc.Shenandoah
  *
  * @run main/othervm -XX:+UnlockExperimentalVMOptions -XX:+UseShenandoahGC          TestObjectAlignment
  * @run main/othervm -XX:+UnlockExperimentalVMOptions -XX:+UseShenandoahGC -Xmx16m  TestObjectAlignment
@@ -37,9 +37,9 @@
  */
 
 /*
- * @test TestObjectAlignment
- * @key gc
- * @requires vm.gc.Shenandoah & !vm.graal.enabled & (vm.bits == "64")
+ * @test id=16b
+ * @requires vm.gc.Shenandoah
+ * @requires vm.bits == "64"
  *
  * @run main/othervm -XX:+UnlockExperimentalVMOptions -XX:+UseShenandoahGC -XX:ObjectAlignmentInBytes=16          TestObjectAlignment
  * @run main/othervm -XX:+UnlockExperimentalVMOptions -XX:+UseShenandoahGC -XX:ObjectAlignmentInBytes=16 -Xmx16m  TestObjectAlignment

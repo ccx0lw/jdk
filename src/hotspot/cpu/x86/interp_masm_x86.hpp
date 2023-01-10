@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,9 +27,10 @@
 
 #include "asm/macroAssembler.hpp"
 #include "interpreter/invocationCounter.hpp"
+#include "oops/method.hpp"
 #include "runtime/frame.hpp"
 
-// This file specializes the assember with interpreter-specific macros
+// This file specializes the assembler with interpreter-specific macros
 
 typedef ByteSize (*OffsetFunction)(uint);
 
@@ -139,8 +140,17 @@ class InterpreterMacroAssembler: public MacroAssembler {
   // Expression stack
   void pop_ptr(Register r = rax);
   void pop_i(Register r = rax);
+
+  // On x86, pushing a ptr or an int is semantically identical, but we
+  // maintain a distinction for clarity and for making it easier to change
+  // semantics in the future
   void push_ptr(Register r = rax);
   void push_i(Register r = rax);
+
+  // push_i_or_ptr is provided for when explicitly allowing either a ptr or
+  // an int might have some advantage, while still documenting the fact that a
+  // ptr might be pushed to the stack.
+  void push_i_or_ptr(Register r = rax);
 
   void push_f(XMMRegister r);
   void pop_f(XMMRegister r);
@@ -166,14 +176,10 @@ class InterpreterMacroAssembler: public MacroAssembler {
   void pop(TosState state);        // transition vtos -> state
   void push(TosState state);       // transition state -> vtos
 
-  // These are dummies to prevent surprise implicit conversions to Register
-  void pop(void* v); // Add unimplemented ambiguous method
-  void push(void* v);   // Add unimplemented ambiguous method
-
   void empty_expression_stack() {
     movptr(rsp, Address(rbp, frame::interpreter_frame_monitor_block_top_offset * wordSize));
     // NULL last_sp until next java call
-    movptr(Address(rbp, frame::interpreter_frame_last_sp_offset * wordSize), (int32_t)NULL_WORD);
+    movptr(Address(rbp, frame::interpreter_frame_last_sp_offset * wordSize), NULL_WORD);
     NOT_LP64(empty_FPU_stack());
   }
 
@@ -238,10 +244,8 @@ class InterpreterMacroAssembler: public MacroAssembler {
                              bool decrement = false);
   void increment_mdp_data_at(Register mdp_in, Register reg, int constant,
                              bool decrement = false);
-  void increment_mask_and_jump(Address counter_addr,
-                               int increment, Address mask,
-                               Register scratch, bool preloaded,
-                               Condition cond, Label* where);
+  void increment_mask_and_jump(Address counter_addr, Address mask,
+                               Register scratch, Label* where);
   void set_mdp_flag_at(Register mdp_in, int flag_constant);
   void test_mdp_data_at(Register mdp_in, int offset, Register value,
                         Register test_value_out,
@@ -269,7 +273,6 @@ class InterpreterMacroAssembler: public MacroAssembler {
   void profile_virtual_call(Register receiver, Register mdp,
                             Register scratch2,
                             bool receiver_can_be_null = false);
-  void profile_called_method(Register method, Register mdp, Register reg2) NOT_JVMCI_RETURN;
   void profile_ret(Register return_bci, Register mdp);
   void profile_null_seen(Register mdp);
   void profile_typecheck(Register mdp, Register klass, Register scratch);
@@ -280,7 +283,8 @@ class InterpreterMacroAssembler: public MacroAssembler {
 
   // Debugging
   // only if +VerifyOops && state == atos
-  void verify_oop(Register reg, TosState state = atos);
+#define interp_verify_oop(reg, state) _interp_verify_oop(reg, state, __FILE__, __LINE__);
+  void _interp_verify_oop(Register reg, TosState state, const char* file, int line);
   // only if +VerifyFPU  && (state == ftos || state == dtos)
   void verify_FPU(int stack_depth, TosState state = ftos);
 

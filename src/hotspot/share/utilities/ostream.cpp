@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,12 +23,15 @@
  */
 
 #include "precompiled.hpp"
-#include "jvm.h"
+#include "cds/classListWriter.hpp"
 #include "compiler/compileLog.hpp"
+#include "jvm.h"
 #include "memory/allocation.inline.hpp"
 #include "oops/oop.inline.hpp"
 #include "runtime/arguments.hpp"
+#include "runtime/orderAccess.hpp"
 #include "runtime/os.inline.hpp"
+#include "runtime/safepoint.hpp"
 #include "runtime/vm_version.hpp"
 #include "utilities/defaultStream.hpp"
 #include "utilities/macros.hpp"
@@ -40,20 +43,16 @@
 extern "C" void jio_print(const char* s, size_t len);
 extern "C" int jio_printf(const char *fmt, ...);
 
-outputStream::outputStream(int width) {
-  _width       = width;
+outputStream::outputStream() {
   _position    = 0;
-  _newlines    = 0;
   _precount    = 0;
   _indentation = 0;
   _scratch     = NULL;
   _scratch_len = 0;
 }
 
-outputStream::outputStream(int width, bool has_time_stamps) {
-  _width       = width;
+outputStream::outputStream(bool has_time_stamps) {
   _position    = 0;
-  _newlines    = 0;
   _precount    = 0;
   _indentation = 0;
   _scratch     = NULL;
@@ -61,11 +60,12 @@ outputStream::outputStream(int width, bool has_time_stamps) {
   if (has_time_stamps)  _stamp.update();
 }
 
-void outputStream::update_position(const char* s, size_t len) {
+bool outputStream::update_position(const char* s, size_t len) {
+  bool saw_newline = false;
   for (size_t i = 0; i < len; i++) {
     char ch = s[i];
     if (ch == '\n') {
-      _newlines += 1;
+      saw_newline = true;
       _precount += _position + 1;
       _position = 0;
     } else if (ch == '\t') {
@@ -76,6 +76,7 @@ void outputStream::update_position(const char* s, size_t len) {
       _position += 1;
     }
   }
+  return saw_newline;
 }
 
 // Execute a vsprintf, using the given buffer if necessary.
@@ -278,11 +279,15 @@ void outputStream::print_julong(julong value) {
  *
  * indent is applied to each line.  Ends with a CR.
  */
-void outputStream::print_data(void* data, size_t len, bool with_ascii) {
+void outputStream::print_data(void* data, size_t len, bool with_ascii, bool rel_addr) {
   size_t limit = (len + 16) / 16 * 16;
   for (size_t i = 0; i < limit; ++i) {
     if (i % 16 == 0) {
-      indent().print(INTPTR_FORMAT_W(07) ":", i);
+      if (rel_addr) {
+        indent().print("%07" PRIxPTR ":", i);
+      } else {
+        indent().print(PTR_FORMAT ":", p2i((unsigned char*)data + i));
+      }
     }
     if (i % 2 == 0) {
       print(" ");
@@ -308,46 +313,73 @@ void outputStream::print_data(void* data, size_t len, bool with_ascii) {
   }
 }
 
-stringStream::stringStream(size_t initial_size) : outputStream() {
-  buffer_length = initial_size;
-  buffer        = NEW_C_HEAP_ARRAY(char, buffer_length, mtInternal);
-  buffer_pos    = 0;
-  buffer_fixed  = false;
+stringStream::stringStream(size_t initial_capacity) :
+  outputStream(),
+  _buffer(_small_buffer),
+  _written(0),
+  _capacity(sizeof(_small_buffer)),
+  _is_fixed(false)
+{
+  if (initial_capacity > _capacity) {
+    grow(initial_capacity);
+  }
   zero_terminate();
 }
 
 // useful for output to fixed chunks of memory, such as performance counters
-stringStream::stringStream(char* fixed_buffer, size_t fixed_buffer_size) : outputStream() {
-  buffer_length = fixed_buffer_size;
-  buffer        = fixed_buffer;
-  buffer_pos    = 0;
-  buffer_fixed  = true;
+stringStream::stringStream(char* fixed_buffer, size_t fixed_buffer_size) :
+  outputStream(),
+  _buffer(fixed_buffer),
+  _written(0),
+  _capacity(fixed_buffer_size),
+  _is_fixed(true)
+{
   zero_terminate();
 }
 
+// Grow backing buffer to desired capacity. Don't call for fixed buffers
+void stringStream::grow(size_t new_capacity) {
+  assert(!_is_fixed, "Don't call for caller provided buffers");
+  assert(new_capacity > _capacity, "Sanity");
+  assert(new_capacity > sizeof(_small_buffer), "Sanity");
+  if (_buffer == _small_buffer) {
+    _buffer = NEW_C_HEAP_ARRAY(char, new_capacity, mtInternal);
+    _capacity = new_capacity;
+    if (_written > 0) {
+      ::memcpy(_buffer, _small_buffer, _written);
+    }
+    zero_terminate();
+  } else {
+    _buffer = REALLOC_C_HEAP_ARRAY(char, _buffer, new_capacity, mtInternal);
+    _capacity = new_capacity;
+  }
+}
+
 void stringStream::write(const char* s, size_t len) {
-  size_t write_len = len;               // number of non-null bytes to write
-  size_t end = buffer_pos + len + 1;    // position after write and final '\0'
-  if (end > buffer_length) {
-    if (buffer_fixed) {
-      // if buffer cannot resize, silently truncate
-      end = buffer_length;
-      write_len = end - buffer_pos - 1; // leave room for the final '\0'
-    } else {
-      // For small overruns, double the buffer.  For larger ones,
-      // increase to the requested size.
-      if (end < buffer_length * 2) {
-        end = buffer_length * 2;
-      }
-      buffer = REALLOC_C_HEAP_ARRAY(char, buffer, end, mtInternal);
-      buffer_length = end;
+  assert(_is_frozen == false, "Modification forbidden");
+  assert(_capacity >= _written + 1, "Sanity");
+  if (len == 0) {
+    return;
+  }
+  const size_t reasonable_max_len = 1 * G;
+  if (len >= reasonable_max_len) {
+    assert(false, "bad length? (" SIZE_FORMAT ")", len);
+    return;
+  }
+  size_t write_len = 0;
+  if (_is_fixed) {
+    write_len = MIN2(len, _capacity - _written - 1);
+  } else {
+    write_len = len;
+    size_t needed = _written + len + 1;
+    if (needed > _capacity) {
+      grow(MAX2(needed, _capacity * 2));
     }
   }
-  // invariant: buffer is always null-terminated
-  guarantee(buffer_pos + write_len + 1 <= buffer_length, "stringStream oob");
+  assert(_written + write_len + 1 <= _capacity, "stringStream oob");
   if (write_len > 0) {
-    memcpy(buffer + buffer_pos, s, write_len);
-    buffer_pos += write_len;
+    ::memcpy(_buffer + _written, s, write_len);
+    _written += write_len;
     zero_terminate();
   }
 
@@ -358,32 +390,49 @@ void stringStream::write(const char* s, size_t len) {
 }
 
 void stringStream::zero_terminate() {
-  assert(buffer != NULL &&
-         buffer_pos < buffer_length, "sanity");
-  buffer[buffer_pos] = '\0';
+  assert(_buffer != NULL &&
+         _written < _capacity, "sanity");
+  _buffer[_written] = '\0';
 }
 
 void stringStream::reset() {
-  buffer_pos = 0; _precount = 0; _position = 0;
+  assert(_is_frozen == false, "Modification forbidden");
+  _written = 0; _precount = 0; _position = 0;
   zero_terminate();
 }
 
-char* stringStream::as_string() const {
-  char* copy = NEW_RESOURCE_ARRAY(char, buffer_pos + 1);
-  strncpy(copy, buffer, buffer_pos);
-  copy[buffer_pos] = 0;  // terminating null
+char* stringStream::as_string(bool c_heap) const {
+  char* copy = c_heap ?
+    NEW_C_HEAP_ARRAY(char, _written + 1, mtInternal) : NEW_RESOURCE_ARRAY(char, _written + 1);
+  ::memcpy(copy, _buffer, _written);
+  copy[_written] = 0;  // terminating null
+  if (c_heap) {
+    // Need to ensure our content is written to memory before we return
+    // the pointer to it.
+    OrderAccess::storestore();
+  }
   return copy;
 }
 
 stringStream::~stringStream() {
-  if (buffer_fixed == false && buffer != NULL) {
-    FREE_C_HEAP_ARRAY(char, buffer);
+  if (!_is_fixed && _buffer != _small_buffer) {
+    FREE_C_HEAP_ARRAY(char, _buffer);
   }
 }
 
+// tty needs to be always accessible since there are code paths that may write to it
+// outside of the VM lifespan.
+// Examples for pre-VM-init accesses: Early NMT init, Early UL init
+// Examples for post-VM-exit accesses: many, e.g. NMT C-heap bounds checker, signal handling, AGCT, ...
+// During lifetime tty is served by an instance of defaultStream. That instance's deletion cannot
+// be (easily) postponed or omitted since it has ties to the JVM infrastructure.
+// The policy followed here is a compromise reached during review of JDK-8292351:
+// - pre-init: we silently swallow all output. We won't see anything, but at least won't crash
+// - post-exit: we write to a simple fdStream, but somewhat mimic the behavior of the real defaultStream
+static nullStream tty_preinit_stream;
+outputStream* tty = &tty_preinit_stream;
+
 xmlStream*   xtty;
-outputStream* tty;
-CDS_ONLY(fileStream* classlist_file;) // Only dump the classes that can be stored into the CDS archive
 extern Mutex* tty_lock;
 
 #define EXTRACHARLEN   32
@@ -502,7 +551,7 @@ static const char* make_log_name_internal(const char* log_name, const char* forc
 // -XX:DumpLoadedClassList=<file_name>
 // in log_name, %p => pid1234 and
 //              %t => YYYY-MM-DD_HH-MM-SS
-static const char* make_log_name(const char* log_name, const char* force_directory) {
+const char* make_log_name(const char* log_name, const char* force_directory) {
   char timestr[32];
   get_datetime_string(timestr, sizeof(timestr));
   return make_log_name_internal(log_name, force_directory, os::current_process_id(),
@@ -510,7 +559,7 @@ static const char* make_log_name(const char* log_name, const char* force_directo
 }
 
 fileStream::fileStream(const char* file_name) {
-  _file = fopen(file_name, "w");
+  _file = os::fopen(file_name, "w");
   if (_file != NULL) {
     _need_close = true;
   } else {
@@ -520,7 +569,7 @@ fileStream::fileStream(const char* file_name) {
 }
 
 fileStream::fileStream(const char* file_name, const char* opentype) {
-  _file = fopen(file_name, opentype);
+  _file = os::fopen(file_name, opentype);
   if (_file != NULL) {
     _need_close = true;
   } else {
@@ -531,10 +580,10 @@ fileStream::fileStream(const char* file_name, const char* opentype) {
 
 void fileStream::write(const char* s, size_t len) {
   if (_file != NULL)  {
-    // Make an unused local variable to avoid warning from gcc 4.x compiler.
+    // Make an unused local variable to avoid warning from gcc compiler.
     size_t count = fwrite(s, 1, len, _file);
+    update_position(s, len);
   }
-  update_position(s, len);
 }
 
 long fileStream::fileSize() {
@@ -551,9 +600,15 @@ long fileStream::fileSize() {
 }
 
 char* fileStream::readln(char *data, int count ) {
-  char * ret = ::fgets(data, count, _file);
-  //Get rid of annoying \n char
-  data[::strlen(data)-1] = '\0';
+  char * ret = NULL;
+  if (_file != NULL) {
+    ret = ::fgets(data, count, _file);
+    // Get rid of annoying \n char only if it is present.
+    size_t len = ::strlen(data);
+    if (len > 0 && data[len - 1] == '\n') {
+      data[len - 1] = '\0';
+    }
+  }
   return ret;
 }
 
@@ -565,15 +620,20 @@ fileStream::~fileStream() {
 }
 
 void fileStream::flush() {
-  fflush(_file);
+  if (_file != NULL) {
+    fflush(_file);
+  }
 }
+
+fdStream fdStream::_stdout_stream(1);
+fdStream fdStream::_stderr_stream(2);
 
 void fdStream::write(const char* s, size_t len) {
   if (_fd != -1) {
-    // Make an unused local variable to avoid warning from gcc 4.x compiler.
-    size_t count = ::write(_fd, s, (int)len);
+    // Make an unused local variable to avoid warning from gcc compiler.
+    ssize_t count = ::write(_fd, s, (int)len);
+    update_position(s, len);
   }
-  update_position(s, len);
 }
 
 defaultStream* defaultStream::instance = NULL;
@@ -608,7 +668,7 @@ fileStream* defaultStream::open_file(const char* log_name) {
     return NULL;
   }
 
-  fileStream* file = new(ResourceObj::C_HEAP, mtInternal) fileStream(try_name);
+  fileStream* file = new (mtInternal) fileStream(try_name);
   FREE_C_HEAP_ARRAY(char, try_name);
   if (file->is_open()) {
     return file;
@@ -626,7 +686,7 @@ fileStream* defaultStream::open_file(const char* log_name) {
 
   jio_printf("Warning:  Forcing option -XX:LogFile=%s\n", try_name);
 
-  file = new(ResourceObj::C_HEAP, mtInternal) fileStream(try_name);
+  file = new (mtInternal) fileStream(try_name);
   FREE_C_HEAP_ARRAY(char, try_name);
   if (file->is_open()) {
     return file;
@@ -643,7 +703,7 @@ void defaultStream::init_log() {
 
   if (file != NULL) {
     _log_file = file;
-    _outer_xmlStream = new(ResourceObj::C_HEAP, mtInternal) xmlStream(file);
+    _outer_xmlStream = new(mtInternal) xmlStream(file);
     start_log();
   } else {
     // and leave xtty as NULL
@@ -659,9 +719,10 @@ void defaultStream::start_log() {
     // Write XML header.
     xs->print_cr("<?xml version='1.0' encoding='UTF-8'?>");
     // (For now, don't bother to issue a DTD for this private format.)
+
+    // Calculate the start time of the log as ms since the epoch: this is
+    // the current time in ms minus the uptime in ms.
     jlong time_ms = os::javaTimeMillis() - tty->time_stamp().milliseconds();
-    // %%% Should be: jlong time_ms = os::start_time_milliseconds(), if
-    // we ever get round to introduce that method on the os class
     xs->head("hotspot_log version='%d %d'"
              " process='%d' time_ms='" INT64_FORMAT "'",
              LOG_MAJOR_VERSION, LOG_MINOR_VERSION,
@@ -702,7 +763,7 @@ void defaultStream::start_log() {
       outputStream *text = xs->text();
       for (SystemProperty* p = Arguments::system_properties(); p != NULL; p = p->next()) {
         assert(p->key() != NULL, "p->key() is NULL");
-        if (p->is_readable()) {
+        if (p->readable()) {
           // Print in two stages to avoid problems with long
           // keys/values.
           text->print_raw(p->key());
@@ -829,17 +890,17 @@ void defaultStream::write(const char* s, size_t len) {
   intx holder = hold(thread_id);
 
   if (DisplayVMOutput &&
-      (_outer_xmlStream == NULL || !_outer_xmlStream->inside_attrs())) {
+      (_outer_xmlStream == nullptr || !_outer_xmlStream->inside_attrs())) {
     // print to output stream. It can be redirected by a vfprintf hook
     jio_print(s, len);
   }
 
   // print to log file
-  if (has_log_file()) {
-    int nl0 = _newlines;
-    xmlTextStream::write(s, len);
+  if (has_log_file() && _outer_xmlStream != nullptr) {
+     _outer_xmlStream->write_text(s, len);
+    bool nl = update_position(s, len);
     // flush the log file too, if there were any newlines
-    if (nl0 != _newlines){
+    if (nl) {
       flush();
     }
   } else {
@@ -884,7 +945,7 @@ void ttyLocker::break_tty_lock_for_safepoint(intx holder) {
 
 void ostream_init() {
   if (defaultStream::instance == NULL) {
-    defaultStream::instance = new(ResourceObj::C_HEAP, mtInternal) defaultStream();
+    defaultStream::instance = new(mtInternal) defaultStream();
     tty = defaultStream::instance;
 
     // We want to ensure that time stamps in GC logs consider time 0
@@ -898,15 +959,7 @@ void ostream_init() {
 void ostream_init_log() {
   // Note : this must be called AFTER ostream_init()
 
-#if INCLUDE_CDS
-  // For -XX:DumpLoadedClassList=<file> option
-  if (DumpLoadedClassList != NULL) {
-    const char* list_name = make_log_name(DumpLoadedClassList, NULL);
-    classlist_file = new(ResourceObj::C_HEAP, mtInternal)
-                         fileStream(list_name);
-    FREE_C_HEAP_ARRAY(char, list_name);
-  }
-#endif
+  ClassListWriter::init();
 
   // If we haven't lazily initialized the logfile yet, do it now,
   // to avoid the possibility of lazy initialization during a VM
@@ -920,18 +973,14 @@ void ostream_exit() {
   static bool ostream_exit_called = false;
   if (ostream_exit_called)  return;
   ostream_exit_called = true;
-#if INCLUDE_CDS
-  if (classlist_file != NULL) {
-    delete classlist_file;
+  ClassListWriter::delete_classlist();
+  // Make sure tty works after VM exit by assigning an always-on functioning fdStream.
+  outputStream* tmp = tty;
+  tty = DisplayVMOutputToStderr ? fdStream::stdout_stream() : fdStream::stderr_stream();
+  if (tmp != &tty_preinit_stream && tmp != defaultStream::instance) {
+    delete tmp;
   }
-#endif
-  if (tty != defaultStream::instance) {
-    delete tty;
-  }
-  if (defaultStream::instance != NULL) {
-    delete defaultStream::instance;
-  }
-  tty = NULL;
+  delete defaultStream::instance;
   xtty = NULL;
   defaultStream::instance = NULL;
 }
@@ -1033,10 +1082,11 @@ bufferedStream::~bufferedStream() {
 
 #ifndef PRODUCT
 
-#if defined(SOLARIS) || defined(LINUX) || defined(AIX) || defined(_ALLBSD_SOURCE)
+#if defined(LINUX) || defined(AIX) || defined(_ALLBSD_SOURCE)
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netdb.h>
 #include <arpa/inet.h>
 #elif defined(_WINDOWS)
 #include <winsock2.h>
@@ -1047,7 +1097,7 @@ networkStream::networkStream() : bufferedStream(1024*10, 1024*10) {
 
   _socket = -1;
 
-  int result = os::socket(AF_INET, SOCK_STREAM, 0);
+  int result = ::socket(AF_INET, SOCK_STREAM, 0);
   if (result <= 0) {
     assert(false, "Socket could not be created!");
   } else {

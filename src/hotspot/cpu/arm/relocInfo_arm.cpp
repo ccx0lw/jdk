@@ -24,12 +24,10 @@
 
 #include "precompiled.hpp"
 #include "asm/assembler.inline.hpp"
-#include "assembler_arm.inline.hpp"
 #include "code/relocInfo.hpp"
 #include "nativeInst_arm.hpp"
 #include "oops/compressedOops.inline.hpp"
 #include "oops/oop.hpp"
-#include "runtime/orderAccess.hpp"
 #include "runtime/safepoint.hpp"
 
 void Relocation::pd_set_data_value(address x, intptr_t o, bool verify_only) {

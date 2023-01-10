@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -132,6 +132,7 @@ public class SSLContext {
         if (context == null) {
             throw new NullPointerException();
         }
+        @SuppressWarnings("removal")
         SecurityManager sm = System.getSecurityManager();
         if (sm != null) {
             sm.checkPermission(new SSLPermission("setDefaultSSLContext"));
@@ -158,7 +159,7 @@ public class SSLContext {
      * {@code jdk.security.provider.preferred}
      * {@link Security#getProperty(String) Security} property to determine
      * the preferred provider order for the specified algorithm. This
-     * may be different than the order of providers returned by
+     * may be different from the order of providers returned by
      * {@link Security#getProviders() Security.getProviders()}.
      *
      * @param protocol the standard name of the requested protocol.
@@ -352,6 +353,14 @@ public class SSLContext {
      * Some cipher suites (such as Kerberos) require remote hostname
      * information, in which case this factory method should not be used.
      *
+     * @implNote
+     * It is provider-specific if the returned SSLEngine uses client or
+     * server mode by default for the (D)TLS connection. The JDK SunJSSE
+     * provider implementation uses server mode by default.  However, it
+     * is recommended to always set the desired mode explicitly by calling
+     * {@link SSLEngine#setUseClientMode(boolean) SSLEngine.setUseClientMode()}
+     * before invoking other methods of the SSLEngine.
+     *
      * @return  the {@code SSLEngine} object
      * @throws  UnsupportedOperationException if the underlying provider
      *          does not implement the operation.
@@ -363,12 +372,9 @@ public class SSLContext {
         try {
             return contextSpi.engineCreateSSLEngine();
         } catch (AbstractMethodError e) {
-            UnsupportedOperationException unsup =
-                new UnsupportedOperationException(
-                    "Provider: " + getProvider() +
-                    " doesn't support this operation");
-            unsup.initCause(e);
-            throw unsup;
+            throw new UnsupportedOperationException(
+                "Provider: " + getProvider() +
+                " doesn't support this operation", e);
         }
     }
 
@@ -381,6 +387,14 @@ public class SSLContext {
      * <P>
      * Some cipher suites (such as Kerberos) require remote hostname
      * information, in which case peerHost needs to be specified.
+     *
+     * @implNote
+     * It is provider-specific if the returned SSLEngine uses client or
+     * server mode by default for the (D)TLS connection. The JDK SunJSSE
+     * provider implementation uses server mode by default.  However, it
+     * is recommended to always set the desired mode explicitly by calling
+     * {@link SSLEngine#setUseClientMode(boolean) SSLEngine.setUseClientMode()}
+     * before invoking other methods of the SSLEngine.
      *
      * @param   peerHost the non-authoritative name of the host
      * @param   peerPort the non-authoritative port
@@ -395,12 +409,9 @@ public class SSLContext {
         try {
             return contextSpi.engineCreateSSLEngine(peerHost, peerPort);
         } catch (AbstractMethodError e) {
-            UnsupportedOperationException unsup =
-                new UnsupportedOperationException(
-                    "Provider: " + getProvider() +
-                    " does not support this operation");
-            unsup.initCause(e);
-            throw unsup;
+            throw new UnsupportedOperationException(
+                "Provider: " + getProvider() +
+                " does not support this operation", e);
         }
     }
 

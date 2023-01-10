@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,13 +29,12 @@
 #include "gc/shared/gcVMOperations.hpp"
 
 // VM_operations for the G1 collector.
-// VM_GC_Operation:
-//   - VM_G1Concurrent
-//   - VM_G1CollectForAllocation
-//   - VM_G1CollectFull
 
 class VM_G1CollectFull : public VM_GC_Operation {
   bool _gc_succeeded;
+
+protected:
+  bool skip_operation() const override;
 
 public:
   VM_G1CollectFull(uint gc_count_before,
@@ -43,46 +42,71 @@ public:
                    GCCause::Cause cause) :
     VM_GC_Operation(gc_count_before, cause, full_gc_count_before, true),
     _gc_succeeded(false) { }
-  virtual VMOp_Type type() const { return VMOp_G1CollectFull; }
+  VMOp_Type type() const override { return VMOp_G1CollectFull; }
+  void doit() override;
+  bool gc_succeeded() const { return _gc_succeeded; }
+};
+
+class VM_G1TryInitiateConcMark : public VM_GC_Operation {
+  bool _transient_failure;
+  bool _cycle_already_in_progress;
+  bool _whitebox_attached;
+  bool _terminating;
+  bool _gc_succeeded;
+
+public:
+  VM_G1TryInitiateConcMark(uint gc_count_before,
+                           GCCause::Cause gc_cause);
+  virtual VMOp_Type type() const { return VMOp_G1TryInitiateConcMark; }
+  virtual bool doit_prologue();
   virtual void doit();
-  bool gc_succeeded() { return _gc_succeeded; }
+  bool transient_failure() const { return _transient_failure; }
+  bool cycle_already_in_progress() const { return _cycle_already_in_progress; }
+  bool whitebox_attached() const { return _whitebox_attached; }
+  bool terminating() const { return _terminating; }
+  bool gc_succeeded() const { return _gc_succeeded; }
 };
 
 class VM_G1CollectForAllocation : public VM_CollectForAllocation {
   bool _gc_succeeded;
 
-  bool _should_initiate_conc_mark;
-  bool _should_retry_gc;
-  double _target_pause_time_ms;
-  uint  _old_marking_cycles_completed_before;
-
 public:
   VM_G1CollectForAllocation(size_t         word_size,
                             uint           gc_count_before,
-                            GCCause::Cause gc_cause,
-                            bool           should_initiate_conc_mark,
-                            double         target_pause_time_ms);
+                            GCCause::Cause gc_cause);
   virtual VMOp_Type type() const { return VMOp_G1CollectForAllocation; }
-  virtual bool doit_prologue();
   virtual void doit();
-  virtual void doit_epilogue();
-  bool should_retry_gc() const { return _should_retry_gc; }
-  bool gc_succeeded() { return _gc_succeeded; }
+  bool gc_succeeded() const { return _gc_succeeded; }
 };
 
 // Concurrent G1 stop-the-world operations such as remark and cleanup.
-class VM_G1Concurrent : public VM_Operation {
-  VoidClosure* _cl;
-  const char*  _message;
+class VM_G1PauseConcurrent : public VM_Operation {
   uint         _gc_id;
+  const char*  _message;
+
+protected:
+  VM_G1PauseConcurrent(const char* message) :
+    _gc_id(GCId::current()), _message(message) { }
+  virtual void work() = 0;
 
 public:
-  VM_G1Concurrent(VoidClosure* cl, const char* message) :
-    _cl(cl), _message(message), _gc_id(GCId::current()) { }
-  virtual VMOp_Type type() const { return VMOp_G1Concurrent; }
-  virtual void doit();
-  virtual bool doit_prologue();
-  virtual void doit_epilogue();
+  bool doit_prologue() override;
+  void doit_epilogue() override;
+  void doit() override;
+};
+
+class VM_G1PauseRemark : public VM_G1PauseConcurrent {
+public:
+  VM_G1PauseRemark() : VM_G1PauseConcurrent("Pause Remark") { }
+  VMOp_Type type() const override { return VMOp_G1PauseRemark; }
+  void work() override;
+};
+
+class VM_G1PauseCleanup : public VM_G1PauseConcurrent {
+public:
+  VM_G1PauseCleanup() : VM_G1PauseConcurrent("Pause Cleanup") { }
+  VMOp_Type type() const override { return VMOp_G1PauseCleanup; }
+  void work() override;
 };
 
 #endif // SHARE_GC_G1_G1VMOPERATIONS_HPP

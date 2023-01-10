@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -97,7 +97,7 @@ VtableStub* VtableStubs::create_vtable_stub(int vtable_index) {
     start_pc = __ pc();
     // check offset vs vtable length
     __ cmpl(Address(rax, Klass::vtable_length_offset()), vtable_index*vtableEntry::size());
-    slop_delta  = 6 - (__ pc() - start_pc);  // cmpl varies in length, depending on data
+    slop_delta  = 10 - (__ pc() - start_pc);  // cmpl varies in length, depending on data
     slop_bytes += slop_delta;
     assert(slop_delta >= 0, "negative slop(%d) encountered, adjust code size estimate!", slop_delta);
 
@@ -106,7 +106,7 @@ VtableStub* VtableStubs::create_vtable_stub(int vtable_index) {
     // VTABLE TODO: find upper bound for call_VM length.
     start_pc = __ pc();
     __ call_VM(noreg, CAST_FROM_FN_PTR(address, bad_compiled_vtable_index), rcx, rbx);
-    slop_delta  = 480 - (__ pc() - start_pc);
+    slop_delta  = 500 - (__ pc() - start_pc);
     slop_bytes += slop_delta;
     assert(slop_delta >= 0, "negative slop(%d) encountered, adjust code size estimate!", slop_delta);
     __ bind(L);
@@ -125,9 +125,9 @@ VtableStub* VtableStubs::create_vtable_stub(int vtable_index) {
 #ifndef PRODUCT
   if (DebugVtables) {
     Label L;
-    __ cmpptr(method, (int32_t)NULL_WORD);
+    __ cmpptr(method, NULL_WORD);
     __ jcc(Assembler::equal, L);
-    __ cmpptr(Address(method, Method::from_compiled_offset()), (int32_t)NULL_WORD);
+    __ cmpptr(Address(method, Method::from_compiled_offset()), NULL_WORD);
     __ jcc(Assembler::notZero, L);
     __ stop("Vtable entry is NULL");
     __ bind(L);
@@ -195,7 +195,7 @@ VtableStub* VtableStubs::create_itable_stub(int itable_index) {
   // get receiver klass (also an implicit null-check)
   assert(VtableStub::receiver_location() ==  rcx->as_VMReg(), "receiver expected in  rcx");
   address npe_addr = __ pc();
-  __ load_klass(recv_klass_reg, rcx);
+  __ load_klass(recv_klass_reg, rcx, noreg);
 
   start_pc = __ pc();
 
@@ -213,7 +213,7 @@ VtableStub* VtableStubs::create_itable_stub(int itable_index) {
 
   // Get selected method from declaring class and itable index
   const Register method = rbx;
-  __ load_klass(recv_klass_reg, rcx); // restore recv_klass_reg
+  __ load_klass(recv_klass_reg, rcx, noreg); // restore recv_klass_reg
   __ lookup_interface_method(// inputs: rec. class, interface, itable index
                              recv_klass_reg, holder_klass_reg, itable_index,
                              // outputs: method, scan temp. reg
@@ -237,9 +237,9 @@ VtableStub* VtableStubs::create_itable_stub(int itable_index) {
 #ifdef ASSERT
   if (DebugVtables) {
     Label L1;
-    __ cmpptr(method, (int32_t)NULL_WORD);
+    __ cmpptr(method, NULL_WORD);
     __ jcc(Assembler::equal, L1);
-    __ cmpptr(Address(method, Method::from_compiled_offset()), (int32_t)NULL_WORD);
+    __ cmpptr(Address(method, Method::from_compiled_offset()), NULL_WORD);
     __ jcc(Assembler::notZero, L1);
     __ stop("Method* is null");
     __ bind(L1);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2002, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,7 +26,6 @@
  * @bug 4691095 6306394
  * @summary Make sure that Javadoc emits a useful warning
  *          when a bad package.html exists in a JAR archive.
- * @author jamieh
  * @library /tools/lib ../../lib
  * @modules jdk.javadoc/jdk.javadoc.internal.tool
  * @build javadoc.tester.* toolbox.ToolBox toolbox.JarTask
@@ -48,7 +47,7 @@ public class TestBadPackageFileInJar extends JavadocTester {
     final ToolBox tb = new ToolBox();
 
     public static void main(String... args) throws Exception {
-        TestBadPackageFileInJar tester = new TestBadPackageFileInJar();
+        var tester = new TestBadPackageFileInJar();
         tester.runTests();
     }
 

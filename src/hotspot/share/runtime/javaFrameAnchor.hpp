@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2002, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -34,10 +34,11 @@
 //
 class JavaThread;
 class MacroAssembler;
+class UpcallLinker;
+class ZeroFrame;
 
 class JavaFrameAnchor {
 // Too many friends...
-friend class CallNativeDirectNode;
 friend class OptoRuntime;
 friend class Runtime1;
 friend class StubAssembler;
@@ -52,6 +53,7 @@ friend class VMStructs;
 friend class JVMCIVMStructs;
 friend class BytecodeInterpreter;
 friend class JavaCallWrapper;
+friend class UpcallLinker;
 
  private:
   //

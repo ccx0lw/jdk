@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.security.Permission;
+import java.util.Locale;
 
 /**
  * Represents permission to access a resource or set of resources defined by a
@@ -162,6 +163,9 @@ public final class URLPermission extends Permission {
     private transient Authority authority;
 
     // serialized field
+    /**
+     * The actions string
+     */
     private String actions;
 
     /**
@@ -295,11 +299,9 @@ public final class URLPermission extends Permission {
      * </table>
      */
     public boolean implies(Permission p) {
-        if (! (p instanceof URLPermission)) {
+        if (! (p instanceof URLPermission that)) {
             return false;
         }
-
-        URLPermission that = (URLPermission)p;
 
         if (this.methods.isEmpty() && !that.methods.isEmpty()) {
             return false;
@@ -371,10 +373,9 @@ public final class URLPermission extends Permission {
      * and p's url equals this's url.  Returns false otherwise.
      */
     public boolean equals(Object p) {
-        if (!(p instanceof URLPermission)) {
+        if (!(p instanceof URLPermission that)) {
             return false;
         }
-        URLPermission that = (URLPermission)p;
         if (!this.scheme.equals(that.scheme)) {
             return false;
         }
@@ -418,7 +419,7 @@ public final class URLPermission extends Permission {
                     "White space not allowed in methods: \"" + methods + "\"");
             } else {
                 if (c >= 'a' && c <= 'z') {
-                    c += 'A' - 'a';
+                    c += (char) ('A' - 'a');
                 }
                 b.append(c);
             }
@@ -437,7 +438,7 @@ public final class URLPermission extends Permission {
             char c = headers.charAt(i);
             if (c >= 'a' && c <= 'z') {
                 if (capitalizeNext) {
-                    c += 'A' - 'a';
+                    c += (char) ('A' - 'a');
                     capitalizeNext = false;
                 }
                 b.append(c);
@@ -471,7 +472,7 @@ public final class URLPermission extends Permission {
             throw new IllegalArgumentException(
                 "Invalid URL string: \"" + url + "\"");
         }
-        scheme = url.substring(0, delim).toLowerCase();
+        scheme = url.substring(0, delim).toLowerCase(Locale.ROOT);
         this.ssp = url.substring(delim + 1);
 
         if (!ssp.startsWith("//")) {
@@ -493,7 +494,7 @@ public final class URLPermission extends Permission {
             auth = authpath.substring(0, delim);
             this.path = authpath.substring(delim);
         }
-        this.authority = new Authority(scheme, auth.toLowerCase());
+        this.authority = new Authority(scheme, auth.toLowerCase(Locale.ROOT));
     }
 
     private String actions() {
@@ -504,7 +505,11 @@ public final class URLPermission extends Permission {
     }
 
     /**
-     * restore the state of this object from stream
+     * Restores the state of this object from stream.
+     *
+     * @param  s the {@code ObjectInputStream} from which data is read
+     * @throws IOException if an I/O error occurs
+     * @throws ClassNotFoundException if a serialized class cannot be loaded
      */
     @java.io.Serial
     private void readObject(ObjectInputStream s)

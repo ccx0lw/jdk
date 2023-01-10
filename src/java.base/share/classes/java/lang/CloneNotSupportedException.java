@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1995, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1995, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -35,14 +35,12 @@ package java.lang;
  * throw this exception to indicate that an object could not or
  * should not be cloned.
  *
- * @author  unascribed
  * @see     java.lang.Cloneable
  * @see     java.lang.Object#clone()
  * @since   1.0
  */
 
-public
-class CloneNotSupportedException extends Exception {
+public class CloneNotSupportedException extends Exception {
     @java.io.Serial
     private static final long serialVersionUID = 5195511250079656443L;
 

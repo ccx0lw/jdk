@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,12 +25,14 @@ import java.util.Arrays;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 
+import jdk.test.lib.Utils;
 import jdk.test.lib.process.OutputAnalyzer;
 import jdk.test.lib.process.ProcessTools;
 import jdk.test.lib.JDKToolLauncher;
 
 /*
  * @test
+ * @bug 8273187
  * @summary Unit test for jstack utility
  * @library /test/lib
  * @run main BasicJStackTest
@@ -70,8 +72,10 @@ public class BasicJStackTest {
         Charset cs = StandardCharsets.UTF_8;
         Thread.currentThread().setName(marker);
         JDKToolLauncher launcher = JDKToolLauncher.createUsingTestJDK("jstack");
+        launcher.addVMArgs(Utils.getFilteredTestJavaOpts("-XX:+UsePerfData"));
         launcher.addVMArg("-XX:+UsePerfData");
         launcher.addVMArg("-Dfile.encoding=" + cs);
+        launcher.addVMArg("-Dsun.stdout.encoding=" + cs);
         if (toolArgs != null) {
             for (String toolArg : toolArgs) {
                 launcher.addToolArg(toolArg);

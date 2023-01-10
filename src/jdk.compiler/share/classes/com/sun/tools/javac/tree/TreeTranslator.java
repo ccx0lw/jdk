@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -189,7 +189,7 @@ public class TreeTranslator extends JCTree.Visitor {
     }
 
     public void visitForeachLoop(JCEnhancedForLoop tree) {
-        tree.var = translate(tree.var);
+        tree.varOrRecordPattern = translate(tree.varOrRecordPattern);
         tree.expr = translate(tree.expr);
         tree.body = translate(tree.body);
         result = tree;
@@ -207,7 +207,7 @@ public class TreeTranslator extends JCTree.Visitor {
     }
 
     public void visitCase(JCCase tree) {
-        tree.pats = translate(tree.pats);
+        tree.labels = translate(tree.labels);
         tree.stats = translate(tree.stats);
         result = tree;
     }
@@ -354,7 +354,36 @@ public class TreeTranslator extends JCTree.Visitor {
 
     public void visitTypeTest(JCInstanceOf tree) {
         tree.expr = translate(tree.expr);
-        tree.clazz = translate(tree.clazz);
+        tree.pattern = translate(tree.pattern);
+        result = tree;
+    }
+
+    public void visitBindingPattern(JCBindingPattern tree) {
+        tree.var = translate(tree.var);
+        result = tree;
+    }
+
+    @Override
+    public void visitDefaultCaseLabel(JCDefaultCaseLabel tree) {
+        result = tree;
+    }
+
+    @Override
+    public void visitConstantCaseLabel(JCConstantCaseLabel tree) {
+        tree.expr = translate(tree.expr);
+        result = tree;
+    }
+
+    @Override
+    public void visitPatternCaseLabel(JCPatternCaseLabel tree) {
+        tree.pat = translate(tree.pat);
+        tree.guard = translate(tree.guard);
+        result = tree;
+    }
+
+    @Override
+    public void visitParenthesizedPattern(JCParenthesizedPattern tree) {
+        tree.pattern = translate(tree.pattern);
         result = tree;
     }
 
@@ -449,6 +478,13 @@ public class TreeTranslator extends JCTree.Visitor {
     public void visitAnnotatedType(JCAnnotatedType tree) {
         tree.annotations = translate(tree.annotations);
         tree.underlyingType = translate(tree.underlyingType);
+        result = tree;
+    }
+
+    @Override
+    public void visitRecordPattern(JCRecordPattern tree) {
+        tree.deconstructor = translate(tree.deconstructor);
+        tree.nested = translate(tree.nested);
         result = tree;
     }
 

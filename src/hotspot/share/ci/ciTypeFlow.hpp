@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -32,17 +32,12 @@
 #endif
 
 
-class ciTypeFlow : public ResourceObj {
+class ciTypeFlow : public ArenaObj {
 private:
   ciEnv*    _env;
   ciMethod* _method;
-  ciMethodBlocks* _methodBlocks;
   int       _osr_bci;
 
-  // information cached from the method:
-  int _max_locals;
-  int _max_stack;
-  int _code_size;
   bool      _has_irreducible_entry;
 
   const char* _failure_reason;
@@ -62,16 +57,16 @@ public:
   Arena*    arena()            { return _env->arena(); }
   bool      is_osr_flow() const{ return _osr_bci != InvocationEntryBci; }
   int       start_bci() const  { return is_osr_flow()? _osr_bci: 0; }
-  int       max_locals() const { return _max_locals; }
-  int       max_stack() const  { return _max_stack; }
-  int       max_cells() const  { return _max_locals + _max_stack; }
-  int       code_size() const  { return _code_size; }
+  int       max_locals() const { return method()->max_locals(); }
+  int       max_stack() const  { return method()->max_stack(); }
+  int       max_cells() const  { return max_locals() + max_stack(); }
+  int       code_size() const  { return method()->code_size(); }
   bool      has_irreducible_entry() const { return _has_irreducible_entry; }
 
   // Represents information about an "active" jsr call.  This
   // class represents a call to the routine at some entry address
   // with some distinct return address.
-  class JsrRecord : public ResourceObj {
+  class JsrRecord : public ArenaObj {
   private:
     int _entry_address;
     int _return_address;
@@ -102,12 +97,12 @@ public:
   //
   // Note that different amounts of effort can be expended determining
   // if paths are compatible.  <DISCUSSION>
-  class JsrSet : public ResourceObj {
+  class JsrSet : public AnyObj {
   private:
-    GrowableArray<JsrRecord*>* _set;
+    GrowableArray<JsrRecord*> _set;
 
     JsrRecord* record_at(int i) {
-      return _set->at(i);
+      return _set.at(i);
     }
 
     // Insert the given JsrRecord into the JsrSet, maintaining the order
@@ -119,6 +114,7 @@ public:
 
   public:
     JsrSet(Arena* arena, int default_len = 4);
+    JsrSet(int default_len = 4);
 
     // Copy this JsrSet.
     void copy_into(JsrSet* jsrs);
@@ -132,7 +128,7 @@ public:
                        StateVector* state);
 
     // What is the cardinality of this set?
-    int size() const { return _set->length(); }
+    int size() const { return _set.length(); }
 
     void print_on(outputStream* st) const PRODUCT_RETURN;
   };
@@ -157,7 +153,7 @@ public:
 
   // A StateVector summarizes the type information at some
   // point in the program
-  class StateVector : public ResourceObj {
+  class StateVector : public AnyObj {
   private:
     ciType**    _types;
     int         _stack_size;
@@ -372,7 +368,7 @@ public:
 
     void overwrite_local_double_long(int index) {
       // Invalidate the previous local if it contains first half of
-      // a double or long value since it's seconf half is being overwritten.
+      // a double or long value since its second half is being overwritten.
       int prev_index = index - 1;
       if (prev_index >= 0 &&
           (is_double(type_at(local(prev_index))) ||
@@ -517,13 +513,13 @@ public:
   };
 
   // A basic block
-  class Block : public ResourceObj {
+  class Block : public ArenaObj {
   private:
     ciBlock*                          _ciblock;
     GrowableArray<Block*>*           _exceptions;
     GrowableArray<ciInstanceKlass*>* _exc_klasses;
     GrowableArray<Block*>*           _successors;
-    GrowableArray<Block*>*           _predecessors;
+    GrowableArray<Block*>            _predecessors;
     StateVector*                     _state;
     JsrSet*                          _jsrs;
 
@@ -614,8 +610,7 @@ public:
 
     // Predecessors of this block (including exception edges)
     GrowableArray<Block*>* predecessors() {
-      assert(_predecessors != NULL, "must be filled in");
-      return _predecessors;
+      return &_predecessors;
     }
 
     // Get the exceptional successors for this Block.
@@ -712,7 +707,7 @@ public:
   };
 
   // Loop
-  class Loop : public ResourceObj {
+  class Loop : public ArenaObj {
   private:
     Loop* _parent;
     Loop* _sibling;  // List of siblings, null terminated
@@ -721,12 +716,16 @@ public:
     Block* _tail;    // Tail of loop
     bool   _irreducible;
     LocalSet _def_locals;
+    int _profiled_count;
+
+    ciTypeFlow* outer() const { return head()->outer(); }
+    bool at_insertion_point(Loop* lp, Loop* current);
 
   public:
     Loop(Block* head, Block* tail) :
       _parent(NULL), _sibling(NULL), _child(NULL),
       _head(head),   _tail(tail),
-      _irreducible(false), _def_locals() {}
+      _irreducible(false), _def_locals(), _profiled_count(-1) {}
 
     Loop* parent()  const { return _parent; }
     Loop* sibling() const { return _sibling; }
@@ -762,6 +761,8 @@ public:
 
     bool is_root() const { return _tail->pre_order() == max_jint; }
 
+    int profiled_count();
+
     void print(outputStream* st = tty, int indent = 0) const PRODUCT_RETURN;
   };
 
@@ -795,14 +796,12 @@ private:
 
   // For each ciBlock index, a list of Blocks which share this ciBlock.
   GrowableArray<Block*>** _idx_to_blocklist;
-  // count of ciBlocks
-  int _ciblock_count;
 
   // Tells if a given instruction is able to generate an exception edge.
   bool can_trap(ciBytecodeStream& str);
 
   // Clone the loop heads. Returns true if any cloning occurred.
-  bool clone_loop_heads(Loop* lp, StateVector* temp_vector, JsrSet* temp_set);
+  bool clone_loop_heads(StateVector* temp_vector, JsrSet* temp_set);
 
   // Clone lp's head and replace tail's successors with clone.
   Block* clone_loop_head(Loop* lp, StateVector* temp_vector, JsrSet* temp_set);
@@ -872,7 +871,6 @@ private:
   Loop* _loop_tree_root;
 
   // State used for make_jsr_record
-  int _jsr_count;
   GrowableArray<JsrRecord*>* _jsr_records;
 
 public:
@@ -928,6 +926,7 @@ public:
   // Determine if bci is dominated by dom_bci
   bool is_dominated_by(int bci, int dom_bci);
 
+  void print() const PRODUCT_RETURN;
   void print_on(outputStream* st) const PRODUCT_RETURN;
 
   void rpo_print_on(outputStream* st) const PRODUCT_RETURN;

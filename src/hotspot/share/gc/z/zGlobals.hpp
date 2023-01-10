@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -36,13 +36,20 @@ extern uint32_t   ZGlobalPhase;
 const uint32_t    ZPhaseMark                    = 0;
 const uint32_t    ZPhaseMarkCompleted           = 1;
 const uint32_t    ZPhaseRelocate                = 2;
+const char*       ZGlobalPhaseToString();
 
 // Global sequence number
 extern uint32_t   ZGlobalSeqNum;
 
 // Granule shift/size
-const size_t      ZGranuleSizeShift             = ZPlatformGranuleSizeShift;
+const size_t      ZGranuleSizeShift             = 21; // 2MB
 const size_t      ZGranuleSize                  = (size_t)1 << ZGranuleSizeShift;
+
+// Number of heap views
+const size_t      ZHeapViews                    = ZPlatformHeapViews;
+
+// Virtual memory to physical memory ratio
+const size_t      ZVirtualToPhysicalRatio       = 16; // 16:1
 
 // Page types
 const uint8_t     ZPageTypeSmall                = 0;
@@ -51,24 +58,24 @@ const uint8_t     ZPageTypeLarge                = 2;
 
 // Page size shifts
 const size_t      ZPageSizeSmallShift           = ZGranuleSizeShift;
-const size_t      ZPageSizeMediumShift          = ZPageSizeSmallShift + 4;
+extern size_t     ZPageSizeMediumShift;
 
 // Page sizes
 const size_t      ZPageSizeSmall                = (size_t)1 << ZPageSizeSmallShift;
-const size_t      ZPageSizeMedium               = (size_t)1 << ZPageSizeMediumShift;
+extern size_t     ZPageSizeMedium;
 
 // Object size limits
-const size_t      ZObjectSizeLimitSmall         = (ZPageSizeSmall / 8);  // Allow 12.5% waste
-const size_t      ZObjectSizeLimitMedium        = (ZPageSizeMedium / 8); // Allow 12.5% waste
+const size_t      ZObjectSizeLimitSmall         = ZPageSizeSmall / 8; // 12.5% max waste
+extern size_t     ZObjectSizeLimitMedium;
 
 // Object alignment shifts
 extern const int& ZObjectAlignmentSmallShift;
-const int         ZObjectAlignmentMediumShift   = ZPageSizeMediumShift - 13; // 8192 objects per page
-const int         ZObjectAlignmentLargeShift    = ZPageSizeSmallShift;
+extern int        ZObjectAlignmentMediumShift;
+const int         ZObjectAlignmentLargeShift    = ZGranuleSizeShift;
 
 // Object alignments
 extern const int& ZObjectAlignmentSmall;
-const int         ZObjectAlignmentMedium        = 1 << ZObjectAlignmentMediumShift;
+extern int        ZObjectAlignmentMedium;
 const int         ZObjectAlignmentLarge         = 1 << ZObjectAlignmentLargeShift;
 
 //
@@ -87,8 +94,12 @@ extern uintptr_t  ZAddressGoodMask;
 extern uintptr_t  ZAddressBadMask;
 extern uintptr_t  ZAddressWeakBadMask;
 
-// Pointer base address
-extern uintptr_t  ZAddressBase;
+// The bad mask is 64 bit. Its high order 32 bits contain all possible value combinations
+// that this mask will have. Therefore, the memory where the 32 high order bits are stored,
+// can be used as a 32 bit GC epoch counter, that has a different bit pattern every time
+// the bad mask is flipped. This provides a pointer to said 32 bits.
+extern uint32_t*  ZAddressBadMaskHighOrderBitsAddr;
+const int         ZAddressBadMaskHighOrderBitsOffset = LITTLE_ENDIAN_ONLY(4) BIG_ENDIAN_ONLY(0);
 
 // Pointer part of address
 extern size_t     ZAddressOffsetBits;
@@ -108,11 +119,9 @@ extern uintptr_t  ZAddressMetadataMarked1;
 extern uintptr_t  ZAddressMetadataRemapped;
 extern uintptr_t  ZAddressMetadataFinalizable;
 
-// NMethod entry barrier
-const size_t      ZNMethodDisarmedOffset        = ZPlatformNMethodDisarmedOffset;
-
 // Cache line size
 const size_t      ZCacheLineSize                = ZPlatformCacheLineSize;
+#define           ZCACHE_ALIGNED                ATTRIBUTE_ALIGNED(ZCacheLineSize)
 
 // Mark stack space
 extern uintptr_t  ZMarkStackSpaceStart;
@@ -144,6 +153,6 @@ const size_t      ZMarkProactiveFlushMax        = 10;
 const size_t      ZMarkTerminateFlushMax        = 3;
 
 // Try complete mark timeout
-const uint64_t    ZMarkCompleteTimeout          = 1; // ms
+const uint64_t    ZMarkCompleteTimeout          = 200; // us
 
 #endif // SHARE_GC_Z_ZGLOBALS_HPP

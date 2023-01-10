@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,24 +25,26 @@
 #ifndef SHARE_SERVICES_THREADSERVICE_HPP
 #define SHARE_SERVICES_THREADSERVICE_HPP
 
+#include "classfile/classLoader.hpp"
 #include "classfile/javaClasses.hpp"
+#include "classfile/javaThreadStatus.hpp"
 #include "runtime/handles.hpp"
 #include "runtime/init.hpp"
-#include "runtime/jniHandles.hpp"
+#include "runtime/javaThread.hpp"
 #include "runtime/objectMonitor.hpp"
 #include "runtime/perfData.hpp"
 #include "runtime/safepoint.hpp"
-#include "runtime/thread.hpp"
 #include "runtime/threadSMR.hpp"
 #include "services/management.hpp"
 
+class DeadlockCycle;
+class ObjectMonitorsHashtable;
 class OopClosure;
-class ThreadDumpResult;
-class ThreadStackTrace;
-class ThreadSnapshot;
 class StackFrameInfo;
 class ThreadConcurrentLocks;
-class DeadlockCycle;
+class ThreadDumpResult;
+class ThreadSnapshot;
+class ThreadStackTrace;
 
 // VM monitoring and management support for the thread and
 // synchronization subsystem
@@ -76,6 +78,9 @@ private:
   static ThreadDumpResult* _threaddump_list;
 
   static void decrement_thread_counts(JavaThread* jt, bool daemon);
+
+  // test if the JavaThread is a virtual thread or has a mounted virtual thread
+  static bool is_virtual_or_carrier_thread(JavaThread* jt);
 
 public:
   static void init();
@@ -113,8 +118,6 @@ public:
 
   static DeadlockCycle*       find_deadlocks_at_safepoint(ThreadsList * t_list, bool object_monitors_only);
 
-  // GC support
-  static void   oops_do(OopClosure* f);
   static void   metadata_do(void f(Metadata*));
 };
 
@@ -140,8 +143,8 @@ private:
   bool         _timer_pending_reset;
 
   // Keep accurate times for potentially recursive class operations
-  int           _perf_recursion_counts[6];
-  elapsedTimer  _perf_timers[6];
+  int           _perf_recursion_counts[PerfClassTraceTime::EVENT_TYPE_COUNT];
+  elapsedTimer  _perf_timers[PerfClassTraceTime::EVENT_TYPE_COUNT];
 
   // utility functions
   void  check_and_reset_count()            {
@@ -194,10 +197,10 @@ private:
   // This JavaThread* is protected by being stored in objects that are
   // protected by a ThreadsListSetter (ThreadDumpResult).
   JavaThread* _thread;
-  oop         _threadObj;
-  java_lang_Thread::ThreadStatus _thread_status;
+  OopHandle   _threadObj;
+  JavaThreadStatus _thread_status;
 
-  bool    _is_ext_suspended;
+  bool    _is_suspended;
   bool    _is_in_native;
 
   jlong   _contended_enter_ticks;
@@ -206,8 +209,9 @@ private:
   jlong   _monitor_wait_count;
   jlong   _sleep_ticks;
   jlong   _sleep_count;
-  oop     _blocker_object;
-  oop     _blocker_object_owner;
+
+  OopHandle     _blocker_object;
+  OopHandle     _blocker_object_owner;
 
   ThreadStackTrace*      _stack_trace;
   ThreadConcurrentLocks* _concurrent_locks;
@@ -216,21 +220,20 @@ private:
   // ThreadSnapshot instances should only be created via
   // ThreadDumpResult::add_thread_snapshot.
   friend class ThreadDumpResult;
-  ThreadSnapshot() : _thread(NULL), _threadObj(NULL),
-                     _blocker_object(NULL), _blocker_object_owner(NULL),
+  ThreadSnapshot() : _thread(NULL),
                      _stack_trace(NULL), _concurrent_locks(NULL), _next(NULL) {};
   void        initialize(ThreadsList * t_list, JavaThread* thread);
 
 public:
   ~ThreadSnapshot();
 
-  java_lang_Thread::ThreadStatus thread_status() { return _thread_status; }
+  JavaThreadStatus thread_status() { return _thread_status; }
 
-  oop         threadObj() const           { return _threadObj; }
+  oop         threadObj() const;
 
   void        set_next(ThreadSnapshot* n) { _next = n; }
 
-  bool        is_ext_suspended()          { return _is_ext_suspended; }
+  bool        is_suspended()              { return _is_suspended; }
   bool        is_in_native()              { return _is_in_native; }
 
   jlong       contended_enter_count()     { return _contended_enter_count; }
@@ -241,16 +244,16 @@ public:
   jlong       sleep_ticks()               { return _sleep_ticks; }
 
 
-  oop         blocker_object()            { return _blocker_object; }
-  oop         blocker_object_owner()      { return _blocker_object_owner; }
+  oop         blocker_object() const;
+  oop         blocker_object_owner() const;
 
   ThreadSnapshot*   next() const          { return _next; }
   ThreadStackTrace* get_stack_trace()     { return _stack_trace; }
   ThreadConcurrentLocks* get_concurrent_locks()     { return _concurrent_locks; }
 
-  void        dump_stack_at_safepoint(int max_depth, bool with_locked_monitors);
+  void        dump_stack_at_safepoint(int max_depth, bool with_locked_monitors,
+                                      ObjectMonitorsHashtable* table, bool full);
   void        set_concurrent_locks(ThreadConcurrentLocks* l) { _concurrent_locks = l; }
-  void        oops_do(OopClosure* f);
   void        metadata_do(void f(Metadata*));
 };
 
@@ -260,7 +263,7 @@ class ThreadStackTrace : public CHeapObj<mtInternal> {
   int                             _depth;  // number of stack frames added
   bool                            _with_locked_monitors;
   GrowableArray<StackFrameInfo*>* _frames;
-  GrowableArray<oop>*             _jni_locked_monitors;
+  GrowableArray<OopHandle>*       _jni_locked_monitors;
 
  public:
 
@@ -272,15 +275,14 @@ class ThreadStackTrace : public CHeapObj<mtInternal> {
   int             get_stack_depth()     { return _depth; }
 
   void            add_stack_frame(javaVFrame* jvf);
-  void            dump_stack_at_safepoint(int max_depth);
+  void            dump_stack_at_safepoint(int max_depth, ObjectMonitorsHashtable* table, bool full);
   Handle          allocate_fill_stack_trace_element_array(TRAPS);
-  void            oops_do(OopClosure* f);
   void            metadata_do(void f(Metadata*));
-  GrowableArray<oop>* jni_locked_monitors() { return _jni_locked_monitors; }
+  GrowableArray<OopHandle>* jni_locked_monitors() { return _jni_locked_monitors; }
   int             num_jni_locked_monitors() { return (_jni_locked_monitors != NULL ? _jni_locked_monitors->length() : 0); }
 
   bool            is_owned_monitor_on_stack(oop object);
-  void            add_jni_locked_monitor(oop object) { _jni_locked_monitors->append(object); }
+  void            add_jni_locked_monitor(oop object);
 };
 
 // StackFrameInfo for keeping Method* and bci during
@@ -290,33 +292,28 @@ class StackFrameInfo : public CHeapObj<mtInternal> {
  private:
   Method*             _method;
   int                 _bci;
-  GrowableArray<oop>* _locked_monitors; // list of object monitors locked by this frame
+  GrowableArray<OopHandle>* _locked_monitors; // list of object monitors locked by this frame
   // We need to save the mirrors in the backtrace to keep the class
   // from being unloaded while we still have this stack trace.
-  oop                 _class_holder;
+  OopHandle           _class_holder;
 
  public:
 
   StackFrameInfo(javaVFrame* jvf, bool with_locked_monitors);
-  ~StackFrameInfo() {
-    if (_locked_monitors != NULL) {
-      delete _locked_monitors;
-    }
-  };
+  ~StackFrameInfo();
   Method*   method() const       { return _method; }
   int       bci()    const       { return _bci; }
-  void      oops_do(OopClosure* f);
   void      metadata_do(void f(Metadata*));
 
   int       num_locked_monitors()       { return (_locked_monitors != NULL ? _locked_monitors->length() : 0); }
-  GrowableArray<oop>* locked_monitors() { return _locked_monitors; }
+  GrowableArray<OopHandle>* locked_monitors() { return _locked_monitors; }
 
   void      print_on(outputStream* st) const;
 };
 
 class ThreadConcurrentLocks : public CHeapObj<mtInternal> {
 private:
-  GrowableArray<instanceOop>* _owned_locks;
+  GrowableArray<OopHandle>*   _owned_locks;
   ThreadConcurrentLocks*      _next;
   // This JavaThread* is protected in one of two different ways
   // depending on the usage of the ThreadConcurrentLocks object:
@@ -333,8 +330,7 @@ private:
   void                        set_next(ThreadConcurrentLocks* n) { _next = n; }
   ThreadConcurrentLocks*      next() { return _next; }
   JavaThread*                 java_thread()                      { return _thread; }
-  GrowableArray<instanceOop>* owned_locks()                      { return _owned_locks; }
-  void                        oops_do(OopClosure* f);
+  GrowableArray<OopHandle>*   owned_locks()                      { return _owned_locks; }
 };
 
 class ConcurrentLocksDump : public StackObj {
@@ -388,13 +384,11 @@ class ThreadDumpResult : public StackObj {
   void                 set_t_list()                     { _setter.set(); }
   ThreadsList*         t_list();
   bool                 t_list_has_been_set()            { return _setter.is_set(); }
-  void                 oops_do(OopClosure* f);
   void                 metadata_do(void f(Metadata*));
 };
 
 class DeadlockCycle : public CHeapObj<mtInternal> {
  private:
-  bool _is_deadlock;
   GrowableArray<JavaThread*>* _threads;
   DeadlockCycle*              _next;
  public:
@@ -404,9 +398,7 @@ class DeadlockCycle : public CHeapObj<mtInternal> {
   DeadlockCycle* next()                     { return _next; }
   void           set_next(DeadlockCycle* d) { _next = d; }
   void           add_thread(JavaThread* t)  { _threads->append(t); }
-  void           reset()                    { _is_deadlock = false; _threads->clear(); }
-  void           set_deadlock(bool value)   { _is_deadlock = value; }
-  bool           is_deadlock()              { return _is_deadlock; }
+  void           reset()                    { _threads->clear(); }
   int            num_threads()              { return _threads->length(); }
   GrowableArray<JavaThread*>* threads()     { return _threads; }
   void           print_on_with(ThreadsList * t_list, outputStream* st) const;
@@ -428,7 +420,7 @@ public:
 // abstract utility class to set new thread states, and restore previous after the block exits
 class JavaThreadStatusChanger : public StackObj {
  private:
-  java_lang_Thread::ThreadStatus _old_state;
+  JavaThreadStatus _old_state;
   JavaThread*  _java_thread;
   bool _is_alive;
 
@@ -442,23 +434,23 @@ class JavaThreadStatusChanger : public StackObj {
 
  public:
   static void set_thread_status(JavaThread* java_thread,
-                                java_lang_Thread::ThreadStatus state) {
+                                JavaThreadStatus state) {
     java_lang_Thread::set_thread_status(java_thread->threadObj(), state);
   }
 
-  void set_thread_status(java_lang_Thread::ThreadStatus state) {
+  void set_thread_status(JavaThreadStatus state) {
     if (is_alive()) {
       set_thread_status(_java_thread, state);
     }
   }
 
   JavaThreadStatusChanger(JavaThread* java_thread,
-                          java_lang_Thread::ThreadStatus state) : _old_state(java_lang_Thread::NEW) {
+                          JavaThreadStatus state) : _old_state(JavaThreadStatus::NEW) {
     save_old_state(java_thread);
     set_thread_status(state);
   }
 
-  JavaThreadStatusChanger(JavaThread* java_thread) : _old_state(java_lang_Thread::NEW) {
+  JavaThreadStatusChanger(JavaThread* java_thread) : _old_state(JavaThreadStatus::NEW) {
     save_old_state(java_thread);
   }
 
@@ -484,7 +476,7 @@ class JavaThreadInObjectWaitState : public JavaThreadStatusChanger {
  public:
   JavaThreadInObjectWaitState(JavaThread *java_thread, bool timed) :
     JavaThreadStatusChanger(java_thread,
-                            timed ? java_lang_Thread::IN_OBJECT_WAIT_TIMED : java_lang_Thread::IN_OBJECT_WAIT) {
+                            timed ? JavaThreadStatus::IN_OBJECT_WAIT_TIMED : JavaThreadStatus::IN_OBJECT_WAIT) {
     if (is_alive()) {
       _stat = java_thread->get_thread_stat();
       _active = ThreadService::is_thread_monitoring_contention();
@@ -513,7 +505,7 @@ class JavaThreadParkedState : public JavaThreadStatusChanger {
  public:
   JavaThreadParkedState(JavaThread *java_thread, bool timed) :
     JavaThreadStatusChanger(java_thread,
-                            timed ? java_lang_Thread::PARKED_TIMED : java_lang_Thread::PARKED) {
+                            timed ? JavaThreadStatus::PARKED_TIMED : JavaThreadStatus::PARKED) {
     if (is_alive()) {
       _stat = java_thread->get_thread_stat();
       _active = ThreadService::is_thread_monitoring_contention();
@@ -540,7 +532,7 @@ class JavaThreadBlockedOnMonitorEnterState : public JavaThreadStatusChanger {
   bool _active;
 
   static bool contended_enter_begin(JavaThread *java_thread) {
-    set_thread_status(java_thread, java_lang_Thread::BLOCKED_ON_MONITOR_ENTER);
+    set_thread_status(java_thread, JavaThreadStatus::BLOCKED_ON_MONITOR_ENTER);
     ThreadStatistics* stat = java_thread->get_thread_stat();
     stat->contended_enter();
     bool active = ThreadService::is_thread_monitoring_contention();
@@ -566,7 +558,7 @@ class JavaThreadBlockedOnMonitorEnterState : public JavaThreadStatusChanger {
     if (active) {
       java_thread->get_thread_stat()->contended_enter_end();
     }
-    set_thread_status(java_thread, java_lang_Thread::RUNNABLE);
+    set_thread_status(java_thread, JavaThreadStatus::RUNNABLE);
   }
 
   JavaThreadBlockedOnMonitorEnterState(JavaThread *java_thread, ObjectMonitor *obj_m) :
@@ -597,7 +589,7 @@ class JavaThreadSleepState : public JavaThreadStatusChanger {
   bool _active;
  public:
   JavaThreadSleepState(JavaThread *java_thread) :
-    JavaThreadStatusChanger(java_thread, java_lang_Thread::SLEEPING) {
+    JavaThreadStatusChanger(java_thread, JavaThreadStatus::SLEEPING) {
     if (is_alive()) {
       _stat = java_thread->get_thread_stat();
       _active = ThreadService::is_thread_monitoring_contention();

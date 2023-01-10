@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -47,34 +47,47 @@ function tryLoad(docsPath, file) {
     }
 }
 
+var updateSearchResults = function() {};
+
+function indexFilesLoaded() {
+    return moduleSearchIndex
+        && packageSearchIndex
+        && typeSearchIndex
+        && memberSearchIndex
+        && tagSearchIndex;
+}
+
 var $ = function(f) {
     if (typeof f === "function") {
         f();
     } else {
         return {
-            val: function() { 
-                return this; 
+            val: function() {
+                return this;
             },
-            prop: function() { 
-                return this; 
+            prop: function() {
+                return this;
             },
-            addClass: function() { 
-                return this; 
-            },    
-            removeClass: function() { 
-                return this; 
+            addClass: function() {
+                return this;
             },
-            on: function() { 
-                return this; 
+            removeClass: function() {
+                return this;
             },
-            focus: function() { 
-                return this; 
+            on: function() {
+                return this;
             },
-            blur: function() { 
-                return this; 
+            focus: function() {
+                return this;
             },
-            click: function() { 
-                return this; 
+            blur: function() {
+                return this;
+            },
+            click: function() {
+                return this;
+            },
+            hover: function() {
+                return this;
             },
             catcomplete: function(o) {
                 o.close = function() {};
@@ -90,11 +103,11 @@ var $ = function(f) {
                     return resultList;
                 };
                 for (var i = 0; i < clargs.length; i++) {
-                    search(clargs[i]);  
+                    search(clargs[i]);
                 }
             },
             "0": {
-                setSelectionRange: function() { 
+                setSelectionRange: function() {
                     return this;
                 }
             }
@@ -125,13 +138,16 @@ var console = {
     }
 };
 
+var window = {
+    innerWidth: 800
+}
+
 var renderMenu = function(items) {
     var result = new java.util.ArrayList();
     var currentCategory = "";
     $.each(items, function(index, item) {
         var li;
-        if (item.l !== noResult.l && item.category !== currentCategory) {
-            // print(item.category);
+        if (item.l !== messages.noResult && item.category !== currentCategory) {
             currentCategory = item.category;
         }
         result.add(renderItem(item));
@@ -140,25 +156,7 @@ var renderMenu = function(items) {
 };
 
 var renderItem = function(item) {
-    var label;
-    if (item.category === catModules) {
-        label = item.l;
-    } else if (item.category === catPackages) {
-        label = (item.m)
-                ? item.m + "/" + item.l
-                : item.l;
-    } else if (item.category === catTypes) {
-        label = (item.p)
-                ? item.p + "." + item.l
-                : item.l;
-    } else if (item.category === catMembers) {
-        label = item.p + "." + item.c + "." + item.l;
-    } else if (item.category === catSearchTags) {
-        label = item.l;
-    } else {
-        label = item.l;
-    }
-    return label;
+    return item.l || item.input;
 };
 
 

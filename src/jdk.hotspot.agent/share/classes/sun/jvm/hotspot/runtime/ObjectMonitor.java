@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,6 +29,8 @@ import java.util.*;
 import sun.jvm.hotspot.debugger.*;
 import sun.jvm.hotspot.oops.*;
 import sun.jvm.hotspot.types.*;
+import sun.jvm.hotspot.utilities.Observable;
+import sun.jvm.hotspot.utilities.Observer;
 
 public class ObjectMonitor extends VMObject {
   static {
@@ -50,9 +52,9 @@ public class ObjectMonitor extends VMObject {
     ownerFieldOffset = f.getOffset();
     f = type.getField("_next_om");
     nextOMFieldOffset = f.getOffset();
-    contentionsField  = type.getJIntField("_contentions");
-    waitersField = type.getJIntField("_waiters");
-    recursionsField = type.getCIntegerField("_recursions");
+    contentionsField  = new CIntField(type.getCIntegerField("_contentions"), 0);
+    waitersField      = new CIntField(type.getCIntegerField("_waiters"), 0);
+    recursionsField   = type.getCIntegerField("_recursions");
   }
 
   public ObjectMonitor(Address addr) {
@@ -81,7 +83,7 @@ public class ObjectMonitor extends VMObject {
   // FIXME
   //  void      set_owner(void* owner);
 
-  public int    waiters() { return waitersField.getValue(addr); }
+  public int    waiters() { return (int)waitersField.getValue(this); }
 
   public Address nextOM() { return addr.getAddressAt(nextOMFieldOffset); }
   // FIXME
@@ -90,16 +92,16 @@ public class ObjectMonitor extends VMObject {
   public long recursions() { return recursionsField.getValue(addr); }
 
   public OopHandle object() {
-    return addr.getOopHandleAt(objectFieldOffset);
+    Address objAddr = addr.getAddressAt(objectFieldOffset);
+    if (objAddr == null) {
+      return null;
+    }
+    return objAddr.getOopHandleAt(0);
   }
 
   public int contentions() {
-      return contentionsField.getValue(addr);
+      return (int)contentionsField.getValue(this);
   }
-
-  // FIXME
-  //  void*     object_addr();
-  //  void      set_object(void* obj);
 
   // The following four either aren't expressed as typed fields in
   // vmStructs.cpp because they aren't strongly typed in the VM, or
@@ -109,8 +111,8 @@ public class ObjectMonitor extends VMObject {
   private static long          objectFieldOffset;
   private static long          ownerFieldOffset;
   private static long          nextOMFieldOffset;
-  private static JIntField     contentionsField;
-  private static JIntField     waitersField;
+  private static CIntField     contentionsField;
+  private static CIntField     waitersField;
   private static CIntegerField recursionsField;
   // FIXME: expose platform-dependent stuff
 }

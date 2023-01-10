@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,8 +27,8 @@
 #include "memory/allocation.inline.hpp"
 #include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/os.inline.hpp"
+#include "os_posix.hpp"
 #include "services/attachListener.hpp"
-#include "services/dtraceAttacher.hpp"
 
 #include <unistd.h>
 #include <signal.h>
@@ -67,7 +67,7 @@ class LinuxAttachListener: AllStatic {
   static bool _has_path;
 
   // the file descriptor for the listening socket
-  static int _listener;
+  static volatile int _listener;
 
   static bool _atexit_registered;
 
@@ -127,7 +127,7 @@ class LinuxAttachOperation: public AttachOperation {
 // statics
 char LinuxAttachListener::_path[UNIX_PATH_MAX];
 bool LinuxAttachListener::_has_path;
-int LinuxAttachListener::_listener = -1;
+volatile int LinuxAttachListener::_listener = -1;
 bool LinuxAttachListener::_atexit_registered = false;
 
 // Supporting class to help split a buffer into individual components
@@ -286,7 +286,7 @@ LinuxAttachOperation* LinuxAttachListener::read_request(int s) {
         str_count++;
 
         // The first string is <ver> so check it now to
-        // check for protocol mis-match
+        // check for protocol mismatch
         if (str_count == 1) {
           if ((strlen(buf) != strlen(ver_str)) ||
               (atoi(buf) != ATTACH_PROTOCOL_VER)) {
@@ -385,7 +385,7 @@ LinuxAttachOperation* LinuxAttachListener::dequeue() {
 // write the given buffer to the socket
 int LinuxAttachListener::write_fully(int s, char* buf, int len) {
   do {
-    int n = ::write(s, buf, len);
+    ssize_t n = ::write(s, buf, len);
     if (n == -1) {
       if (errno != EINTR) return -1;
     } else {
@@ -409,10 +409,6 @@ void LinuxAttachOperation::complete(jint result, bufferedStream* st) {
   JavaThread* thread = JavaThread::current();
   ThreadBlockInVM tbivm(thread);
 
-  thread->set_suspend_equivalent();
-  // cleared by handle_special_suspend_equivalent_condition() or
-  // java_suspend_self() via check_and_wait_while_suspended()
-
   // write operation result
   char msg[32];
   sprintf(msg, "%d\n", result);
@@ -427,9 +423,6 @@ void LinuxAttachOperation::complete(jint result, bufferedStream* st) {
   // done
   ::close(this->socket());
 
-  // were we externally suspended while we were waiting?
-  thread->check_and_wait_while_suspended();
-
   delete this;
 }
 
@@ -440,14 +433,7 @@ AttachOperation* AttachListener::dequeue() {
   JavaThread* thread = JavaThread::current();
   ThreadBlockInVM tbivm(thread);
 
-  thread->set_suspend_equivalent();
-  // cleared by handle_special_suspend_equivalent_condition() or
-  // java_suspend_self() via check_and_wait_while_suspended()
-
   AttachOperation* op = LinuxAttachListener::dequeue();
-
-  // were we externally suspended while we were waiting?
-  thread->check_and_wait_while_suspended();
 
   return op;
 }
@@ -479,14 +465,7 @@ int AttachListener::pd_init() {
   JavaThread* thread = JavaThread::current();
   ThreadBlockInVM tbivm(thread);
 
-  thread->set_suspend_equivalent();
-  // cleared by handle_special_suspend_equivalent_condition() or
-  // java_suspend_self() via check_and_wait_while_suspended()
-
   int ret_code = LinuxAttachListener::init();
-
-  // were we externally suspended while we were waiting?
-  thread->check_and_wait_while_suspended();
 
   return ret_code;
 }
@@ -502,9 +481,13 @@ bool AttachListener::check_socket_file() {
     listener_cleanup();
 
     // wait to terminate current attach listener instance...
-    while (AttachListener::transit_state(AL_INITIALIZING,
-                                         AL_NOT_INITIALIZED) != AL_NOT_INITIALIZED) {
-      os::naked_yield();
+    {
+      // avoid deadlock if AttachListener thread is blocked at safepoint
+      ThreadBlockInVM tbivm(JavaThread::current());
+      while (AttachListener::transit_state(AL_INITIALIZING,
+                                           AL_NOT_INITIALIZED) != AL_NOT_INITIALIZED) {
+        os::naked_yield();
+      }
     }
     return is_init_trigger();
   }

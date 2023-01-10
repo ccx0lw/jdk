@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2002, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,7 +28,6 @@
  *           Displays unnecessary horizontal scroll bars.
  *           Missing whitespace in DOCTYPE declaration
  *           HTML table tags inserted in wrong place in pakcage use page
- * @author dkramer
  * @library ../../lib
  * @modules jdk.javadoc/jdk.javadoc.internal.tool
  * @build javadoc.tester.*
@@ -40,7 +39,7 @@ import javadoc.tester.JavadocTester;
 public class ValidHtml extends JavadocTester {
 
     public static void main(String... args) throws Exception {
-        ValidHtml tester = new ValidHtml();
+        var tester = new ValidHtml();
         tester.runTests();
     }
 
@@ -55,10 +54,6 @@ public class ValidHtml extends JavadocTester {
                     "-sourcepath", testSrc,
                     "p1", "p2");
         checkExit(Exit.OK);
-        // Test the table elements are in the correct order:
-        checkOutput("p1/package-use.html", true,
-                "</td>\n"
-                + "</tr>");
         String HTML5 = "<!DOCTYPE HTML>";
         checkValidHTML(HTML5);
     }

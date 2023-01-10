@@ -56,6 +56,7 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 package jdk.internal.org.objectweb.asm.tree;
 
 import java.util.ListIterator;
@@ -66,7 +67,7 @@ import jdk.internal.org.objectweb.asm.MethodVisitor;
  * A doubly linked list of {@link AbstractInsnNode} objects. <i>This implementation is not thread
  * safe</i>.
  */
-public class InsnList {
+public class InsnList implements Iterable<AbstractInsnNode> {
 
     /** The number of instructions in this list. */
     private int size;
@@ -182,6 +183,7 @@ public class InsnList {
       *
       * @return an iterator over the instructions in this list.
       */
+    @Override
     public ListIterator<AbstractInsnNode> iterator() {
         return iterator(0);
     }
@@ -240,7 +242,7 @@ public class InsnList {
             cache[index] = newInsnNode;
             newInsnNode.index = index;
         } else {
-            newInsnNode.index = 0; // newInnsnNode now belongs to an InsnList.
+            newInsnNode.index = 0; // newInsnNode now belongs to an InsnList.
         }
         oldInsnNode.index = -1; // oldInsnNode no longer belongs to an InsnList.
         oldInsnNode.previousInsn = null;
@@ -517,12 +519,19 @@ public class InsnList {
         AbstractInsnNode remove;
 
         InsnListIterator(final int index) {
-            if (index == size()) {
+            if (index < 0 || index > size()) {
+                throw new IndexOutOfBoundsException();
+            } else if (index == size()) {
                 nextInsn = null;
                 previousInsn = getLast();
             } else {
-                nextInsn = get(index);
-                previousInsn = nextInsn.previousInsn;
+                AbstractInsnNode currentInsn = getFirst();
+                for (int i = 0; i < index; i++) {
+                    currentInsn = currentInsn.nextInsn;
+                }
+
+                nextInsn = currentInsn;
+                previousInsn = currentInsn.previousInsn;
             }
         }
 
@@ -565,6 +574,9 @@ public class InsnList {
 
         @Override
         public Object previous() {
+            if (previousInsn == null) {
+                throw new NoSuchElementException();
+            }
             AbstractInsnNode result = previousInsn;
             nextInsn = result;
             previousInsn = result.previousInsn;
@@ -622,3 +634,4 @@ public class InsnList {
         }
     }
 }
+

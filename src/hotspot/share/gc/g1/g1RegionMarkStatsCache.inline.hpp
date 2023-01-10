@@ -26,6 +26,7 @@
 #define SHARE_GC_G1_G1REGIONMARKSTATSCACHE_INLINE_HPP
 
 #include "gc/g1/g1RegionMarkStatsCache.hpp"
+
 #include "runtime/atomic.hpp"
 
 inline G1RegionMarkStatsCache::G1RegionMarkStatsCacheEntry* G1RegionMarkStatsCache::find_for_add(uint region_idx) {
@@ -46,7 +47,7 @@ inline G1RegionMarkStatsCache::G1RegionMarkStatsCacheEntry* G1RegionMarkStatsCac
 inline void G1RegionMarkStatsCache::evict(uint idx) {
   G1RegionMarkStatsCacheEntry* cur = &_cache[idx];
   if (cur->_stats._live_words != 0) {
-    Atomic::add(cur->_stats._live_words, &_target[cur->_region_idx]._live_words);
+    Atomic::add(&_target[cur->_region_idx]._live_words, cur->_stats._live_words);
   }
   cur->clear();
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -21,7 +21,7 @@
  * questions.
  */
 
-import sun.hotspot.code.Compiler;
+import jdk.test.whitebox.code.Compiler;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -29,17 +29,17 @@ import java.util.Map;
 import java.util.HashMap;
 import jdk.test.lib.apps.LingeredApp;
 import jtreg.SkippedException;
-import sun.hotspot.gc.GC;
+import jdk.test.whitebox.gc.GC;
 
 /**
  * @test
  * @summary Test the 'universe' command of jhsdb clhsdb.
- * @requires vm.hasSAandCanAttach
+ * @requires vm.hasSA
  * @bug 8190307
  * @library /test/lib
  * @build jdk.test.lib.apps.*
- * @build sun.hotspot.WhiteBox
- * @run driver ClassFileInstaller sun.hotspot.WhiteBox sun.hotspot.WhiteBox$WhiteBoxPermission
+ * @build jdk.test.whitebox.WhiteBox
+ * @run driver jdk.test.lib.helpers.ClassFileInstaller jdk.test.whitebox.WhiteBox
  * @run main/othervm -XX:+UnlockDiagnosticVMOptions -XX:+WhiteBoxAPI -Xbootclasspath/a:. TestUniverse
  */
 
@@ -61,10 +61,6 @@ public class TestUniverse {
             expStrings.add("ParallelScavengeHeap");
             expStrings.add("PSYoungGen");
             expStrings.add("eden");
-            break;
-
-        case ConcMarkSweep:
-            expStrings.add("Gen 1: concurrent mark-sweep generation");
             break;
 
         case G1:
@@ -97,7 +93,7 @@ public class TestUniverse {
     private static void test(GC gc) throws Exception {
         LingeredApp app = null;
         try {
-            app = LingeredApp.startApp(List.of("-XX:+UnlockExperimentalVMOptions", "-XX:+Use" + gc + "GC"));
+            app = LingeredApp.startApp("-XX:+UnlockExperimentalVMOptions", "-XX:+Use" + gc + "GC");
             System.out.println ("Started LingeredApp with " + gc + "GC and pid " + app.getPid());
             testClhsdbForUniverse(app.getPid(), gc);
         } finally {
@@ -112,7 +108,7 @@ public class TestUniverse {
         }
 
         if (Compiler.isGraalEnabled()) {
-            if (gc == GC.ConcMarkSweep || gc == GC.Epsilon || gc == GC.Z || gc == GC.Shenandoah) {
+            if (gc == GC.Epsilon || gc == GC.Z || gc == GC.Shenandoah) {
                 // Not supported
                 System.out.println ("Skipped testing of " + gc + "GC, not supported by Graal");
                 return false;

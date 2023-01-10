@@ -27,9 +27,8 @@
 #import "java_awt_event_KeyEvent.h"
 #import "LWCToolkit.h"
 
-#import "jni_util.h"
+#import "JNIUtilities.h"
 
-#import <JavaNativeFoundation/JavaNativeFoundation.h>
 #import <sys/time.h>
 #import <Carbon/Carbon.h>
 
@@ -297,14 +296,6 @@ const nsKeyToJavaModifierTable[] =
         java_awt_event_InputEvent_ALT_MASK,
         java_awt_event_KeyEvent_VK_ALT
     },
-    {
-        NSAlternateKeyMask,
-        0,
-        61,
-        java_awt_event_InputEvent_ALT_DOWN_MASK | java_awt_event_InputEvent_ALT_GRAPH_DOWN_MASK,
-        java_awt_event_InputEvent_ALT_MASK | java_awt_event_InputEvent_ALT_GRAPH_MASK,
-        java_awt_event_KeyEvent_VK_ALT | java_awt_event_KeyEvent_VK_ALT_GRAPH
-    },
     // NSNumericPadKeyMask
     {
         NSHelpKeyMask,
@@ -318,7 +309,6 @@ const nsKeyToJavaModifierTable[] =
     {0, 0, 0, 0, 0, 0}
 };
 
-static BOOL leftAltKeyPressed;
 
 /*
  * Almost all unicode characters just go from NS to Java with no translation.
@@ -466,14 +456,23 @@ NsCharToJavaVirtualKeyCode(unichar ch, BOOL isDeadChar,
         lower = tolower(ch);
         offset = lower - 'a';
         if (offset >= 0 && offset <= 25) {
-            // some chars in letter set are NOT actually A-Z characters?!
-            // skip them...
+            // checking for A-Z characters
             *postsTyped = YES;
             // do quick conversion
             *keyCode = java_awt_event_KeyEvent_VK_A + offset;
             *keyLocation = java_awt_event_KeyEvent_KEY_LOCATION_STANDARD;
             return;
-        }
+        } else {
+            // checking for non-english characters
+            // this value comes from ExtendedKeyCodes.java
+            offset += 0x01000000;
+            *postsTyped = YES;
+            // do quick conversion
+            // the keyCode is off by 32, so adding it here
+            *keyCode = java_awt_event_KeyEvent_VK_A + offset + 32;
+            *keyLocation = java_awt_event_KeyEvent_KEY_LOCATION_STANDARD;
+return;
+         }
     }
 
     if ([[NSCharacterSet decimalDigitCharacterSet] characterIsMember:ch]) {
@@ -540,17 +539,15 @@ NsKeyModifiersToJavaKeyInfo(NSUInteger nsFlags, unsigned short eventKeyCode,
             //    *javaKeyLocation = java_awt_event_KeyEvent_KEY_LOCATION_RIGHT;
             //}
             if (eventKeyCode == cur->leftKeyCode) {
-                leftAltKeyPressed = YES;
                 *javaKeyLocation = java_awt_event_KeyEvent_KEY_LOCATION_LEFT;
             } else if (eventKeyCode == cur->rightKeyCode) {
                 *javaKeyLocation = java_awt_event_KeyEvent_KEY_LOCATION_RIGHT;
             } else if (cur->nsMask == NSAlternateKeyMask) {
-                leftAltKeyPressed = NO;
                 continue;
             }
             *javaKeyType = (cur->nsMask & nsFlags) ?
-            java_awt_event_KeyEvent_KEY_PRESSED :
-            java_awt_event_KeyEvent_KEY_RELEASED;
+                java_awt_event_KeyEvent_KEY_PRESSED :
+                java_awt_event_KeyEvent_KEY_RELEASED;
             break;
         }
     }
@@ -570,9 +567,6 @@ jint NsKeyModifiersToJavaModifiers(NSUInteger nsFlags, BOOL isExtMods)
             //right alt, but that should be ok, since right alt contains left alt
             //mask value.
             javaModifiers |= isExtMods ? cur->javaExtMask : cur->javaMask;
-            if (cur->nsMask == NSAlternateKeyMask && leftAltKeyPressed) {
-                    break; //since right alt key struct is defined last, break out of the loop                }
-            }
         }
     }
 
@@ -668,11 +662,11 @@ Java_sun_lwawt_macosx_NSEvent_nsToJavaModifiers
 {
     jint jmodifiers = 0;
 
-JNF_COCOA_ENTER(env);
+JNI_COCOA_ENTER(env);
 
     jmodifiers = GetJavaMouseModifiers(modifierFlags);
 
-JNF_COCOA_EXIT(env);
+JNI_COCOA_EXIT(env);
 
     return jmodifiers;
 }
@@ -688,7 +682,7 @@ Java_sun_lwawt_macosx_NSEvent_nsToJavaKeyInfo
 {
     BOOL postsTyped = NO;
 
-JNF_COCOA_ENTER(env);
+JNI_COCOA_ENTER(env);
 
     jboolean copy = JNI_FALSE;
     jint *data = (*env)->GetIntArrayElements(env, inData, &copy);
@@ -716,7 +710,7 @@ JNF_COCOA_ENTER(env);
 
     (*env)->ReleaseIntArrayElements(env, inData, data, 0);
 
-JNF_COCOA_EXIT(env);
+JNI_COCOA_EXIT(env);
 
     return postsTyped;
 }
@@ -730,7 +724,7 @@ JNIEXPORT void JNICALL
 Java_sun_lwawt_macosx_NSEvent_nsKeyModifiersToJavaKeyInfo
 (JNIEnv *env, jclass cls, jintArray inData, jintArray outData)
 {
-JNF_COCOA_ENTER(env);
+JNI_COCOA_ENTER(env);
 
     jboolean copy = JNI_FALSE;
     jint *data = (*env)->GetIntArrayElements(env, inData, &copy);
@@ -757,7 +751,7 @@ JNF_COCOA_ENTER(env);
 
     (*env)->ReleaseIntArrayElements(env, inData, data, 0);
 
-JNF_COCOA_EXIT(env);
+JNI_COCOA_EXIT(env);
 }
 
 /*
@@ -771,11 +765,11 @@ Java_sun_lwawt_macosx_NSEvent_nsToJavaChar
 {
     jchar javaChar = 0;
 
-JNF_COCOA_ENTER(env);
+JNI_COCOA_ENTER(env);
 
     javaChar = NsCharToJavaChar(nsChar, modifierFlags, spaceKeyTyped);
 
-JNF_COCOA_EXIT(env);
+JNI_COCOA_EXIT(env);
 
     return javaChar;
 }

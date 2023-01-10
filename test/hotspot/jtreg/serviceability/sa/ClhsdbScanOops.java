@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,9 +25,20 @@
  * @test
  * @bug 8192985
  * @summary Test the clhsdb 'scanoops' command
+ * @requires vm.gc.Parallel
  * @requires vm.hasSA
  * @library /test/lib
- * @run main/othervm/timeout=1200 ClhsdbScanOops
+ * @run main/othervm/timeout=1200 ClhsdbScanOops UseParallelGC
+ */
+
+/**
+ * @test
+ * @bug 8192985
+ * @summary Test the clhsdb 'scanoops' command
+ * @requires vm.gc.Serial
+ * @requires vm.hasSA
+ * @library /test/lib
+ * @run main/othervm/timeout=1200 ClhsdbScanOops UseSerialGC
  */
 
 import java.util.HashMap;
@@ -36,6 +47,7 @@ import java.util.Map;
 import java.util.ArrayList;
 import jdk.test.lib.Utils;
 import jdk.test.lib.apps.LingeredApp;
+import jdk.test.lib.process.OutputAnalyzer;
 import jtreg.SkippedException;
 
 public class ClhsdbScanOops {
@@ -46,9 +58,7 @@ public class ClhsdbScanOops {
 
         try {
             ClhsdbLauncher test = new ClhsdbLauncher();
-            List<String> vmArgs = new ArrayList<String>();
-            vmArgs.add(gc);
-            theApp = LingeredApp.startApp(vmArgs);
+            theApp = LingeredApp.startApp(gc);
 
             System.out.println ("Started LingeredApp with the GC option " + gc +
                                 " and pid " + theApp.getPid());
@@ -62,35 +72,54 @@ public class ClhsdbScanOops {
             Map<String, List<String>> expStrMap = new HashMap<>();
             Map<String, List<String>> unExpStrMap = new HashMap<>();
 
-            String startAddress = null;
-            String endAddress = null;
-            String[] snippets = null;
+            String startAddress;
+            String endAddress;
+            String[] snippets;
+            String[] words;
+            String cmd;
 
+            // Run scanoops on the old gen
+            if (gc.contains("UseParallelGC")) {
+                snippets = universeOutput.split("PSOldGen \\[  ");
+            } else {
+                snippets = universeOutput.split("old  \\[");
+            }
+            words = snippets[1].split(",");
+            // Get the addresses for Old gen
+            startAddress = words[0].replace("[", "");
+            endAddress = words[1];
+            cmd = "scanoops " + startAddress + " " + endAddress;
+            String output1 = test.run(theApp.getPid(), List.of(cmd), null, null);
+
+            // Run scanoops on the eden gen
             if (gc.contains("UseParallelGC")) {
                 snippets = universeOutput.split("eden =  ");
             } else {
                 snippets = universeOutput.split("eden \\[");
             }
-            String[] words = snippets[1].split(",");
-            // Get the addresses from Eden
+            words = snippets[1].split(",");
+            // Get the addresses for Eden gen
             startAddress = words[0].replace("[", "");
             endAddress = words[1];
-            String cmd = "scanoops " + startAddress + " " + endAddress;
-            cmds.add(cmd);
+            cmd = "scanoops " + startAddress + " " + endAddress;
+            String output2 = test.run(theApp.getPid(), List.of(cmd), null, null);
 
-            expStrMap.put(cmd, List.of
-                ("java/lang/Object", "java/lang/Class", "java/lang/Thread",
-                 "java/lang/String", "\\[B", "\\[I"));
+            // Look for expected types in the combined eden and old gens
+            OutputAnalyzer out = new OutputAnalyzer(output1 + output2);
+            List<String> expectStrs = List.of(
+                    "java/lang/Object", "java/lang/Class", "java/lang/Thread",
+                    "java/lang/String", "\\[B", "\\[I");
+            for (String expectStr : expectStrs) {
+                out.shouldMatch(expectStr);
+            }
 
-            // Test the 'type' option also
-            // scanoops <start addr> <end addr> java/lang/String
+            // Test the 'type' option also:
+            //   scanoops <start addr> <end addr> java/lang/String
             // Ensure that only the java/lang/String oops are printed.
             cmd = cmd + " java/lang/String";
-            cmds.add(cmd);
             expStrMap.put(cmd, List.of("java/lang/String"));
-            unExpStrMap.put(cmd, List.of("java/lang/Thread"));
-
-            test.run(theApp.getPid(), cmds, expStrMap, unExpStrMap);
+            unExpStrMap.put(cmd, List.of("java/lang/Thread", "java/lang/Class", "java/lang/Object"));
+            test.run(theApp.getPid(), List.of(cmd), expStrMap, unExpStrMap);
         } catch (SkippedException e) {
             throw e;
         } catch (Exception ex) {
@@ -101,9 +130,9 @@ public class ClhsdbScanOops {
     }
 
     public static void main(String[] args) throws Exception {
+        String gc = args[0];
         System.out.println("Starting the ClhsdbScanOops test");
-        testWithGcType("-XX:+UseParallelGC");
-        testWithGcType("-XX:+UseSerialGC");
+        testWithGcType("-XX:+" + gc);
         System.out.println("Test PASSED");
     }
 }

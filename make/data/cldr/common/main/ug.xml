@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <!DOCTYPE ldml SYSTEM "../../common/dtd/ldml.dtd">
-<!-- Copyright © 1991-2019 Unicode, Inc.
+<!-- Copyright © 1991-2022 Unicode, Inc.
 For terms of use, see http://www.unicode.org/copyright.html
-Unicode and the Unicode Logo are registered trademarks of Unicode, Inc. in the U.S. and other countries.
+SPDX-License-Identifier: Unicode-DFS-2016
 CLDR data files are interpreted according to the LDML specification (http://unicode.org/reports/tr35/)
 
 Reviewed by Waris Abdukerim Janbaz <oyghan@gmail.com> of the Uyghur Computer Science Association http://ukij.org
 -->
 <ldml>
 	<identity>
-		<version number="$Revision: 14982 $"/>
+		<version number="$Revision$"/>
 		<language type="ug"/>
 	</identity>
 	<localeDisplayNames>
@@ -142,9 +142,7 @@ Reviewed by Waris Abdukerim Janbaz <oyghan@gmail.com> of the Uyghur Computer Sci
 			<language type="en_AU" draft="contributed">ئاۋسترالىيە ئىنگلىزچە</language>
 			<language type="en_CA" draft="contributed">كانادا ئىنگلىزچە</language>
 			<language type="en_GB" draft="contributed">ئەنگلىيە ئىنگلىزچە</language>
-			<language type="en_GB" alt="short" draft="contributed">ئەنگلىيە ئىنگلىزچە</language>
 			<language type="en_US" draft="contributed">ئامېرىكا ئىنگلىزچە</language>
-			<language type="en_US" alt="short" draft="contributed">ئامېرىكا ئىنگلىزچە</language>
 			<language type="enm" draft="contributed">ئوتتۇرا ئەسىر ئىنگلىزچە</language>
 			<language type="eo">ئېسپرانتوچە</language>
 			<language type="es">ئىسپانچە</language>
@@ -395,7 +393,6 @@ Reviewed by Waris Abdukerim Janbaz <oyghan@gmail.com> of the Uyghur Computer Sci
 			<language type="ro">رومىنچە</language>
 			<language type="rof" draft="contributed">رومبوچە</language>
 			<language type="rom" draft="contributed">سىگانچە</language>
-			<language type="root" draft="contributed">غول تىل</language>
 			<language type="ru">رۇسچە</language>
 			<language type="rup" draft="contributed">ئارومانچە</language>
 			<language type="rw">كېنىيەرىۋانداچە</language>
@@ -575,9 +572,7 @@ Reviewed by Waris Abdukerim Janbaz <oyghan@gmail.com> of the Uyghur Computer Sci
 			<script type="Hani" draft="contributed">خەنچە</script>
 			<script type="Hano" draft="contributed">خانۇنۇچە</script>
 			<script type="Hans" draft="contributed">ئاددىي خەنچە</script>
-			<script type="Hans" alt="stand-alone" draft="contributed">ئاددىي خەنچە</script>
 			<script type="Hant" draft="contributed">مۇرەككەپ خەنچە</script>
-			<script type="Hant" alt="stand-alone" draft="contributed">مۇرەككەپ خەنچە</script>
 			<script type="Hebr" draft="contributed">ئىبرانىچە</script>
 			<script type="Hira" draft="contributed">خىراگانا</script>
 			<script type="Hluw" draft="contributed">ئاناتولىيە تەسۋىرىي يېزىق</script>
@@ -1157,7 +1152,7 @@ Reviewed by Waris Abdukerim Janbaz <oyghan@gmail.com> of the Uyghur Computer Sci
 		<exemplarCharacters draft="contributed">[{ئا} {ئه} {ئو} {ئۇ} {ئۆ} {ئۈ} {ئې} {ئى} ا ە ب پ ت ج چ خ د ر ز ژ س ش غ ف ق ك گ ڭ ل م ن ھ و ۇ ۆ ۈ ۋ ې ى ي]</exemplarCharacters>
 		<exemplarCharacters type="auxiliary">[\u200E\u200F ئ]</exemplarCharacters>
 		<exemplarCharacters type="index" draft="contributed">[{ئا} {ئه} {ئو} {ئۇ} {ئۆ} {ئۈ} {ئې} {ئى} ا ە ب پ ت ج چ خ د ر ز ژ س ش غ ف ق ك گ ڭ ل م ن ھ و ۇ ۆ ۈ ۋ ې ى ي]</exemplarCharacters>
-		<exemplarCharacters type="numbers">[\- , . % ‰ + 0 1 2 3 4 5 6 7 8 9]</exemplarCharacters>
+		<exemplarCharacters type="numbers">[\- ‑ , . % ‰ + 0 1 2 3 4 5 6 7 8 9]</exemplarCharacters>
 	</characters>
 	<delimiters>
 		<quotationStart draft="contributed">»</quotationStart>
@@ -1237,21 +1232,25 @@ Reviewed by Waris Abdukerim Janbaz <oyghan@gmail.com> of the Uyghur Computer Sci
 					<dateFormatLength type="full">
 						<dateFormat>
 							<pattern draft="contributed">EEEE، MMMM d، U</pattern>
+							<datetimeSkeleton draft="contributed">UMMMMEEEEd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="long">
 						<dateFormat>
 							<pattern draft="contributed">MMMM d، U</pattern>
+							<datetimeSkeleton draft="contributed">UMMMMd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="medium">
 						<dateFormat>
 							<pattern draft="contributed">MMM d، U</pattern>
+							<datetimeSkeleton draft="contributed">UMMMd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="short">
 						<dateFormat>
 							<pattern draft="contributed">M/d/yy</pattern>
+							<datetimeSkeleton draft="contributed">yyMd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 				</dateFormats>
@@ -1261,21 +1260,25 @@ Reviewed by Waris Abdukerim Janbaz <oyghan@gmail.com> of the Uyghur Computer Sci
 					<dateFormatLength type="full">
 						<dateFormat>
 							<pattern draft="contributed">EEEE، MMMM d، y G</pattern>
+							<datetimeSkeleton draft="contributed">GyMMMMEEEEd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="long">
 						<dateFormat>
 							<pattern draft="contributed">MMMM d، y G</pattern>
+							<datetimeSkeleton draft="contributed">GyMMMMd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="medium">
 						<dateFormat>
 							<pattern draft="contributed">MMM d، y G</pattern>
+							<datetimeSkeleton draft="contributed">GyMMMd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="short">
 						<dateFormat>
 							<pattern draft="contributed">M/d/y GGGGG</pattern>
+							<datetimeSkeleton draft="contributed">GGGGGyMd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 				</dateFormats>
@@ -1634,43 +1637,51 @@ Reviewed by Waris Abdukerim Janbaz <oyghan@gmail.com> of the Uyghur Computer Sci
 					<dateFormatLength type="full">
 						<dateFormat>
 							<pattern>y d-MMMM، EEEE</pattern>
+							<datetimeSkeleton>yMMMMEEEEd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="long">
 						<dateFormat>
 							<pattern>d-MMMM، y</pattern>
+							<datetimeSkeleton>yMMMMd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="medium">
 						<dateFormat>
 							<pattern>d-MMM، y</pattern>
+							<datetimeSkeleton>yMMMd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="short">
 						<dateFormat>
 							<pattern>y-MM-dd</pattern>
+							<datetimeSkeleton>yMMdd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 				</dateFormats>
 				<timeFormats>
 					<timeFormatLength type="full">
 						<timeFormat>
-							<pattern>h:mm:ss a zzzz</pattern>
+							<pattern>HH:mm:ss zzzz</pattern>
+							<datetimeSkeleton>ahmmsszzzz</datetimeSkeleton>
 						</timeFormat>
 					</timeFormatLength>
 					<timeFormatLength type="long">
 						<timeFormat>
-							<pattern>h:mm:ss a z</pattern>
+							<pattern>HH:mm:ss z</pattern>
+							<datetimeSkeleton>ahmmssz</datetimeSkeleton>
 						</timeFormat>
 					</timeFormatLength>
 					<timeFormatLength type="medium">
 						<timeFormat>
-							<pattern>h:mm:ss a</pattern>
+							<pattern>HH:mm:ss</pattern>
+							<datetimeSkeleton>ahmmss</datetimeSkeleton>
 						</timeFormat>
 					</timeFormatLength>
 					<timeFormatLength type="short">
 						<timeFormat>
-							<pattern>h:mm a</pattern>
+							<pattern>HH:mm</pattern>
+							<datetimeSkeleton>ahmm</datetimeSkeleton>
 						</timeFormat>
 					</timeFormatLength>
 				</timeFormats>
@@ -1889,21 +1900,25 @@ Reviewed by Waris Abdukerim Janbaz <oyghan@gmail.com> of the Uyghur Computer Sci
 					<dateFormatLength type="full">
 						<dateFormat>
 							<pattern draft="contributed">EEEE، d MMMM، y G</pattern>
+							<datetimeSkeleton draft="contributed">GyMMMMEEEEd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="long">
 						<dateFormat>
 							<pattern draft="contributed">d MMMM، y G</pattern>
+							<datetimeSkeleton draft="contributed">GyMMMMd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="medium">
 						<dateFormat>
 							<pattern draft="contributed">d MMM، y G</pattern>
+							<datetimeSkeleton draft="contributed">GyMMMd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="short">
 						<dateFormat>
 							<pattern draft="contributed">d‏/M‏/y GGGGG</pattern>
+							<datetimeSkeleton draft="contributed">GGGGGyMd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 				</dateFormats>
@@ -1924,21 +1939,25 @@ Reviewed by Waris Abdukerim Janbaz <oyghan@gmail.com> of the Uyghur Computer Sci
 					<dateFormatLength type="full">
 						<dateFormat>
 							<pattern draft="contributed">EEEE, MMMM d، y G</pattern>
+							<datetimeSkeleton draft="contributed">GyMMMMEEEEd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="long">
 						<dateFormat>
 							<pattern draft="contributed">MMMM d، y G</pattern>
+							<datetimeSkeleton draft="contributed">GyMMMMd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="medium">
 						<dateFormat>
 							<pattern draft="contributed">MMM d، y G</pattern>
+							<datetimeSkeleton draft="contributed">GyMMMd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="short">
 						<dateFormat>
 							<pattern draft="contributed">M/d/y GGGGG</pattern>
+							<datetimeSkeleton draft="contributed">GGGGGyMd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 				</dateFormats>
@@ -2808,7 +2827,9 @@ Reviewed by Waris Abdukerim Janbaz <oyghan@gmail.com> of the Uyghur Computer Sci
 			</metazone>
 			<metazone type="Norfolk">
 				<long>
-					<standard draft="contributed">نورفولك ئاراللىرى ۋاقتى</standard>
+					<generic draft="contributed">نورفولك ئاراللىرى ۋاقتى</generic>
+					<standard draft="contributed">نورفولك ئاراللىرى ئۆلچەملىك ۋاقتى</standard>
+					<daylight draft="contributed">نورفولك ئاراللىرى يازلىق ۋاقتى</daylight>
 				</long>
 			</metazone>
 			<metazone type="Noronha">
@@ -3179,37 +3200,65 @@ Reviewed by Waris Abdukerim Janbaz <oyghan@gmail.com> of the Uyghur Computer Sci
 			<currencyFormatLength>
 				<currencyFormat type="standard">
 					<pattern>¤#,##0.00</pattern>
+					<pattern alt="alphaNextToNumber" draft="provisional">¤ #,##0.00</pattern>
+					<pattern alt="noCurrency" draft="provisional">#,##0.00</pattern>
 				</currencyFormat>
 				<currencyFormat type="accounting">
 					<pattern>¤#,##0.00;(¤#,##0.00)</pattern>
+					<pattern alt="alphaNextToNumber" draft="provisional">¤ #,##0.00;(¤ #,##0.00)</pattern>
+					<pattern alt="noCurrency" draft="provisional">#,##0.00;(#,##0.00)</pattern>
 				</currencyFormat>
 			</currencyFormatLength>
 			<currencyFormatLength type="short">
 				<currencyFormat type="standard">
 					<pattern type="1000" count="one" draft="provisional">¤0مىڭ</pattern>
+					<pattern type="1000" count="one" alt="alphaNextToNumber" draft="provisional">¤ 0مىڭ</pattern>
 					<pattern type="1000" count="other" draft="provisional">¤0مىڭ</pattern>
+					<pattern type="1000" count="other" alt="alphaNextToNumber" draft="provisional">¤ 0مىڭ</pattern>
 					<pattern type="10000" count="one" draft="provisional">¤00مىڭ</pattern>
+					<pattern type="10000" count="one" alt="alphaNextToNumber" draft="provisional">¤ 00مىڭ</pattern>
 					<pattern type="10000" count="other" draft="provisional">¤00مىڭ</pattern>
+					<pattern type="10000" count="other" alt="alphaNextToNumber" draft="provisional">¤ 00مىڭ</pattern>
 					<pattern type="100000" count="one" draft="provisional">¤000مىڭ</pattern>
+					<pattern type="100000" count="one" alt="alphaNextToNumber" draft="provisional">¤ 000مىڭ</pattern>
 					<pattern type="100000" count="other" draft="provisional">¤000مىڭ</pattern>
+					<pattern type="100000" count="other" alt="alphaNextToNumber" draft="provisional">¤ 000مىڭ</pattern>
 					<pattern type="1000000" count="one" draft="provisional">¤0مىليون</pattern>
+					<pattern type="1000000" count="one" alt="alphaNextToNumber" draft="provisional">¤ 0مىليون</pattern>
 					<pattern type="1000000" count="other" draft="provisional">¤0مىليون</pattern>
+					<pattern type="1000000" count="other" alt="alphaNextToNumber" draft="provisional">¤ 0مىليون</pattern>
 					<pattern type="10000000" count="one" draft="provisional">¤00مىليون</pattern>
+					<pattern type="10000000" count="one" alt="alphaNextToNumber" draft="provisional">¤ 00مىليون</pattern>
 					<pattern type="10000000" count="other" draft="provisional">¤00مىليون</pattern>
+					<pattern type="10000000" count="other" alt="alphaNextToNumber" draft="provisional">¤ 00مىليون</pattern>
 					<pattern type="100000000" count="one" draft="provisional">¤000مىليون</pattern>
+					<pattern type="100000000" count="one" alt="alphaNextToNumber" draft="provisional">¤ 000مىليون</pattern>
 					<pattern type="100000000" count="other" draft="provisional">¤000مىليون</pattern>
+					<pattern type="100000000" count="other" alt="alphaNextToNumber" draft="provisional">¤ 000مىليون</pattern>
 					<pattern type="1000000000" count="one" draft="provisional">¤0مىليارد</pattern>
+					<pattern type="1000000000" count="one" alt="alphaNextToNumber" draft="provisional">¤ 0مىليارد</pattern>
 					<pattern type="1000000000" count="other" draft="provisional">¤0مىليارد</pattern>
+					<pattern type="1000000000" count="other" alt="alphaNextToNumber" draft="provisional">¤ 0مىليارد</pattern>
 					<pattern type="10000000000" count="one" draft="provisional">¤00مىليارد</pattern>
+					<pattern type="10000000000" count="one" alt="alphaNextToNumber" draft="provisional">¤ 00مىليارد</pattern>
 					<pattern type="10000000000" count="other" draft="provisional">¤00مىليارد</pattern>
+					<pattern type="10000000000" count="other" alt="alphaNextToNumber" draft="provisional">¤ 00مىليارد</pattern>
 					<pattern type="100000000000" count="one" draft="provisional">¤000مىليارد</pattern>
+					<pattern type="100000000000" count="one" alt="alphaNextToNumber" draft="provisional">¤ 000مىليارد</pattern>
 					<pattern type="100000000000" count="other" draft="provisional">¤000مىليارد</pattern>
+					<pattern type="100000000000" count="other" alt="alphaNextToNumber" draft="provisional">¤ 000مىليارد</pattern>
 					<pattern type="1000000000000" count="one" draft="provisional">¤0T</pattern>
+					<pattern type="1000000000000" count="one" alt="alphaNextToNumber" draft="provisional">¤ 0T</pattern>
 					<pattern type="1000000000000" count="other" draft="provisional">¤0T</pattern>
+					<pattern type="1000000000000" count="other" alt="alphaNextToNumber" draft="provisional">¤ 0T</pattern>
 					<pattern type="10000000000000" count="one" draft="provisional">¤00T</pattern>
+					<pattern type="10000000000000" count="one" alt="alphaNextToNumber" draft="provisional">¤ 00T</pattern>
 					<pattern type="10000000000000" count="other" draft="provisional">¤00T</pattern>
+					<pattern type="10000000000000" count="other" alt="alphaNextToNumber" draft="provisional">¤ 00T</pattern>
 					<pattern type="100000000000000" count="one" draft="provisional">¤000T</pattern>
+					<pattern type="100000000000000" count="one" alt="alphaNextToNumber" draft="provisional">¤ 000T</pattern>
 					<pattern type="100000000000000" count="other" draft="provisional">¤000T</pattern>
+					<pattern type="100000000000000" count="other" alt="alphaNextToNumber" draft="provisional">¤ 000T</pattern>
 				</currencyFormat>
 			</currencyFormatLength>
 			<unitPattern count="one">{0} {1}</unitPattern>
@@ -4729,7 +4778,7 @@ Reviewed by Waris Abdukerim Janbaz <oyghan@gmail.com> of the Uyghur Computer Sci
 			<pattern type="range">{0}–{1}</pattern>
 		</miscPatterns>
 		<minimalPairs>
-			<pluralMinimalPairs count="one">{0}  كىتاب</pluralMinimalPairs>
+			<pluralMinimalPairs count="one">{0} كىتاب</pluralMinimalPairs>
 			<pluralMinimalPairs count="other">{0} بېلىق كۆردۈم ۋە ئۇنى يەۋەتتىم.</pluralMinimalPairs>
 		</minimalPairs>
 	</numbers>
@@ -4903,12 +4952,7 @@ Reviewed by Waris Abdukerim Janbaz <oyghan@gmail.com> of the Uyghur Computer Sci
 				<unitPattern count="one" draft="contributed">{0} ئات كۈچى</unitPattern>
 				<unitPattern count="other" draft="contributed">{0} ئات كۈچى</unitPattern>
 			</unit>
-			<unit type="pressure-hectopascal">
-				<displayName draft="provisional">يۈز پاسكال</displayName>
-				<unitPattern count="one" draft="contributed">{0} يۈز پاسكال</unitPattern>
-				<unitPattern count="other" draft="contributed">{0} يۈز پاسكال</unitPattern>
-			</unit>
-			<unit type="pressure-inch-hg">
+			<unit type="pressure-inch-ofhg">
 				<displayName draft="provisional">ديۇيم سىماب تۈۋرۇكى</displayName>
 				<unitPattern count="one" draft="contributed">{0} ديۇيم سىماب تۈۋرۇكى</unitPattern>
 				<unitPattern count="other" draft="contributed">{0} ديۇيم سىماب تۈۋرۇكى</unitPattern>
@@ -4917,6 +4961,11 @@ Reviewed by Waris Abdukerim Janbaz <oyghan@gmail.com> of the Uyghur Computer Sci
 				<displayName draft="provisional">مىللىبار</displayName>
 				<unitPattern count="one" draft="contributed">{0} مىللىبار</unitPattern>
 				<unitPattern count="other" draft="contributed">{0} مىللىبار</unitPattern>
+			</unit>
+			<unit type="pressure-hectopascal">
+				<displayName draft="provisional">يۈز پاسكال</displayName>
+				<unitPattern count="one" draft="contributed">{0} يۈز پاسكال</unitPattern>
+				<unitPattern count="other" draft="contributed">{0} يۈز پاسكال</unitPattern>
 			</unit>
 			<unit type="speed-kilometer-per-hour">
 				<displayName draft="provisional">كىلومېتىر ھەر سائەت</displayName>
@@ -5128,12 +5177,7 @@ Reviewed by Waris Abdukerim Janbaz <oyghan@gmail.com> of the Uyghur Computer Sci
 				<unitPattern count="one" draft="contributed">{0} ئات كۈچى</unitPattern>
 				<unitPattern count="other" draft="contributed">{0} ئات كۈچى</unitPattern>
 			</unit>
-			<unit type="pressure-hectopascal">
-				<displayName draft="provisional">يۈز پاسكال</displayName>
-				<unitPattern count="one" draft="contributed">{0} ھېكتوپاسكال</unitPattern>
-				<unitPattern count="other" draft="contributed">{0} ھېكتوپاسكال</unitPattern>
-			</unit>
-			<unit type="pressure-inch-hg">
+			<unit type="pressure-inch-ofhg">
 				<displayName draft="provisional">ديۇيم سىماب تۈۋرۇكى</displayName>
 				<unitPattern count="one" draft="contributed">{0} inHg</unitPattern>
 				<unitPattern count="other" draft="contributed">{0} inHg</unitPattern>
@@ -5142,6 +5186,11 @@ Reviewed by Waris Abdukerim Janbaz <oyghan@gmail.com> of the Uyghur Computer Sci
 				<displayName draft="provisional">مىللىبار</displayName>
 				<unitPattern count="one" draft="contributed">{0} mbar</unitPattern>
 				<unitPattern count="other" draft="contributed">{0} mbar</unitPattern>
+			</unit>
+			<unit type="pressure-hectopascal">
+				<displayName draft="provisional">يۈز پاسكال</displayName>
+				<unitPattern count="one" draft="contributed">{0} ھېكتوپاسكال</unitPattern>
+				<unitPattern count="other" draft="contributed">{0} ھېكتوپاسكال</unitPattern>
 			</unit>
 			<unit type="speed-kilometer-per-hour">
 				<displayName draft="provisional">كىلومېتىر ھەر سائەت</displayName>
@@ -5309,17 +5358,17 @@ Reviewed by Waris Abdukerim Janbaz <oyghan@gmail.com> of the Uyghur Computer Sci
 				<unitPattern count="one" draft="contributed">{0}hp</unitPattern>
 				<unitPattern count="other" draft="contributed">{0}hp</unitPattern>
 			</unit>
-			<unit type="pressure-hectopascal">
-				<unitPattern count="one" draft="contributed">{0}hPa</unitPattern>
-				<unitPattern count="other" draft="contributed">{0}hPa</unitPattern>
-			</unit>
-			<unit type="pressure-inch-hg">
+			<unit type="pressure-inch-ofhg">
 				<unitPattern count="one" draft="contributed">{0}&quot; Hg</unitPattern>
 				<unitPattern count="other" draft="contributed">{0}&quot; Hg</unitPattern>
 			</unit>
 			<unit type="pressure-millibar">
 				<unitPattern count="one" draft="contributed">{0}mb</unitPattern>
 				<unitPattern count="other" draft="contributed">{0}mb</unitPattern>
+			</unit>
+			<unit type="pressure-hectopascal">
+				<unitPattern count="one" draft="contributed">{0}hPa</unitPattern>
+				<unitPattern count="other" draft="contributed">{0}hPa</unitPattern>
 			</unit>
 			<unit type="speed-kilometer-per-hour">
 				<unitPattern count="one" draft="contributed">{0}kph</unitPattern>

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,13 +27,12 @@ package com.sun.tools.javac.tree;
 
 import java.io.*;
 
-import com.sun.source.tree.CaseTree.CaseKind;
 import com.sun.source.tree.MemberReferenceTree.ReferenceMode;
 import com.sun.source.tree.ModuleTree.ModuleKind;
 import com.sun.tools.javac.code.*;
 import com.sun.tools.javac.tree.JCTree.*;
 import com.sun.tools.javac.util.*;
-import com.sun.tools.javac.util.List;
+
 import static com.sun.tools.javac.code.Flags.*;
 import static com.sun.tools.javac.code.Flags.ANNOTATION;
 import static com.sun.tools.javac.tree.JCTree.Tag.*;
@@ -84,12 +83,12 @@ public class Pretty extends JCTree.Visitor {
      * A string sequence to be used when Pretty output should be constrained
      * to fit into a given size
      */
-    private final static String trimSequence = "[...]";
+    private static final String trimSequence = "[...]";
 
     /**
      * Max number of chars to be generated when output should fit into a single line
      */
-    private final static int PREFERRED_LENGTH = 20;
+    private static final int PREFERRED_LENGTH = 20;
 
     /** Align code to be indented to left margin.
      */
@@ -167,17 +166,9 @@ public class Pretty extends JCTree.Visitor {
 
     String lineSep = System.getProperty("line.separator");
 
-    /**************************************************************************
+    /* ************************************************************************
      * Traversal methods
      *************************************************************************/
-
-    /** Exception to propogate IOException through visitXXX methods */
-    private static class UncheckedIOException extends Error {
-        static final long serialVersionUID = -4032692679158424751L;
-        UncheckedIOException(IOException e) {
-            super(e.getMessage(), e);
-        }
-    }
 
     /** Visitor argument: the current precedence level.
      */
@@ -195,9 +186,7 @@ public class Pretty extends JCTree.Visitor {
                 tree.accept(this);
             }
         } catch (UncheckedIOException ex) {
-            IOException e = new IOException(ex.getMessage());
-            e.initCause(ex);
-            throw e;
+            throw ex.getCause();
         } finally {
             this.prec = prevPrec;
         }
@@ -233,6 +222,14 @@ public class Pretty extends JCTree.Visitor {
      */
     public <T extends JCTree> void printExprs(List<T> trees) throws IOException {
         printExprs(trees, ", ");
+    }
+
+
+    /** Derived visitor method: print pattern.
+     */
+
+    public void printPattern(JCTree tree) throws IOException {
+        printExpr(tree);
     }
 
     /** Derived visitor method: print list of statements, each on a separate line.
@@ -453,6 +450,7 @@ public class Pretty extends JCTree.Visitor {
             if (tree.directives == null) {
                 print(";");
             } else {
+                print(" ");
                 printBlock(tree.directives);
             }
             println();
@@ -557,6 +555,10 @@ public class Pretty extends JCTree.Visitor {
                     print(" extends ");
                     printExprs(tree.implementing);
                 }
+                if (tree.permitting.nonEmpty()) {
+                    print(" permits ");
+                    printExprs(tree.permitting);
+                }
             } else {
                 if ((tree.mods.flags & ENUM) != 0)
                     print("enum " + tree.name);
@@ -570,6 +572,10 @@ public class Pretty extends JCTree.Visitor {
                 if (tree.implementing.nonEmpty()) {
                     print(" implements ");
                     printExprs(tree.implementing);
+                }
+                if (tree.permitting.nonEmpty()) {
+                    print(" permits ");
+                    printExprs(tree.permitting);
                 }
             }
             print(" ");
@@ -685,9 +691,9 @@ public class Pretty extends JCTree.Visitor {
                 if ((tree.mods.flags & VARARGS) != 0) {
                     JCTree vartype = tree.vartype;
                     List<JCAnnotation> tas = null;
-                    if (vartype instanceof JCAnnotatedType) {
-                        tas = ((JCAnnotatedType)vartype).annotations;
-                        vartype = ((JCAnnotatedType)vartype).underlyingType;
+                    if (vartype instanceof JCAnnotatedType annotatedType) {
+                        tas = annotatedType.annotations;
+                        vartype = annotatedType.underlyingType;
                     }
                     printExpr(((JCArrayTypeTree) vartype).elemtype);
                     if (tas != null) {
@@ -795,7 +801,7 @@ public class Pretty extends JCTree.Visitor {
     public void visitForeachLoop(JCEnhancedForLoop tree) {
         try {
             print("for (");
-            printExpr(tree.var);
+            printExpr(tree.varOrRecordPattern);
             print(" : ");
             printExpr(tree.expr);
             print(") ");
@@ -836,11 +842,11 @@ public class Pretty extends JCTree.Visitor {
 
     public void visitCase(JCCase tree) {
         try {
-            if (tree.pats.isEmpty()) {
+            if (tree.labels.size() == 1 && tree.labels.get(0).hasTag(DEFAULTCASELABEL)) {
                 print("default");
             } else {
                 print("case ");
-                printExprs(tree.pats);
+                printExprs(tree.labels);
             }
             if (tree.caseKind == JCCase.STATEMENT) {
                 print(":");
@@ -851,7 +857,42 @@ public class Pretty extends JCTree.Visitor {
                 align();
             } else {
                 print(" -> ");
-                printStat(tree.stats.head);
+                if (tree.stats.size() == 1) {
+                    printStat(tree.stats.head);
+                } else {
+                    printBlock(tree.stats);
+                }
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    @Override
+    public void visitDefaultCaseLabel(JCTree.JCDefaultCaseLabel that) {
+        try {
+            print("default");
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    @Override
+    public void visitConstantCaseLabel(JCConstantCaseLabel tree) {
+        try {
+            print(tree.expr);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    @Override
+    public void visitPatternCaseLabel(JCPatternCaseLabel tree) {
+        try {
+            print(tree.pat);
+            if (tree.guard != null) {
+                print(" when ");
+                print(tree.guard);
             }
         } catch (IOException e) {
             throw new UncheckedIOException(e);
@@ -873,6 +914,37 @@ public class Pretty extends JCTree.Visitor {
             printStats(tree.cases);
             align();
             print("}");
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    public void visitBindingPattern(JCBindingPattern patt) {
+        try {
+            printExpr(patt.var);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    @Override
+    public void visitParenthesizedPattern(JCParenthesizedPattern patt) {
+        try {
+            print("(");
+            printExpr(patt.pattern);
+            print(")");
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    @Override
+    public void visitRecordPattern(JCRecordPattern tree) {
+        try {
+            printExpr(tree.deconstructor);
+            print("(");
+            printExprs(tree.nested);
+            print(")");
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -1284,7 +1356,11 @@ public class Pretty extends JCTree.Visitor {
             open(prec, TreeInfo.ordPrec);
             printExpr(tree.expr, TreeInfo.ordPrec);
             print(" instanceof ");
-            printExpr(tree.clazz, TreeInfo.ordPrec + 1);
+            if (tree.pattern instanceof JCPattern) {
+                printPattern(tree.pattern);
+            } else {
+                printExpr(tree.getType(), TreeInfo.ordPrec + 1);
+            }
             close(prec, TreeInfo.ordPrec);
         } catch (IOException e) {
             throw new UncheckedIOException(e);

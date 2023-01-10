@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -45,9 +45,11 @@ import java.net.http.HttpHeaders;
 import java.util.List;
 import java.util.ListIterator;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Stream;
@@ -104,6 +106,16 @@ public interface HttpServerAdapters {
         public abstract Set<Map.Entry<String, List<String>>> entrySet();
         public abstract List<String> get(String name);
         public abstract boolean containsKey(String name);
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof HttpTestRequestHeaders other)) return false;
+            return Objects.equals(entrySet(), other.entrySet());
+        }
+        @Override
+        public int hashCode() {
+            return Objects.hashCode(entrySet());
+        }
 
         public static HttpTestRequestHeaders of(Headers headers) {
             return new Http1TestRequestHeaders(headers);
@@ -137,6 +149,10 @@ public interface HttpServerAdapters {
             public boolean containsKey(String name) {
                 return headers.containsKey(name);
             }
+            @Override
+            public String toString() {
+                return String.valueOf(headers);
+            }
         }
         private static final class Http2TestRequestHeaders extends HttpTestRequestHeaders {
             private final HttpHeaders headers;
@@ -158,6 +174,10 @@ public interface HttpServerAdapters {
             @Override
             public boolean containsKey(String name) {
                 return headers.firstValue(name).isPresent();
+            }
+            @Override
+            public String toString() {
+                return String.valueOf(headers);
             }
         }
     }
@@ -196,7 +216,7 @@ public interface HttpServerAdapters {
     /**
      * A version agnostic adapter class for HTTP Server Exchange.
      */
-    public static abstract class HttpTestExchange {
+    public static abstract class HttpTestExchange implements AutoCloseable {
         public abstract Version getServerVersion();
         public abstract Version getExchangeVersion();
         public abstract InputStream   getRequestBody();
@@ -207,6 +227,7 @@ public interface HttpServerAdapters {
         public abstract URI getRequestURI();
         public abstract String getRequestMethod();
         public abstract void close();
+        public abstract InetSocketAddress getRemoteAddress();
         public void serverPush(URI uri, HttpHeaders headers, byte[] body) {
             ByteArrayInputStream bais = new ByteArrayInputStream(body);
             serverPush(uri, headers, bais);
@@ -264,6 +285,12 @@ public interface HttpServerAdapters {
             }
             @Override
             public void close() { exchange.close(); }
+
+            @Override
+            public InetSocketAddress getRemoteAddress() {
+                return exchange.getRemoteAddress();
+            }
+
             @Override
             public URI getRequestURI() { return exchange.getRequestURI(); }
             @Override
@@ -319,6 +346,12 @@ public interface HttpServerAdapters {
             }
             @Override
             public void close() { exchange.close();}
+
+            @Override
+            public InetSocketAddress getRemoteAddress() {
+                return exchange.getRemoteAddress();
+            }
+
             @Override
             public URI getRequestURI() { return exchange.getRequestURI(); }
             @Override
@@ -505,13 +538,23 @@ public interface HttpServerAdapters {
             return new Http1TestServer(server);
         }
 
+        public static HttpTestServer of(HttpServer server, ExecutorService executor) {
+            return new Http1TestServer(server, executor);
+        }
+
         public static HttpTestServer of(Http2TestServer server) {
             return new Http2TestServerImpl(server);
         }
 
         private static class Http1TestServer extends  HttpTestServer {
             private final HttpServer impl;
+            private final ExecutorService executor;
             Http1TestServer(HttpServer server) {
+                this(server, null);
+            }
+            Http1TestServer(HttpServer server, ExecutorService executor) {
+                if (executor != null) server.setExecutor(executor);
+                this.executor = executor;
                 this.impl = server;
             }
             @Override
@@ -522,7 +565,13 @@ public interface HttpServerAdapters {
             @Override
             public void stop() {
                 System.out.println("Http1TestServer: stop");
-                impl.stop(0);
+                try {
+                    impl.stop(0);
+                } finally {
+                    if (executor != null) {
+                        executor.shutdownNow();
+                    }
+                }
             }
             @Override
             public HttpTestContext addHandler(HttpTestHandler handler, String path) {

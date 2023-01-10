@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2002, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,6 +22,10 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
+
+#ifdef HEADLESS
+    #error This file should not be included in headless library
+#endif
 
 #include "awt.h"
 #include "awt_util.h"
@@ -821,7 +825,7 @@ JNIEXPORT void JNICALL Java_sun_awt_X11_XlibWrapper_SetProperty
     */
     if (!JNU_IsNull(env, jstr)) {
 #ifdef X_HAVE_UTF8_STRING
-        cname = (char *) (*env)->GetStringUTFChars(env, jstr, JNI_FALSE);
+        cname = (char *) (*env)->GetStringUTFChars(env, jstr, NULL);
 #else
         cname = (char *) JNU_GetStringPlatformChars(env, jstr, NULL);
 #endif
@@ -2180,11 +2184,6 @@ Java_sun_awt_X11_XlibWrapper_copyLongArray(JNIEnv *env,
     }
 }
 
-JNIEXPORT jint JNICALL
-Java_sun_awt_X11_XlibWrapper_XSynchronize(JNIEnv *env, jclass clazz, jlong display, jboolean onoff)
-{
-    return (jint) XSynchronize((Display*)jlong_to_ptr(display), (onoff == JNI_TRUE ? True : False));
-}
 
 JNIEXPORT jboolean JNICALL
 Java_sun_awt_X11_XlibWrapper_XShapeQueryExtension

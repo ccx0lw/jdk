@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -33,6 +33,7 @@
 #include "opto/phase.hpp"
 #include "opto/type.hpp"
 
+class BarrierSetC2;
 class Compile;
 class ConINode;
 class ConLNode;
@@ -91,7 +92,7 @@ public:
     return _table[table_index];
   }
 
-  void   remove_useless_nodes(VectorSet &useful); // replace with sentinel
+  void   remove_useless_nodes(VectorSet& useful); // replace with sentinel
   void   replace_with(NodeHash* nh);
   void   check_no_speculative_types(); // Check no speculative part for type nodes in table
 
@@ -241,7 +242,7 @@ public:
   // Record an initial type for a node, the node's bottom type.
   void    set_type_bottom(const Node* n) {
     // Use this for initialization when bottom_type() (or better) is not handy.
-    // Usually the initialization shoudl be to n->Value(this) instead,
+    // Usually the initialization should be to n->Value(this) instead,
     // or a hand-optimized value like Type::MEMORY or Type::CONTROL.
     assert(_types[n->_idx] == NULL, "must set the initial type just once");
     _types.map(n->_idx, n->bottom_type());
@@ -274,6 +275,7 @@ public:
   // Fast int or long constant.  Same as TypeInt::make(i) or TypeLong::make(l).
   ConINode* intcon(jint i);
   ConLNode* longcon(jlong l);
+  ConNode* integercon(jlong l, BasicType bt);
 
   // Fast zero or null constant.  Same as makecon(Type::get_zero_type(bt)).
   ConNode* zerocon(BasicType bt);
@@ -281,11 +283,6 @@ public:
   // Return a node which computes the same function as this node, but
   // in a faster or cheaper fashion.
   virtual Node *transform( Node *n ) = 0;
-
-  // Return whether two Nodes are equivalent.
-  // Must not be recursive, since the recursive version is built from this.
-  // For pessimistic optimizations this is simply pointer equivalence.
-  bool eqv(const Node* n1, const Node* n2) const { return n1 == n2; }
 
   // For pessimistic passes, the return type must monotonically narrow.
   // For optimistic  passes, the return type must monotonically widen.
@@ -339,9 +336,6 @@ public:
                                const Type* limit_type) const
   { ShouldNotCallThis(); return NULL; }
 
-  // Delayed node rehash if this is an IGVN phase
-  virtual void igvn_rehash_node_delayed(Node* n) {}
-
   // true if CFG node d dominates CFG node n
   virtual bool is_dominator(Node *d, Node *n) { fatal("unimplemented for this pass"); return false; };
 
@@ -373,18 +367,18 @@ public:
 class PhaseValues : public PhaseTransform {
 protected:
   NodeHash  _table;             // Hash table for value-numbering
-
+  bool      _iterGVN;
 public:
-  PhaseValues( Arena *arena, uint est_max_size );
-  PhaseValues( PhaseValues *pt );
-  NOT_PRODUCT( ~PhaseValues(); )
-  virtual PhaseIterGVN *is_IterGVN() { return 0; }
+  PhaseValues(Arena* arena, uint est_max_size);
+  PhaseValues(PhaseValues* pt);
+  NOT_PRODUCT(~PhaseValues();)
+  PhaseIterGVN* is_IterGVN() { return (_iterGVN) ? (PhaseIterGVN*)this : NULL; }
 
   // Some Ideal and other transforms delete --> modify --> insert values
-  bool   hash_delete(Node *n)     { return _table.hash_delete(n); }
-  void   hash_insert(Node *n)     { _table.hash_insert(n); }
-  Node  *hash_find_insert(Node *n){ return _table.hash_find_insert(n); }
-  Node  *hash_find(const Node *n) { return _table.hash_find(n); }
+  bool   hash_delete(Node* n)     { return _table.hash_delete(n); }
+  void   hash_insert(Node* n)     { _table.hash_insert(n); }
+  Node*  hash_find_insert(Node* n){ return _table.hash_find_insert(n); }
+  Node*  hash_find(const Node* n) { return _table.hash_find(n); }
 
   // Used after parsing to eliminate values that are no longer in program
   void   remove_useless_nodes(VectorSet &useful) {
@@ -395,8 +389,8 @@ public:
 
   virtual ConNode* uncached_makecon(const Type* t);  // override from PhaseTransform
 
-  virtual const Type* saturate(const Type* new_type, const Type* old_type,
-                               const Type* limit_type) const
+  const Type* saturate(const Type* new_type, const Type* old_type,
+                       const Type* limit_type) const
   { return new_type; }
 
 #ifndef PRODUCT
@@ -436,11 +430,11 @@ public:
   // Helper to call Node::Ideal() and BarrierSetC2::ideal_node().
   Node* apply_ideal(Node* i, bool can_reshape);
 
-  // Helper to call Node::Identity() and BarrierSetC2::identity_node().
-  Node* apply_identity(Node* n);
-
+#ifdef ASSERT
+  void dump_infinite_loop_info(Node* n, const char* where);
   // Check for a simple dead loop when a data node references itself.
-  DEBUG_ONLY(void dead_loop_check(Node *n);)
+  void dead_loop_check(Node *n);
+#endif
 };
 
 //------------------------------PhaseIterGVN-----------------------------------
@@ -458,11 +452,10 @@ private:
   void subsume_node( Node *old, Node *nn );
 
   Node_Stack _stack;      // Stack used to avoid recursion
-
 protected:
 
-  // Warm up hash table, type table and initial worklist
-  void init_worklist( Node *a_root );
+  // Shuffle worklist, for stress testing
+  void shuffle_worklist();
 
   virtual const Type* saturate(const Type* new_type, const Type* old_type,
                                const Type* limit_type) const;
@@ -470,14 +463,12 @@ protected:
   // improvement, such that it would take many (>>10) steps to reach 2**32.
 
 public:
-  PhaseIterGVN( PhaseIterGVN *igvn ); // Used by CCP constructor
-  PhaseIterGVN( PhaseGVN *gvn ); // Used after Parser
+  PhaseIterGVN(PhaseIterGVN* igvn); // Used by CCP constructor
+  PhaseIterGVN(PhaseGVN* gvn); // Used after Parser
 
   // Idealize new Node 'n' with respect to its inputs and its value
   virtual Node *transform( Node *a_node );
   virtual void record_for_igvn(Node *n) { }
-
-  virtual PhaseIterGVN *is_IterGVN() { return this; }
 
   Unique_Node_List _worklist;       // Iterative worklist
 
@@ -493,7 +484,7 @@ public:
 #endif
 
 #ifdef ASSERT
-  void dump_infinite_loop_info(Node* n);
+  void dump_infinite_loop_info(Node* n, const char* where);
   void trace_PhaseIterGVN_verbose(Node* n, int num_processed);
 #endif
 
@@ -534,14 +525,16 @@ public:
     _worklist.push(n);
   }
 
-  void igvn_rehash_node_delayed(Node* n) {
-    rehash_node_delayed(n);
-  }
-
   // Replace ith edge of "n" with "in"
   void replace_input_of(Node* n, int i, Node* in) {
     rehash_node_delayed(n);
-    n->set_req(i, in);
+    n->set_req_X(i, in, this);
+  }
+
+  // Add "in" as input (req) of "n"
+  void add_input_to(Node* n, Node* in) {
+    rehash_node_delayed(n);
+    n->add_req(in);
   }
 
   // Delete ith edge of "n"
@@ -550,18 +543,17 @@ public:
     n->del_req(i);
   }
 
+  // Delete precedence edge i of "n"
+  void delete_precedence_of(Node* n, int i) {
+    rehash_node_delayed(n);
+    n->rm_prec(i);
+  }
+
   bool delay_transform() const { return _delay_transform; }
 
   void set_delay_transform(bool delay) {
     _delay_transform = delay;
   }
-
-  // Clone loop predicates. Defined in loopTransform.cpp.
-  Node* clone_loop_predicates(Node* old_entry, Node* new_entry, bool clone_limit_check);
-  // Create a new if below new_entry for the predicate to be cloned
-  ProjNode* create_new_if_for_predicate(ProjNode* cont_proj, Node* new_entry,
-                                        Deoptimization::DeoptReason reason,
-                                        int opcode);
 
   void remove_speculative_types();
   void check_no_speculative_types() {
@@ -569,6 +561,7 @@ public:
   }
 
   bool is_dominator(Node *d, Node *n) { return is_dominator_helper(d, n, false); }
+  bool no_dependent_zero_check(Node* n) const;
 
 #ifndef PRODUCT
 protected:
@@ -585,15 +578,36 @@ protected:
 // Phase for performing global Conditional Constant Propagation.
 // Should be replaced with combined CCP & GVN someday.
 class PhaseCCP : public PhaseIterGVN {
+  Unique_Node_List _root_and_safepoints;
   // Non-recursive.  Use analysis to transform single Node.
-  virtual Node *transform_once( Node *n );
+  virtual Node* transform_once(Node* n);
 
-public:
+  Node* fetch_next_node(Unique_Node_List& worklist);
+  static void dump_type_and_node(const Node* n, const Type* t) PRODUCT_RETURN;
+
+  void push_child_nodes_to_worklist(Unique_Node_List& worklist, Node* n) const;
+  void push_if_not_bottom_type(Unique_Node_List& worklist, Node* n) const;
+  void push_more_uses(Unique_Node_List& worklist, Node* parent, const Node* use) const;
+  void push_phis(Unique_Node_List& worklist, const Node* use) const;
+  static void push_catch(Unique_Node_List& worklist, const Node* use);
+  void push_cmpu(Unique_Node_List& worklist, const Node* use) const;
+  static void push_counted_loop_phi(Unique_Node_List& worklist, Node* parent, const Node* use);
+  void push_loadp(Unique_Node_List& worklist, const Node* use) const;
+  static void push_load_barrier(Unique_Node_List& worklist, const BarrierSetC2* barrier_set, const Node* use);
+  void push_and(Unique_Node_List& worklist, const Node* parent, const Node* use) const;
+  void push_cast_ii(Unique_Node_List& worklist, const Node* parent, const Node* use) const;
+  void push_opaque_zero_trip_guard(Unique_Node_List& worklist, const Node* use) const;
+
+ public:
   PhaseCCP( PhaseIterGVN *igvn ); // Compute conditional constants
   NOT_PRODUCT( ~PhaseCCP(); )
 
   // Worklist algorithm identifies constants
   void analyze();
+#ifdef ASSERT
+  // For every node n on verify list, check if type(n) == n->Value()
+  void verify_analyze(Unique_Node_List& worklist_verify);
+#endif
   // Recursive traversal of program.  Used analysis to modify program.
   virtual Node *transform( Node *n );
   // Do any transformation after analysis

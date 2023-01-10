@@ -28,8 +28,8 @@
 #include "compiler/compileBroker.hpp"
 #include "oops/metadata.hpp"
 #include "prims/jvmtiImpl.hpp"
+#include "runtime/javaThread.hpp"
 #include "runtime/synchronizer.hpp"
-#include "runtime/thread.hpp"
 #include "services/threadService.hpp"
 #include "utilities/chunkedList.hpp"
 #if INCLUDE_JVMCI
@@ -70,7 +70,6 @@ MetadataOnStackMark::MetadataOnStackMark(bool walk_all_metadata, bool redefiniti
       CodeCache::old_nmethods_do(&md_on_stack);
     }
     CompileBroker::mark_on_stack();
-    JvmtiCurrentBreakpoints::metadata_do(Metadata::mark_on_stack);
     ThreadService::metadata_do(Metadata::mark_on_stack);
 #if INCLUDE_JVMCI
     JVMCI::metadata_do(Metadata::mark_on_stack);

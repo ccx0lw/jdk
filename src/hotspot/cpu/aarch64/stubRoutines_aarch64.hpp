@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2014, Red Hat Inc. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
@@ -36,14 +36,13 @@ static bool    returns_to_call_stub(address return_pc)   {
 
 enum platform_dependent_constants {
   code_size1 = 19000,          // simply increase if too small (assembler will crash if too small)
-  code_size2 = 28000           // simply increase if too small (assembler will crash if too small)
+  code_size2 = 45000           // simply increase if too small (assembler will crash if too small)
 };
 
 class aarch64 {
  friend class StubGenerator;
 
  private:
-  static address _get_previous_fp_entry;
   static address _get_previous_sp_entry;
 
   static address _f2i_fixup;
@@ -51,6 +50,7 @@ class aarch64 {
   static address _d2i_fixup;
   static address _d2l_fixup;
 
+  static address _vector_iota_indices;
   static address _float_sign_mask;
   static address _float_sign_flip;
   static address _double_sign_mask;
@@ -58,8 +58,6 @@ class aarch64 {
 
   static address _zero_blocks;
 
-  static address _has_negatives;
-  static address _has_negatives_long;
   static address _large_array_equals;
   static address _compare_long_string_LL;
   static address _compare_long_string_LU;
@@ -69,14 +67,17 @@ class aarch64 {
   static address _string_indexof_linear_uu;
   static address _string_indexof_linear_ul;
   static address _large_byte_array_inflate;
+
+  static address _method_entry_barrier;
+
+  static address _spin_wait;
+
   static bool _completed;
 
  public:
 
-  static address get_previous_fp_entry()
-  {
-    return _get_previous_fp_entry;
-  }
+  static address _count_positives;
+  static address _count_positives_long;
 
   static address get_previous_sp_entry()
   {
@@ -103,6 +104,10 @@ class aarch64 {
     return _d2l_fixup;
   }
 
+  static address vector_iota_indices() {
+    return _vector_iota_indices;
+  }
+
   static address float_sign_mask()
   {
     return _float_sign_mask;
@@ -127,12 +132,12 @@ class aarch64 {
     return _zero_blocks;
   }
 
-  static address has_negatives() {
-    return _has_negatives;
+  static address count_positives() {
+    return _count_positives;
   }
 
-  static address has_negatives_long() {
-      return _has_negatives_long;
+  static address count_positives_long() {
+      return _count_positives_long;
   }
 
   static address large_array_equals() {
@@ -169,6 +174,14 @@ class aarch64 {
 
   static address large_byte_array_inflate() {
       return _large_byte_array_inflate;
+  }
+
+  static address method_entry_barrier() {
+    return _method_entry_barrier;
+  }
+
+  static address spin_wait() {
+    return _spin_wait;
   }
 
   static bool complete() {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,6 +28,11 @@
 #include "utilities/bitMap.inline.hpp"
 
 
+#ifdef _LP64
+void LinearScan::allocate_fpu_stack() {
+  // No FPU stack used on x86-64
+}
+#else
 //----------------------------------------------------------------------
 // Allocation of FPU stack slots (Intel x86 only)
 //----------------------------------------------------------------------
@@ -427,7 +432,7 @@ void FpuStackAllocator::do_push(LIR_Opr opr) {
 }
 
 void FpuStackAllocator::pop_if_last_use(LIR_Op* op, LIR_Opr opr) {
-  assert(op->fpu_pop_count() == 0, "fpu_pop_count alredy set");
+  assert(op->fpu_pop_count() == 0, "fpu_pop_count already set");
   assert(tos_offset(opr) == 0, "can only pop stack top");
 
   if (opr->is_last_use()) {
@@ -437,7 +442,7 @@ void FpuStackAllocator::pop_if_last_use(LIR_Op* op, LIR_Opr opr) {
 }
 
 void FpuStackAllocator::pop_always(LIR_Op* op, LIR_Opr opr) {
-  assert(op->fpu_pop_count() == 0, "fpu_pop_count alredy set");
+  assert(op->fpu_pop_count() == 0, "fpu_pop_count already set");
   assert(tos_offset(opr) == 0, "can only pop stack top");
 
   op->set_fpu_pop_count(1);
@@ -545,21 +550,6 @@ void FpuStackAllocator::handle_op1(LIR_Op1* op1) {
       break;
     }
 
-    case lir_neg: {
-      if (in->is_fpu_register() && !in->is_xmm_register()) {
-        assert(res->is_fpu_register() && !res->is_xmm_register(), "must be");
-        assert(in->is_last_use(), "old value gets destroyed");
-
-        insert_free_if_dead(res, in);
-        insert_exchange(in);
-        new_in = to_fpu_stack_top(in);
-
-        do_rename(in, res);
-        new_res = to_fpu_stack_top(res);
-      }
-      break;
-    }
-
     case lir_convert: {
       Bytecodes::Code bc = op1->as_OpConvert()->bytecode();
       switch (bc) {
@@ -607,7 +597,7 @@ void FpuStackAllocator::handle_op1(LIR_Op1* op1) {
             insert_exchange(in);
             new_in = to_fpu_stack_top(in);
 
-            // TODO: update registes of stub
+            // TODO: update registers of stub
           }
           break;
 
@@ -688,17 +678,17 @@ void FpuStackAllocator::handle_op2(LIR_Op2* op2) {
       break;
     }
 
-    case lir_mul_strictfp:
-    case lir_div_strictfp: {
-      assert(op2->tmp1_opr()->is_fpu_register(), "strict operations need temporary fpu stack slot");
-      insert_free_if_dead(op2->tmp1_opr());
-      assert(sim()->stack_size() <= 7, "at least one stack slot must be free");
+    case lir_mul:
+    case lir_div: {
+      if (res->is_double_fpu()) {
+        assert(op2->tmp1_opr()->is_fpu_register(), "strict operations need temporary fpu stack slot");
+        insert_free_if_dead(op2->tmp1_opr());
+        assert(sim()->stack_size() <= 7, "at least one stack slot must be free");
+      }
       // fall-through: continue with the normal handling of lir_mul and lir_div
     }
     case lir_add:
-    case lir_sub:
-    case lir_mul:
-    case lir_div: {
+    case lir_sub: {
       assert(left->is_fpu_register(), "must be");
       assert(res->is_fpu_register(), "must be");
       assert(left->is_equal(res), "must be");
@@ -709,7 +699,7 @@ void FpuStackAllocator::handle_op2(LIR_Op2* op2) {
         insert_exchange(left);
         new_left = to_fpu_stack_top(left);
       } else {
-        // no exchange necessary if right is alredy on top of stack
+        // no exchange necessary if right is already on top of stack
         if (tos_offset(right) == 0) {
           new_left = to_fpu_stack(left);
           new_right = to_fpu_stack_top(right);
@@ -767,7 +757,8 @@ void FpuStackAllocator::handle_op2(LIR_Op2* op2) {
     }
 
     case lir_abs:
-    case lir_sqrt: {
+    case lir_sqrt:
+    case lir_neg: {
       // Right argument appears to be unused
       assert(right->is_illegal(), "must be");
       assert(left->is_fpu_register(), "must be");
@@ -799,7 +790,7 @@ void FpuStackAllocator::handle_opCall(LIR_OpCall* opCall) {
   LIR_Opr res = opCall->result_opr();
 
   // clear fpu-stack before call
-  // it may contain dead values that could not have been remved by previous operations
+  // it may contain dead values that could not have been removed by previous operations
   clear_fpu_stack(LIR_OprFact::illegalOpr);
   assert(sim()->is_empty(), "fpu stack must be empty now");
 
@@ -815,12 +806,6 @@ void FpuStackAllocator::handle_opCall(LIR_OpCall* opCall) {
 #ifndef PRODUCT
 void FpuStackAllocator::check_invalid_lir_op(LIR_Op* op) {
   switch (op->code()) {
-    case lir_24bit_FPU:
-    case lir_reset_FPU:
-    case lir_ffree:
-      assert(false, "operations not allowed in lir. If one of these operations is needed, check if they have fpu operands");
-      break;
-
     case lir_fpop_raw:
     case lir_fxch:
     case lir_fld:
@@ -945,7 +930,7 @@ void FpuStackAllocator::merge_fpu_stack(LIR_List* instrs, FpuStackSim* cur_sim, 
   assert(size_diff == cur_sim->stack_size() - sux_sim->stack_size(), "must be");
 
   // stack merge algorithm:
-  // 1) as long as the current stack top is not in the right location (that meens
+  // 1) as long as the current stack top is not in the right location (that means
   //    it should not be on the stack top), exchange it into the right location
   // 2) if the stack top is right, but the remaining stack is not ordered correctly,
   //    the stack top is exchanged away to get another value on top ->
@@ -1139,3 +1124,4 @@ bool FpuStackAllocator::merge_fpu_stack_with_successors(BlockBegin* block) {
 
   return changed;
 }
+#endif // _LP64

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,7 +26,8 @@
 #define SHARE_RUNTIME_HANDLES_INLINE_HPP
 
 #include "runtime/handles.hpp"
-#include "runtime/thread.hpp"
+
+#include "runtime/javaThread.hpp"
 #include "oops/metadata.hpp"
 #include "oops/oop.hpp"
 
@@ -42,6 +43,14 @@ inline Handle::Handle(Thread* thread, oop obj) {
   }
 }
 
+inline void Handle::replace(oop obj) {
+  // Unlike in OopHandle::replace, we shouldn't use a barrier here.
+  // OopHandle has its storage in OopStorage, which is walked concurrently and uses barriers.
+  // Handle is thread private, and iterated by Thread::oops_do, which is why it shouldn't have any barriers at all.
+  assert(_handle != NULL, "should not use replace");
+  *_handle = obj;
+}
+
 // Inline constructors for Specific Handles for different oop types
 #define DEF_HANDLE_CONSTR(type, is_a)                   \
 inline type##Handle::type##Handle (Thread* thread, type##Oop obj) : Handle(thread, (oop)obj) { \
@@ -55,29 +64,17 @@ DEF_HANDLE_CONSTR(typeArray, is_typeArray_noinline)
 
 // Constructor for metadata handles
 #define DEF_METADATA_HANDLE_FN(name, type) \
-inline name##Handle::name##Handle(type* obj) : _value(obj), _thread(NULL) {       \
-  if (obj != NULL) {                                                   \
-    assert(((Metadata*)obj)->is_valid(), "obj is valid");              \
-    _thread = Thread::current();                                       \
-    assert (_thread->is_in_stack((address)this), "not on stack?");     \
-    _thread->metadata_handles()->push((Metadata*)obj);                 \
-  }                                                                    \
-}                                                                      \
 inline name##Handle::name##Handle(Thread* thread, type* obj) : _value(obj), _thread(thread) { \
   if (obj != NULL) {                                                   \
     assert(((Metadata*)obj)->is_valid(), "obj is valid");              \
     assert(_thread == Thread::current(), "thread must be current");    \
-    assert (_thread->is_in_stack((address)this), "not on stack?");     \
+    assert(_thread->is_in_live_stack((address)this), "not on stack?"); \
     _thread->metadata_handles()->push((Metadata*)obj);                 \
   }                                                                    \
 }                                                                      \
 
 DEF_METADATA_HANDLE_FN(method, Method)
 DEF_METADATA_HANDLE_FN(constantPool, ConstantPool)
-
-inline HandleMark::HandleMark() {
-  initialize(Thread::current());
-}
 
 inline void HandleMark::push() {
   // This is intentionally a NOP. pop_and_restore will reset

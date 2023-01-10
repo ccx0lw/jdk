@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -236,6 +236,15 @@ public abstract class Snippet {
         ENUM_SUBKIND(Kind.TYPE_DECL),
 
         /**
+         * A record declaration.
+         * A {@code SubKind} of {@link Kind#TYPE_DECL}.
+         * @jls 8.10 Record Types
+         * @since 14
+         *
+         */
+        RECORD_SUBKIND(Kind.TYPE_DECL),
+
+        /**
          * An annotation interface declaration. A {@code SubKind} of
          * {@link Kind#TYPE_DECL}.
          * @jls 9.6 Annotation Types
@@ -368,7 +377,7 @@ public abstract class Snippet {
      * {@link jdk.jshell.Snippet.Status#isActive()}, if, as the
      * JShell state changes, the snippet will update, possibly
      * changing {@code Status}.
-     * An executable Snippet can only be executed if it is in the the
+     * An executable Snippet can only be executed if it is in the
      * {@link jdk.jshell.Snippet.Status#VALID} {@code Status}.
      * @see JShell#status(jdk.jshell.Snippet)
      */

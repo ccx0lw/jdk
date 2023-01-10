@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -36,7 +36,7 @@ import javadoc.tester.JavadocTester;
 public class TestNonInlineHtmlTagRemoval extends JavadocTester {
 
     public static void main(String... args) throws Exception {
-        TestNonInlineHtmlTagRemoval tester = new TestNonInlineHtmlTagRemoval();
+        var tester = new TestNonInlineHtmlTagRemoval();
         tester.runTests();
     }
 
@@ -52,17 +52,28 @@ public class TestNonInlineHtmlTagRemoval extends JavadocTester {
                 "attribute not supported in HTML5: type");
 
         checkOutput("C.html", true,
-                "<div class=\"block\">case1   end of sentence.</div>",
-                "<div class=\"block\">case2   end of sentence.</div>",
-                "<div class=\"block\">case3   end of sentence.</div>",
-                "<div class=\"block\">case4   end of sentence.</div>",
-                "<div class=\"block\">case5   end of sentence.</div>",
-                "<div class=\"block\">case6   end of sentence.</div>",
-                "<div class=\"block\">case7   end of sentence.</div>",
-                "<div class=\"block\">case8   end of sentence.</div>",
-                "<div class=\"block\">case9   end of sentence.</div>",
-                "<div class=\"block\">caseA   end of sentence.</div>",
-                "<div class=\"block\">caseB A block quote example:</div>");
+                """
+                    <div class="block">case1   end of sentence.</div>""",
+                """
+                    <div class="block">case2   end of sentence.</div>""",
+                """
+                    <div class="block">case3   end of sentence.</div>""",
+                """
+                    <div class="block">case4   end of sentence.</div>""",
+                """
+                    <div class="block">case5   end of sentence.</div>""",
+                """
+                    <div class="block">case6   end of sentence.</div>""",
+                """
+                    <div class="block">case7   end of sentence.</div>""",
+                """
+                    <div class="block">case8   end of sentence.</div>""",
+                """
+                    <div class="block">case9   end of sentence.</div>""",
+                """
+                    <div class="block">caseA   end of sentence.</div>""",
+                """
+                    <div class="block">caseB A block quote example:</div>""");
     }
 
     @Test
@@ -73,6 +84,7 @@ public class TestNonInlineHtmlTagRemoval extends JavadocTester {
         checkExit(Exit.ERROR);
 
         checkOutput("Negative.html", true,
-                "<div class=\"block\">case1: A hanging &lt;  : xx<</div>");
+                """
+                    <div class="block">case1: A hanging &lt;  : xx<span class="invalid-tag">invalid input: '&lt;'</span></div>""");
     }
 }

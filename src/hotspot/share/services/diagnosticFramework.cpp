@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -161,7 +161,7 @@ void DCmdParser::add_dcmd_option(GenDCmdArgument* arg) {
     o->set_next(arg);
   }
   arg->set_next(NULL);
-  Thread* THREAD = Thread::current();
+  JavaThread* THREAD = JavaThread::current(); // For exception macros.
   arg->init_value(THREAD);
   if (HAS_PENDING_EXCEPTION) {
     fatal("Initialization must be successful");
@@ -180,7 +180,7 @@ void DCmdParser::add_dcmd_argument(GenDCmdArgument* arg) {
     a->set_next(arg);
   }
   arg->set_next(NULL);
-  Thread* THREAD = Thread::current();
+  JavaThread* THREAD = JavaThread::current(); // For exception macros.
   arg->init_value(THREAD);
   if (HAS_PENDING_EXCEPTION) {
     fatal("Initialization must be successful");
@@ -455,13 +455,18 @@ void DCmdFactory::send_notification_internal(TRAPS) {
   HandleMark hm(THREAD);
   bool notif = false;
   {
-    MutexLocker ml(Notification_lock, Mutex::_no_safepoint_check_flag);
+    MutexLocker ml(THREAD, Notification_lock, Mutex::_no_safepoint_check_flag);
     notif = _has_pending_jmx_notification;
     _has_pending_jmx_notification = false;
   }
   if (notif) {
 
     Klass* k = Management::com_sun_management_internal_DiagnosticCommandImpl_klass(CHECK);
+    if (k == nullptr) {
+      fatal("Should have the DiagnosticCommandImpl class");
+      return; // silence the compiler
+    }
+
     InstanceKlass* dcmd_mbean_klass = InstanceKlass::cast(k);
 
     JavaValue result(T_OBJECT);
@@ -471,7 +476,7 @@ void DCmdFactory::send_notification_internal(TRAPS) {
             vmSymbols::getDiagnosticCommandMBean_signature(),
             CHECK);
 
-    instanceOop m = (instanceOop) result.get_jobject();
+    instanceOop m = (instanceOop) result.get_oop();
     instanceHandle dcmd_mbean_h(THREAD, m);
 
     if (!dcmd_mbean_h->is_a(k)) {

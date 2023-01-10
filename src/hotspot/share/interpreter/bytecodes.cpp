@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,16 +28,6 @@
 #include "oops/method.hpp"
 #include "utilities/align.hpp"
 #include "utilities/bytes.hpp"
-
-
-#if defined(WIN32) && (defined(_MSC_VER) && (_MSC_VER < 1600))
-// Windows AMD64 Compiler Hangs compiling this file
-// unless optimization is off
-#ifdef _M_AMD64
-#pragma optimize ("", off)
-#endif
-#endif
-
 
 bool            Bytecodes::_is_initialized = false;
 const char*     Bytecodes::_name          [Bytecodes::number_of_codes];
@@ -471,7 +461,7 @@ void Bytecodes::initialize() {
   def(_new                 , "new"                 , "bkk"  , NULL    , T_OBJECT ,  1, true );
   def(_newarray            , "newarray"            , "bc"   , NULL    , T_OBJECT ,  0, true );
   def(_anewarray           , "anewarray"           , "bkk"  , NULL    , T_OBJECT ,  0, true );
-  def(_arraylength         , "arraylength"         , "b"    , NULL    , T_VOID   ,  0, true );
+  def(_arraylength         , "arraylength"         , "b"    , NULL    , T_INT    ,  0, true );
   def(_athrow              , "athrow"              , "b"    , NULL    , T_VOID   , -1, true );
   def(_checkcast           , "checkcast"           , "bkk"  , NULL    , T_OBJECT ,  0, true );
   def(_instanceof          , "instanceof"          , "bkk"  , NULL    , T_INT    ,  0, true );
@@ -532,8 +522,8 @@ void Bytecodes::initialize() {
   def(_nofast_getfield     , "nofast_getfield"     , "bJJ"  , NULL    , T_ILLEGAL,  0, true,  _getfield       );
   def(_nofast_putfield     , "nofast_putfield"     , "bJJ"  , NULL    , T_ILLEGAL, -2, true , _putfield       );
 
-  def(_nofast_aload_0      , "nofast_aload_0"      , "b"    , NULL    , T_ILLEGAL,  1, true , _aload_0        );
-  def(_nofast_iload        , "nofast_iload"        , "bi"   , NULL    , T_ILLEGAL,  1, false, _iload          );
+  def(_nofast_aload_0      , "nofast_aload_0"      , "b"    , NULL    , T_OBJECT,   1, true , _aload_0        );
+  def(_nofast_iload        , "nofast_iload"        , "bi"   , NULL    , T_INT,      1, false, _iload          );
 
   def(_shouldnotreachhere  , "_shouldnotreachhere" , "b"    , NULL    , T_VOID   ,  0, false);
 

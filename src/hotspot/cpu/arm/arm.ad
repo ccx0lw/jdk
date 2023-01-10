@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008, 2018, Oracle and/or its affiliates. All rights reserved.
+// Copyright (c) 2008, 2022, Oracle and/or its affiliates. All rights reserved.
 // DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
 //
 // This code is free software; you can redistribute it and/or modify it
@@ -59,6 +59,9 @@ source_hpp %{
 // To keep related declarations/definitions/uses close together,
 // we switch between source %{ }% and source_hpp %{ }% freely as needed.
 
+#include "asm/macroAssembler.hpp"
+#include "gc/shared/barrierSetAssembler.hpp"
+
 // Does destination need to be loaded in a register then passed to a
 // branch instruction?
 extern bool maybe_far_call(const CallNode *n);
@@ -116,28 +119,48 @@ class HandlerImpl {
 
 };
 
+class Node::PD {
+public:
+  enum NodeFlags {
+    _last_flag = Node::_last_flag
+  };
+};
+
+// Assert that the given node is not a var shift.
+bool assert_not_var_shift(const Node *n);
 %}
 
 source %{
+
+// Assert that the given node is not a var shift.
+bool assert_not_var_shift(const Node *n) {
+  assert(!n->as_ShiftV()->is_var_shift(), "illegal var shift");
+  return true;
+}
+
 #define __ _masm.
 
 static FloatRegister reg_to_FloatRegister_object(int register_encoding);
 static Register reg_to_register_object(int register_encoding);
 
+void PhaseOutput::pd_perform_mach_node_analysis() {
+}
+
+int MachNode::pd_alignment_required() const {
+  return 1;
+}
+
+int MachNode::compute_padding(int current_offset) const {
+  return 0;
+}
 
 // ****************************************************************************
 
 // REQUIRED FUNCTIONALITY
 
-// Indicate if the safepoint node needs the polling page as an input.
-// Since ARM does not have absolute addressing, it does.
-bool SafePointNode::needs_polling_address_input() {
-  return true;
-}
-
 // emit an interrupt that is caught by the debugger (for debugging compiler)
 void emit_break(CodeBuffer &cbuf) {
-  MacroAssembler _masm(&cbuf);
+  C2_MacroAssembler _masm(&cbuf);
   __ breakpoint();
 }
 
@@ -157,7 +180,7 @@ uint MachBreakpointNode::size(PhaseRegAlloc *ra_) const {
 
 
 void emit_nop(CodeBuffer &cbuf) {
-  MacroAssembler _masm(&cbuf);
+  C2_MacroAssembler _masm(&cbuf);
   __ nop();
 }
 
@@ -165,7 +188,7 @@ void emit_nop(CodeBuffer &cbuf) {
 void emit_call_reloc(CodeBuffer &cbuf, const MachCallNode *n, MachOper *m, RelocationHolder const& rspec) {
   int ret_addr_offset0 = n->as_MachCall()->ret_addr_offset();
   int call_site_offset = cbuf.insts()->mark_off();
-  MacroAssembler _masm(&cbuf);
+  C2_MacroAssembler _masm(&cbuf);
   __ set_inst_mark(); // needed in emit_to_interp_stub() to locate the call
   address target = (address)m->method();
   assert(n->as_MachCall()->entry_point() == target, "sanity");
@@ -194,12 +217,12 @@ void emit_hi(CodeBuffer &cbuf, int val) {  }
 //=============================================================================
 const RegMask& MachConstantBaseNode::_out_RegMask = PTR_REG_mask();
 
-int Compile::ConstantTable::calculate_table_base_offset() const {
+int ConstantTable::calculate_table_base_offset() const {
   int offset = -(size() / 2);
   // flds, fldd: 8-bit  offset multiplied by 4: +/- 1024
   // ldr, ldrb : 12-bit offset:                 +/- 4096
   if (!Assembler::is_simm10(offset)) {
-    offset = Assembler::min_simm10();
+    offset = Assembler::min_simm10;
   }
   return offset;
 }
@@ -211,12 +234,14 @@ void MachConstantBaseNode::postalloc_expand(GrowableArray <Node *> *nodes, Phase
 
 void MachConstantBaseNode::emit(CodeBuffer& cbuf, PhaseRegAlloc* ra_) const {
   Compile* C = ra_->C;
-  Compile::ConstantTable& constant_table = C->constant_table();
-  MacroAssembler _masm(&cbuf);
+  ConstantTable& constant_table = C->output()->constant_table();
+  C2_MacroAssembler _masm(&cbuf);
 
   Register r = as_Register(ra_->get_encode(this));
   CodeSection* consts_section = __ code()->consts();
-  int consts_size = consts_section->align_at_start(consts_section->size());
+  CodeSection* insts_section = __ code()->insts();
+  // constants section size is aligned according to the align_at_start settings of the next section
+  int consts_size = insts_section->align_at_start(consts_section->size());
   assert(constant_table.size() == consts_size, "must be: %d == %d", constant_table.size(), consts_size);
 
   // Materialize the constant table base.
@@ -245,9 +270,9 @@ void MachPrologNode::format( PhaseRegAlloc *ra_, outputStream *st ) const {
     st->print_cr("NOP"); st->print("\t");
   }
 
-  size_t framesize = C->frame_size_in_bytes();
+  size_t framesize = C->output()->frame_size_in_bytes();
   assert((framesize & (StackAlignmentInBytes-1)) == 0, "frame size not aligned");
-  int bangsize = C->bang_size_in_bytes();
+  int bangsize = C->output()->bang_size_in_bytes();
   // Remove two words for return addr and rbp,
   framesize -= 2*wordSize;
   bangsize -= 2*wordSize;
@@ -257,27 +282,38 @@ void MachPrologNode::format( PhaseRegAlloc *ra_, outputStream *st ) const {
   // some VM calls (such as call site linkage) can use several kilobytes of
   // stack.  But the stack safety zone should account for that.
   // See bugs 4446381, 4468289, 4497237.
-  if (C->need_stack_bang(bangsize)) {
+  if (C->output()->need_stack_bang(bangsize)) {
     st->print_cr("! stack bang (%d bytes)", bangsize); st->print("\t");
   }
   st->print_cr("PUSH   R_FP|R_LR_LR"); st->print("\t");
   if (framesize != 0) {
     st->print   ("SUB    R_SP, R_SP, " SIZE_FORMAT,framesize);
   }
+
+  if (C->stub_function() == NULL && BarrierSet::barrier_set()->barrier_set_nmethod() != NULL) {
+    st->print("ldr t0, [guard]\n\t");
+    st->print("ldr t1, [Rthread, #thread_disarmed_guard_value_offset]\n\t");
+    st->print("cmp t0, t1\n\t");
+    st->print("beq skip\n\t");
+    st->print("blr #nmethod_entry_barrier_stub\n\t");
+    st->print("b skip\n\t");
+    st->print("guard: int\n\t");
+    st->print("skip:\n\t");
+  }
 }
 #endif
 
 void MachPrologNode::emit(CodeBuffer &cbuf, PhaseRegAlloc *ra_) const {
   Compile* C = ra_->C;
-  MacroAssembler _masm(&cbuf);
+  C2_MacroAssembler _masm(&cbuf);
 
   for (int i = 0; i < OptoPrologueNops; i++) {
     __ nop();
   }
 
-  size_t framesize = C->frame_size_in_bytes();
+  size_t framesize = C->output()->frame_size_in_bytes();
   assert((framesize & (StackAlignmentInBytes-1)) == 0, "frame size not aligned");
-  int bangsize = C->bang_size_in_bytes();
+  int bangsize = C->output()->bang_size_in_bytes();
   // Remove two words for return addr and fp,
   framesize -= 2*wordSize;
   bangsize -= 2*wordSize;
@@ -287,7 +323,7 @@ void MachPrologNode::emit(CodeBuffer &cbuf, PhaseRegAlloc *ra_) const {
   // some VM calls (such as call site linkage) can use several kilobytes of
   // stack.  But the stack safety zone should account for that.
   // See bugs 4446381, 4468289, 4497237.
-  if (C->need_stack_bang(bangsize)) {
+  if (C->output()->need_stack_bang(bangsize)) {
     __ arm_stack_overflow_check(bangsize, Rtemp);
   }
 
@@ -296,15 +332,20 @@ void MachPrologNode::emit(CodeBuffer &cbuf, PhaseRegAlloc *ra_) const {
     __ sub_slow(SP, SP, framesize);
   }
 
+  if (C->stub_function() == NULL) {
+    BarrierSetAssembler* bs = BarrierSet::barrier_set()->barrier_set_assembler();
+    bs->nmethod_entry_barrier(&_masm);
+  }
+
   // offset from scratch buffer is not valid
   if (strcmp(cbuf.name(), "Compile::Fill_buffer") == 0) {
-    C->set_frame_complete( __ offset() );
+    C->output()->set_frame_complete( __ offset() );
   }
 
   if (C->has_mach_constant_base_node()) {
     // NOTE: We set the table base offset here because users might be
     // emitted before MachConstantBaseNode.
-    Compile::ConstantTable& constant_table = C->constant_table();
+    ConstantTable& constant_table = C->output()->constant_table();
     constant_table.set_table_base_offset(constant_table.calculate_table_base_offset());
   }
 }
@@ -322,7 +363,7 @@ int MachPrologNode::reloc() const {
 void MachEpilogNode::format( PhaseRegAlloc *ra_, outputStream *st ) const {
   Compile* C = ra_->C;
 
-  size_t framesize = C->frame_size_in_bytes();
+  size_t framesize = C->output()->frame_size_in_bytes();
   framesize -= 2*wordSize;
 
   if (framesize != 0) {
@@ -339,10 +380,10 @@ void MachEpilogNode::format( PhaseRegAlloc *ra_, outputStream *st ) const {
 #endif
 
 void MachEpilogNode::emit(CodeBuffer &cbuf, PhaseRegAlloc *ra_) const {
-  MacroAssembler _masm(&cbuf);
+  C2_MacroAssembler _masm(&cbuf);
   Compile* C = ra_->C;
 
-  size_t framesize = C->frame_size_in_bytes();
+  size_t framesize = C->output()->frame_size_in_bytes();
   framesize -= 2*wordSize;
   if (framesize != 0) {
     __ add_slow(SP, SP, framesize);
@@ -351,10 +392,7 @@ void MachEpilogNode::emit(CodeBuffer &cbuf, PhaseRegAlloc *ra_) const {
 
   // If this does safepoint polling, then do it here
   if (do_polling() && ra_->C->is_method_compilation()) {
-    // mov_slow here is usually one or two instruction
-    __ mov_address(Rtemp, (address)os::get_polling_page());
-    __ relocate(relocInfo::poll_return_type);
-    __ ldr(Rtemp, Address(Rtemp));
+    __ read_polling_page(Rtemp, relocInfo::poll_return_type);
   }
 }
 
@@ -368,13 +406,6 @@ int MachEpilogNode::reloc() const {
 
 const Pipeline * MachEpilogNode::pipeline() const {
   return MachNode::pipeline_class();
-}
-
-int MachEpilogNode::safepoint_offset() const {
-  assert( do_polling(), "no return for this epilog node");
-  //  return MacroAssembler::size_of_sethi(os::get_polling_page());
-  Unimplemented();
-  return 0;
 }
 
 //=============================================================================
@@ -432,7 +463,7 @@ uint MachSpillCopyNode::implementation( CodeBuffer *cbuf,
   // Bailout only for real instruction emit.
   // This requires a single comment change in shared code. ( see output.cpp "Normal" instruction case )
 
-  MacroAssembler _masm(cbuf);
+  C2_MacroAssembler _masm(cbuf);
 
   // --------------------------------------
   // Check for mem-mem move.  Load into unused float registers and fall into
@@ -793,7 +824,7 @@ void MachNopNode::format( PhaseRegAlloc *, outputStream *st ) const {
 #endif
 
 void MachNopNode::emit(CodeBuffer &cbuf, PhaseRegAlloc * ) const {
-  MacroAssembler _masm(&cbuf);
+  C2_MacroAssembler _masm(&cbuf);
   for(int i = 0; i < _count; i += 1) {
     __ nop();
   }
@@ -814,7 +845,7 @@ void BoxLockNode::format( PhaseRegAlloc *ra_, outputStream *st ) const {
 #endif
 
 void BoxLockNode::emit(CodeBuffer &cbuf, PhaseRegAlloc *ra_) const {
-  MacroAssembler _masm(&cbuf);
+  C2_MacroAssembler _masm(&cbuf);
   int offset = ra_->reg2offset(in_RegMask(0).find_first_elem());
   int reg = ra_->get_encode(this);
   Register dst = reg_to_register_object(reg);
@@ -830,7 +861,7 @@ void BoxLockNode::emit(CodeBuffer &cbuf, PhaseRegAlloc *ra_) const {
 uint BoxLockNode::size(PhaseRegAlloc *ra_) const {
   // BoxLockNode is not a MachNode, so we can't just call MachNode::size(ra_)
   assert(ra_ == ra_->C->regalloc(), "sanity");
-  return ra_->C->scratch_emit_size(this);
+  return ra_->C->output()->scratch_emit_size(this);
 }
 
 //=============================================================================
@@ -850,7 +881,7 @@ void MachUEPNode::format( PhaseRegAlloc *ra_, outputStream *st ) const {
 #endif
 
 void MachUEPNode::emit(CodeBuffer &cbuf, PhaseRegAlloc *ra_) const {
-  MacroAssembler _masm(&cbuf);
+  C2_MacroAssembler _masm(&cbuf);
   Register iCache  = reg_to_register_object(Matcher::inline_cache_reg_encode());
   assert(iCache == Ricklass, "should be");
   Register receiver = R0;
@@ -869,7 +900,7 @@ uint MachUEPNode::size(PhaseRegAlloc *ra_) const {
 
 // Emit exception handler code.
 int HandlerImpl::emit_exception_handler(CodeBuffer& cbuf) {
-  MacroAssembler _masm(&cbuf);
+  C2_MacroAssembler _masm(&cbuf);
 
   address base = __ start_a_stub(size_exception_handler());
   if (base == NULL) {
@@ -892,7 +923,7 @@ int HandlerImpl::emit_exception_handler(CodeBuffer& cbuf) {
 int HandlerImpl::emit_deopt_handler(CodeBuffer& cbuf) {
   // Can't use any of the current frame's registers as we may have deopted
   // at a poll and everything can be live.
-  MacroAssembler _masm(&cbuf);
+  C2_MacroAssembler _masm(&cbuf);
 
   address base = __ start_a_stub(size_deopt_handler());
   if (base == NULL) {
@@ -971,32 +1002,54 @@ const bool Matcher::match_rule_supported(int opcode) {
   return true;  // Per default match rules are supported.
 }
 
-const bool Matcher::match_rule_supported_vector(int opcode, int vlen) {
+const bool Matcher::match_rule_supported_superword(int opcode, int vlen, BasicType bt) {
+  return match_rule_supported_vector(opcode, vlen, bt);
+}
+
+const bool Matcher::match_rule_supported_vector(int opcode, int vlen, BasicType bt) {
 
   // TODO
   // identify extra cases that we might want to provide match rules for
   // e.g. Op_ vector nodes and other intrinsics while guarding with vlen
-  bool ret_value = match_rule_supported(opcode);
+  bool ret_value = match_rule_supported(opcode) && vector_size_supported(bt, vlen);
   // Add rules here.
 
   return ret_value;  // Per default match rules are supported.
 }
 
-const bool Matcher::has_predicated_vectors(void) {
+const bool Matcher::match_rule_supported_vector_masked(int opcode, int vlen, BasicType bt) {
   return false;
 }
 
-const int Matcher::float_pressure(int default_pressure_threshold) {
-  return default_pressure_threshold;
+const bool Matcher::vector_needs_partial_operations(Node* node, const TypeVect* vt) {
+  return false;
 }
 
-int Matcher::regnum_to_fpu_offset(int regnum) {
-  return regnum - 32; // The FP registers are in the second chunk
+const RegMask* Matcher::predicate_reg_mask(void) {
+  return NULL;
+}
+
+const TypeVectMask* Matcher::predicate_reg_type(const Type* elemTy, int length) {
+  return NULL;
+}
+
+// Vector calling convention not yet implemented.
+const bool Matcher::supports_vector_calling_convention(void) {
+  return false;
+}
+
+OptoRegPair Matcher::vector_return_value(uint ideal_reg) {
+  Unimplemented();
+  return OptoRegPair(0, 0);
 }
 
 // Vector width in bytes
 const int Matcher::vector_width_in_bytes(BasicType bt) {
   return MaxVectorSize;
+}
+
+const int Matcher::scalable_vector_reg_size(const BasicType bt) {
+  return -1;
 }
 
 // Vector ideal reg corresponding to specified size in bytes
@@ -1010,10 +1063,6 @@ const uint Matcher::vector_ideal_reg(int size) {
   return 0;
 }
 
-const uint Matcher::vector_shift_count_ideal_reg(int size) {
-  return vector_ideal_reg(size);
-}
-
 // Limits on vector size (number of elements) loaded into vector.
 const int Matcher::max_vector_size(const BasicType bt) {
   assert(is_java_primitive(bt), "only primitive type vectors");
@@ -1023,20 +1072,6 @@ const int Matcher::max_vector_size(const BasicType bt) {
 const int Matcher::min_vector_size(const BasicType bt) {
   assert(is_java_primitive(bt), "only primitive type vectors");
   return 8/type2aelembytes(bt);
-}
-
-// ARM doesn't support misaligned vectors store/load.
-const bool Matcher::misaligned_vectors_ok() {
-  return false;
-}
-
-// ARM doesn't support AES intrinsics
-const bool Matcher::pass_original_key_for_aes() {
-  return false;
-}
-
-const bool Matcher::convL2FSupported(void) {
-  return false;
 }
 
 // Is this branch offset short enough that a short branch can be used?
@@ -1053,98 +1088,36 @@ bool Matcher::is_short_branch_offset(int rule, int br_size, int offset) {
   return false;
 }
 
-const bool Matcher::isSimpleConstant64(jlong value) {
-  // Will one (StoreL ConL) be cheaper than two (StoreI ConI)?.
+MachOper* Matcher::pd_specialize_generic_vector_operand(MachOper* original_opnd, uint ideal_reg, bool is_temp) {
+  ShouldNotReachHere(); // generic vector operands not supported
+  return NULL;
+}
+
+bool Matcher::is_reg2reg_move(MachNode* m) {
+  ShouldNotReachHere();  // generic vector operands not supported
   return false;
 }
 
-// No scaling for the parameter the ClearArray node.
-const bool Matcher::init_array_count_is_in_bytes = true;
+bool Matcher::is_generic_vector(MachOper* opnd)  {
+  ShouldNotReachHere();  // generic vector operands not supported
+  return false;
+}
 
-// Needs 2 CMOV's for longs.
-const int Matcher::long_cmove_cost() { return 2; }
-
-// CMOVF/CMOVD are expensive on ARM.
-const int Matcher::float_cmove_cost() { return ConditionalMoveLimit; }
-
-// Does the CPU require late expand (see block.cpp for description of late expand)?
-const bool Matcher::require_postalloc_expand = false;
-
-// Do we need to mask the count passed to shift instructions or does
-// the cpu only look at the lower 5/6 bits anyway?
-// FIXME: does this handle vector shifts as well?
-const bool Matcher::need_masked_shift_count = true;
-
-const bool Matcher::convi2l_type_required = true;
+// Should the matcher clone input 'm' of node 'n'?
+bool Matcher::pd_clone_node(Node* n, Node* m, Matcher::MStack& mstack) {
+  if (is_vshift_con_pattern(n, m)) { // ShiftV src (ShiftCntV con)
+    mstack.push(m, Visit);           // m = ShiftCntV
+    return true;
+  }
+  return false;
+}
 
 // Should the Matcher clone shifts on addressing modes, expecting them
 // to be subsumed into complex addressing expressions or compute them
 // into registers?
-bool Matcher::clone_address_expressions(AddPNode* m, Matcher::MStack& mstack, VectorSet& address_visited) {
+bool Matcher::pd_clone_address_expressions(AddPNode* m, Matcher::MStack& mstack, VectorSet& address_visited) {
   return clone_base_plus_offset_address(m, mstack, address_visited);
 }
-
-void Compile::reshape_address(AddPNode* addp) {
-}
-
-bool Matcher::narrow_oop_use_complex_address() {
-  NOT_LP64(ShouldNotCallThis());
-  assert(UseCompressedOops, "only for compressed oops code");
-  return false;
-}
-
-bool Matcher::narrow_klass_use_complex_address() {
-  NOT_LP64(ShouldNotCallThis());
-  assert(UseCompressedClassPointers, "only for compressed klass code");
-  return false;
-}
-
-bool Matcher::const_oop_prefer_decode() {
-  NOT_LP64(ShouldNotCallThis());
-  return true;
-}
-
-bool Matcher::const_klass_prefer_decode() {
-  NOT_LP64(ShouldNotCallThis());
-  return true;
-}
-
-// Is it better to copy float constants, or load them directly from memory?
-// Intel can load a float constant from a direct address, requiring no
-// extra registers.  Most RISCs will have to materialize an address into a
-// register first, so they would do better to copy the constant from stack.
-const bool Matcher::rematerialize_float_constants = false;
-
-// If CPU can load and store mis-aligned doubles directly then no fixup is
-// needed.  Else we split the double into 2 integer pieces and move it
-// piece-by-piece.  Only happens when passing doubles into C code as the
-// Java calling convention forces doubles to be aligned.
-const bool Matcher::misaligned_doubles_ok = false;
-
-// No-op on ARM.
-void Matcher::pd_implicit_null_fixup(MachNode *node, uint idx) {
-}
-
-// Advertise here if the CPU requires explicit rounding operations
-// to implement the UseStrictFP mode.
-const bool Matcher::strict_fp_requires_explicit_rounding = false;
-
-// Are floats converted to double when stored to stack during deoptimization?
-// ARM does not handle callee-save floats.
-bool Matcher::float_in_double() {
-  return false;
-}
-
-// Do ints take an entire long register or just half?
-// Note that we if-def off of _LP64.
-// The relevant question is how the int is callee-saved.  In _LP64
-// the whole long is written but de-opt'ing will have to extract
-// the relevant 32 bits, in not-_LP64 only the low 32 bits is written.
-#ifdef _LP64
-const bool Matcher::int_in_long = true;
-#else
-const bool Matcher::int_in_long = false;
-#endif
 
 // Return whether or not this register is ever used as an argument.  This
 // function is used on startup to build the trampoline stubs in generateOptoStub.
@@ -1163,6 +1136,16 @@ bool Matcher::can_be_java_arg( int reg ) {
 
 bool Matcher::is_spillable_arg( int reg ) {
   return can_be_java_arg(reg);
+}
+
+uint Matcher::int_pressure_limit()
+{
+  return (INTPRESSURE == -1) ? 12 : INTPRESSURE;
+}
+
+uint Matcher::float_pressure_limit()
+{
+  return (FLOATPRESSURE == -1) ? 30 : FLOATPRESSURE;
 }
 
 bool Matcher::use_asm_for_ldiv_by_con( jlong divisor ) {
@@ -1266,7 +1249,7 @@ encode %{
     // preserve mark
     address mark = cbuf.insts()->mark();
     debug_only(int off0 = cbuf.insts_size());
-    MacroAssembler _masm(&cbuf);
+    C2_MacroAssembler _masm(&cbuf);
     int ret_addr_offset = as_MachCall()->ret_addr_offset();
     __ adr(LR, mark + ret_addr_offset);
     __ str(LR, Address(Rthread, JavaThread::last_Java_pc_offset()));
@@ -1280,7 +1263,7 @@ encode %{
     // preserve mark
     address mark = cbuf.insts()->mark();
     debug_only(int off0 = cbuf.insts_size());
-    MacroAssembler _masm(&cbuf);
+    C2_MacroAssembler _masm(&cbuf);
     // FP is preserved across all calls, even compiled calls.
     // Use it to preserve SP in places where the callee might change the SP.
     __ mov(Rmh_SP_save, SP);
@@ -1291,12 +1274,12 @@ encode %{
   %}
 
   enc_class restore_SP %{
-    MacroAssembler _masm(&cbuf);
+    C2_MacroAssembler _masm(&cbuf);
     __ mov(SP, Rmh_SP_save);
   %}
 
   enc_class Java_Dynamic_Call (method meth) %{
-    MacroAssembler _masm(&cbuf);
+    C2_MacroAssembler _masm(&cbuf);
     Register R8_ic_reg = reg_to_register_object(Matcher::inline_cache_reg_encode());
     assert(R8_ic_reg == Ricklass, "should be");
     __ set_inst_mark();
@@ -1324,7 +1307,7 @@ encode %{
         val |= (val << bit_width);
       }
     }
-    MacroAssembler _masm(&cbuf);
+    C2_MacroAssembler _masm(&cbuf);
 
     if (val == -1) {
       __ mvn($tmp$$Register, 0);
@@ -1341,7 +1324,7 @@ encode %{
     // Replicate float con 2 times and pack into vector (8 bytes) in regD.
     float fval = $src$$constant;
     int val = *((int*)&fval);
-    MacroAssembler _masm(&cbuf);
+    C2_MacroAssembler _masm(&cbuf);
 
     if (val == -1) {
       __ mvn($tmp$$Register, 0);
@@ -1356,7 +1339,7 @@ encode %{
 
   enc_class enc_String_Compare(R0RegP str1, R1RegP str2, R2RegI cnt1, R3RegI cnt2, iRegI result, iRegI tmp1, iRegI tmp2) %{
     Label Ldone, Lloop;
-    MacroAssembler _masm(&cbuf);
+    C2_MacroAssembler _masm(&cbuf);
 
     Register   str1_reg = $str1$$Register;
     Register   str2_reg = $str2$$Register;
@@ -1448,7 +1431,7 @@ encode %{
 
   enc_class enc_String_Equals(R0RegP str1, R1RegP str2, R2RegI cnt, iRegI result, iRegI tmp1, iRegI tmp2) %{
     Label Lchar, Lchar_loop, Ldone, Lequal;
-    MacroAssembler _masm(&cbuf);
+    C2_MacroAssembler _masm(&cbuf);
 
     Register   str1_reg = $str1$$Register;
     Register   str2_reg = $str2$$Register;
@@ -1510,7 +1493,7 @@ encode %{
 
   enc_class enc_Array_Equals(R0RegP ary1, R1RegP ary2, iRegI tmp1, iRegI tmp2, iRegI tmp3, iRegI result) %{
     Label Ldone, Lloop, Lequal;
-    MacroAssembler _masm(&cbuf);
+    C2_MacroAssembler _masm(&cbuf);
 
     Register   ary1_reg = $ary1$$Register;
     Register   ary2_reg = $ary2$$Register;
@@ -1615,10 +1598,10 @@ encode %{
 //         Region 6-7 is determined per call site.
 // Note 2: If the calling convention leaves holes in the incoming argument
 //         area, those holes are owned by SELF.  Holes in the outgoing area
-//         are owned by the CALLEE.  Holes should not be nessecary in the
+//         are owned by the CALLEE.  Holes should not be necessary in the
 //         incoming area, as the Java calling convention is completely under
 //         the control of the AD file.  Doubles can be sorted and packed to
-//         avoid holes.  Holes in the outgoing arguments may be nessecary for
+//         avoid holes.  Holes in the outgoing arguments may be necessary for
 //         varargs C calling conventions.
 // Note 3: Region 0-3 is even aligned, with pad2 as needed.  Region 3-5 is
 //         even aligned with pad0 as needed.
@@ -1627,13 +1610,9 @@ encode %{
 //         the region from SP to FP meets the minimum stack alignment.
 
 frame %{
-  // What direction does stack grow in (assumed to be same for native & Java)
-  stack_direction(TOWARDS_LOW);
-
   // These two registers define part of the calling convention
   // between compiled code and the interpreter.
   inline_cache_reg(R_Ricklass);          // Inline Cache Register or Method* for I2C
-  interpreter_method_oop_reg(R_Rmethod); // Method Oop Register when calling interpreter
 
   // Optional: name the operand used by cisc-spilling to access [stack_pointer + offset]
   cisc_spilling_operand_name(indOffset);
@@ -1648,12 +1627,6 @@ frame %{
   stack_alignment(StackAlignmentInBytes);
   //  LP64: Alignment size in bytes (128-bit -> 16 bytes)
   // !LP64: Alignment size in bytes (64-bit  ->  8 bytes)
-
-  // Number of stack slots between incoming argument block and the start of
-  // a new frame.  The PROLOG must add this many slots to the stack.  The
-  // EPILOG must remove this many slots.
-  // FP + LR
-  in_preserve_stack_slots(2 * VMRegImpl::slots_per_word);
 
   // Number of outgoing stack slots killed above the out_preserve_stack_slots
   // for calls to C.  Supports the var-args backing area for register parms.
@@ -1670,22 +1643,6 @@ frame %{
               align_up((Compile::current()->in_preserve_stack_slots() +
                         Compile::current()->fixed_slots()),
                        stack_alignment_in_slots()));
-
-  // Body of function which returns an OptoRegs array locating
-  // arguments either in registers or in stack slots for calling
-  // java
-  calling_convention %{
-    (void) SharedRuntime::java_calling_convention(sig_bt, regs, length, is_outgoing);
-
-  %}
-
-  // Body of function which returns an OptoRegs array locating
-  // arguments either in registers or in stack slots for callin
-  // C.
-  c_calling_convention %{
-    // This is obviously always outgoing
-    (void) SharedRuntime::c_calling_convention(sig_bt, regs, /*regs2=*/NULL, length);
-  %}
 
   // Location of compiled Java return values.  Same as C
   return_value %{
@@ -2007,15 +1964,6 @@ operand immP0() %{
   interface(CONST_INTER);
 %}
 
-operand immP_poll() %{
-  predicate(n->get_ptr() != 0 && n->get_ptr() == (intptr_t)os::get_polling_page());
-  match(ConP);
-
-  // formats are generated automatically for constants and base registers
-  format %{ %}
-  interface(CONST_INTER);
-%}
-
 // Pointer Immediate
 operand immN()
 %{
@@ -2204,6 +2152,30 @@ operand R1RegP() %{
   interface(REG_INTER);
 %}
 
+operand R8RegP() %{
+  constraint(ALLOC_IN_RC(R8_regP));
+  match(iRegP);
+
+  format %{ %}
+  interface(REG_INTER);
+%}
+
+operand R9RegP() %{
+  constraint(ALLOC_IN_RC(R9_regP));
+  match(iRegP);
+
+  format %{ %}
+  interface(REG_INTER);
+%}
+
+operand R12RegP() %{
+  constraint(ALLOC_IN_RC(R12_regP));
+  match(iRegP);
+
+  format %{ %}
+  interface(REG_INTER);
+%}
+
 operand R2RegP() %{
   constraint(ALLOC_IN_RC(R2_regP));
   match(iRegP);
@@ -2230,6 +2202,14 @@ operand RthreadRegP() %{
 
 operand IPRegP() %{
   constraint(ALLOC_IN_RC(IP_regP));
+  match(iRegP);
+
+  format %{ %}
+  interface(REG_INTER);
+%}
+
+operand SPRegP() %{
+  constraint(ALLOC_IN_RC(SP_regP));
   match(iRegP);
 
   format %{ %}
@@ -2469,14 +2449,6 @@ operand inline_cache_regP(iRegP reg) %{
   format %{ %}
   interface(REG_INTER);
 %}
-
-operand interpreter_method_oop_regP(iRegP reg) %{
-  constraint(ALLOC_IN_RC(Rmethod_regP));
-  match(reg);
-  format %{ %}
-  interface(REG_INTER);
-%}
-
 
 //----------Complex Operands---------------------------------------------------
 // Indirect Memory Reference
@@ -2833,7 +2805,7 @@ pipe_class ialu_reg_reg_2_dep(iRegL dst, iRegL src1, iRegL src2, flagsReg cr) %{
     IALU  : R(2);
 %}
 
-// Integer ALU reg-imm operaion
+// Integer ALU reg-imm operation
 pipe_class ialu_reg_imm(iRegI dst, iRegI src1) %{
     single_instruction;
     dst   : E(write);
@@ -3050,12 +3022,6 @@ pipe_class loadConL( iRegL dst, immL src ) %{
 pipe_class loadConP( iRegP dst, immP src ) %{
     instruction_count(0); multiple_bundles;
     fixed_latency(6);
-%}
-
-// Polling Address
-pipe_class loadConP_poll( iRegP dst, immP_poll src ) %{
-    dst   : E(write);
-    IALU  : R;
 %}
 
 // Long Constant small
@@ -4240,16 +4206,6 @@ instruct loadConP(iRegP dst, immP src) %{
 %}
 
 
-instruct loadConP_poll(iRegP dst, immP_poll src) %{
-  match(Set dst src);
-  ins_cost(DEFAULT_COST);
-  format %{ "MOV_SLOW    $dst,$src\t!ptr" %}
-  ins_encode %{
-      __ mov_slow($dst$$Register, $src$$constant);
-  %}
-  ins_pipe(loadConP_poll);
-%}
-
 instruct loadConL(iRegL dst, immL src) %{
   match(Set dst src);
   ins_cost(DEFAULT_COST * 4);
@@ -4603,6 +4559,7 @@ instruct storeF( memoryF mem, regF src) %{
 // pattern-match out unnecessary membars
 instruct membar_storestore() %{
   match(MemBarStoreStore);
+  match(StoreStoreFence);
   ins_cost(4*MEMORY_REF_COST);
 
   size(4);
@@ -5284,6 +5241,39 @@ instruct castLL( iRegL dst ) %{
   ins_pipe(empty);
 %}
 
+instruct castFF( regF dst ) %{
+  match(Set dst (CastFF dst));
+  format %{ "! castFF of $dst" %}
+  ins_encode( /*empty encoding*/ );
+  ins_cost(0);
+  ins_pipe(empty);
+%}
+
+instruct castDD( regD dst ) %{
+  match(Set dst (CastDD dst));
+  format %{ "! castDD of $dst" %}
+  ins_encode( /*empty encoding*/ );
+  ins_cost(0);
+  ins_pipe(empty);
+%}
+
+instruct castVVD( vecD dst ) %{
+  match(Set dst (CastVV dst));
+  format %{ "! castVV of $dst" %}
+  ins_encode( /*empty encoding*/ );
+  ins_cost(0);
+  ins_pipe(empty);
+%}
+
+instruct castVVX( vecX dst ) %{
+  match(Set dst (CastVV dst));
+  format %{ "! castVV of $dst" %}
+  ins_encode( /*empty encoding*/ );
+  ins_cost(0);
+  ins_pipe(empty);
+%}
+
+
 //----------Arithmetic Instructions--------------------------------------------
 // Addition Instructions
 // Register Addition
@@ -5459,64 +5449,6 @@ instruct addL_reg_immRot(iRegL dst, iRegL src1, immLlowRot con, flagsReg ccr) %{
     __ adc($dst$$Register->successor(), $src1$$Register->successor(), 0);
   %}
   ins_pipe(ialu_reg_imm);
-%}
-
-//----------Conditional_store--------------------------------------------------
-// Conditional-store of the updated heap-top.
-// Used during allocation of the shared heap.
-// Sets flags (EQ) on success.
-
-// LoadP-locked.
-instruct loadPLocked(iRegP dst, memoryex mem) %{
-  match(Set dst (LoadPLocked mem));
-  size(4);
-  format %{ "LDREX  $dst,$mem" %}
-  ins_encode %{
-    __ ldrex($dst$$Register,$mem$$Address);
-  %}
-  ins_pipe(iload_mem);
-%}
-
-instruct storePConditional( memoryex heap_top_ptr, iRegP oldval, iRegP newval, iRegI tmp, flagsRegP pcc ) %{
-  predicate(_kids[1]->_kids[0]->_leaf->Opcode() == Op_LoadPLocked); // only works in conjunction with a LoadPLocked node
-  match(Set pcc (StorePConditional heap_top_ptr (Binary oldval newval)));
-  effect( TEMP tmp );
-  size(8);
-  format %{ "STREX  $tmp,$newval,$heap_top_ptr\n\t"
-            "CMP    $tmp, 0" %}
-  ins_encode %{
-    __ strex($tmp$$Register, $newval$$Register, $heap_top_ptr$$Address);
-    __ cmp($tmp$$Register, 0);
-  %}
-  ins_pipe( long_memory_op );
-%}
-
-// Conditional-store of an intx value.
-instruct storeXConditional( memoryex mem, iRegX oldval, iRegX newval, iRegX tmp, flagsReg icc ) %{
-  match(Set icc (StoreIConditional mem (Binary oldval newval)));
-  effect( TEMP tmp );
-  size(28);
-  format %{ "loop: \n\t"
-            "LDREX    $tmp, $mem\t! If $oldval==[$mem] Then store $newval into [$mem], DOESN'T set $newval=[$mem] in any case\n\t"
-            "XORS     $tmp,$tmp, $oldval\n\t"
-            "STREX.eq $tmp, $newval, $mem\n\t"
-            "CMP.eq   $tmp, 1 \n\t"
-            "B.eq     loop \n\t"
-            "TEQ      $tmp, 0\n\t"
-            "membar   LoadStore|LoadLoad" %}
-  ins_encode %{
-    Label loop;
-    __ bind(loop);
-    __ ldrex($tmp$$Register, $mem$$Address);
-    __ eors($tmp$$Register, $tmp$$Register, $oldval$$Register);
-    __ strex($tmp$$Register, $newval$$Register, $mem$$Address, eq);
-    __ cmp($tmp$$Register, 1, eq);
-    __ b(loop, eq);
-    __ teq($tmp$$Register, 0);
-    // used by biased locking only. Requires a membar.
-    __ membar(MacroAssembler::Membar_mask_bits(MacroAssembler::LoadStore | MacroAssembler::LoadLoad), noreg);
-  %}
-  ins_pipe( long_memory_op );
 %}
 
 // No flag versions for CompareAndSwap{P,I,L} because matcher can't match them
@@ -8434,7 +8366,22 @@ instruct cmpL3_reg_reg(iRegI dst, iRegL src1, iRegL src2, flagsReg ccr ) %{
 // Conditional move
 instruct cmovLL_reg_LTGE(cmpOpL cmp, flagsRegL_LTGE xcc, iRegL dst, iRegL src) %{
   match(Set dst (CMoveL (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge);
+
+  ins_cost(150);
+  size(8);
+  format %{ "MOV$cmp  $dst.lo,$src.lo\t! long\n\t"
+            "MOV$cmp  $dst,$src.hi" %}
+  ins_encode %{
+    __ mov($dst$$Register, $src$$Register, (AsmCondition)($cmp$$cmpcode));
+    __ mov($dst$$Register->successor(), $src$$Register->successor(), (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_reg);
+%}
+
+instruct cmovLL_reg_LTGE_U(cmpOpUL cmp, flagsRegUL_LTGE xcc, iRegL dst, iRegL src) %{
+  match(Set dst (CMoveL (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge);
 
   ins_cost(150);
   size(8);
@@ -8449,7 +8396,7 @@ instruct cmovLL_reg_LTGE(cmpOpL cmp, flagsRegL_LTGE xcc, iRegL dst, iRegL src) %
 
 instruct cmovLL_reg_EQNE(cmpOpL cmp, flagsRegL_EQNE xcc, iRegL dst, iRegL src) %{
   match(Set dst (CMoveL (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne);
 
   ins_cost(150);
   size(8);
@@ -8464,7 +8411,22 @@ instruct cmovLL_reg_EQNE(cmpOpL cmp, flagsRegL_EQNE xcc, iRegL dst, iRegL src) %
 
 instruct cmovLL_reg_LEGT(cmpOpL_commute cmp, flagsRegL_LEGT xcc, iRegL dst, iRegL src) %{
   match(Set dst (CMoveL (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt);
+
+  ins_cost(150);
+  size(8);
+  format %{ "MOV$cmp  $dst.lo,$src.lo\t! long\n\t"
+            "MOV$cmp  $dst,$src.hi" %}
+  ins_encode %{
+    __ mov($dst$$Register, $src$$Register, (AsmCondition)($cmp$$cmpcode));
+    __ mov($dst$$Register->successor(), $src$$Register->successor(), (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_reg);
+%}
+
+instruct cmovLL_reg_LEGT_U(cmpOpUL_commute cmp, flagsRegUL_LEGT xcc, iRegL dst, iRegL src) %{
+  match(Set dst (CMoveL (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt);
 
   ins_cost(150);
   size(8);
@@ -8479,7 +8441,21 @@ instruct cmovLL_reg_LEGT(cmpOpL_commute cmp, flagsRegL_LEGT xcc, iRegL dst, iReg
 
 instruct cmovLL_imm_LTGE(cmpOpL cmp, flagsRegL_LTGE xcc, iRegL dst, immL0 src) %{
   match(Set dst (CMoveL (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge);
+  ins_cost(140);
+  size(8);
+  format %{ "MOV$cmp  $dst.lo,0\t! long\n\t"
+            "MOV$cmp  $dst,0" %}
+  ins_encode %{
+    __ mov($dst$$Register, 0, (AsmCondition)($cmp$$cmpcode));
+    __ mov($dst$$Register->successor(), 0, (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_imm);
+%}
+
+instruct cmovLL_imm_LTGE_U(cmpOpUL cmp, flagsRegUL_LTGE xcc, iRegL dst, immL0 src) %{
+  match(Set dst (CMoveL (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge);
   ins_cost(140);
   size(8);
   format %{ "MOV$cmp  $dst.lo,0\t! long\n\t"
@@ -8493,7 +8469,7 @@ instruct cmovLL_imm_LTGE(cmpOpL cmp, flagsRegL_LTGE xcc, iRegL dst, immL0 src) %
 
 instruct cmovLL_imm_EQNE(cmpOpL cmp, flagsRegL_EQNE xcc, iRegL dst, immL0 src) %{
   match(Set dst (CMoveL (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne);
   ins_cost(140);
   size(8);
   format %{ "MOV$cmp  $dst.lo,0\t! long\n\t"
@@ -8507,7 +8483,7 @@ instruct cmovLL_imm_EQNE(cmpOpL cmp, flagsRegL_EQNE xcc, iRegL dst, immL0 src) %
 
 instruct cmovLL_imm_LEGT(cmpOpL_commute cmp, flagsRegL_LEGT xcc, iRegL dst, immL0 src) %{
   match(Set dst (CMoveL (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt);
   ins_cost(140);
   size(8);
   format %{ "MOV$cmp  $dst.lo,0\t! long\n\t"
@@ -8521,7 +8497,20 @@ instruct cmovLL_imm_LEGT(cmpOpL_commute cmp, flagsRegL_LEGT xcc, iRegL dst, immL
 
 instruct cmovIL_reg_LTGE(cmpOpL cmp, flagsRegL_LTGE xcc, iRegI dst, iRegI src) %{
   match(Set dst (CMoveI (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge);
+
+  ins_cost(150);
+  size(4);
+  format %{ "MOV$cmp  $dst,$src" %}
+  ins_encode %{
+    __ mov($dst$$Register, $src$$Register, (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_reg);
+%}
+
+instruct cmovIL_reg_LTGE_U(cmpOpUL cmp, flagsRegUL_LTGE xcc, iRegI dst, iRegI src) %{
+  match(Set dst (CMoveI (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge);
 
   ins_cost(150);
   size(4);
@@ -8534,20 +8523,33 @@ instruct cmovIL_reg_LTGE(cmpOpL cmp, flagsRegL_LTGE xcc, iRegI dst, iRegI src) %
 
 instruct cmovIL_reg_EQNE(cmpOpL cmp, flagsRegL_EQNE xcc, iRegI dst, iRegI src) %{
   match(Set dst (CMoveI (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne);
 
   ins_cost(150);
   size(4);
   format %{ "MOV$cmp  $dst,$src" %}
   ins_encode %{
     __ mov($dst$$Register, $src$$Register, (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_reg);
+%}
+
+instruct cmovIL_reg_EQNE_U(cmpOpUL cmp, flagsRegUL_EQNE xcc, iRegI dst, iRegI src) %{
+  match(Set dst (CMoveI (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne);
+
+  ins_cost(150);
+  size(4);
+  format %{ "MOV$cmp  $dst,$src" %}
+  ins_encode %{
+   __ mov($dst$$Register, $src$$Register, (AsmCondition)($cmp$$cmpcode));
   %}
   ins_pipe(ialu_reg);
 %}
 
 instruct cmovIL_reg_LEGT(cmpOpL_commute cmp, flagsRegL_LEGT xcc, iRegI dst, iRegI src) %{
   match(Set dst (CMoveI (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt);
 
   ins_cost(150);
   size(4);
@@ -8558,11 +8560,25 @@ instruct cmovIL_reg_LEGT(cmpOpL_commute cmp, flagsRegL_LEGT xcc, iRegI dst, iReg
   ins_pipe(ialu_reg);
 %}
 
-instruct cmovIL_imm_LTGE(cmpOpL cmp, flagsRegL_LTGE xcc, iRegI dst, immI16 src) %{
+instruct cmovIL_reg_LEGT_U(cmpOpUL_commute cmp, flagsRegUL_LEGT xcc, iRegI dst, iRegI src) %{
   match(Set dst (CMoveI (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt);
+
+  ins_cost(150);
+  size(4);
+  format %{ "MOV$cmp  $dst,$src" %}
+  ins_encode %{
+    __ mov($dst$$Register, $src$$Register, (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_reg);
+%}
+
+instruct cmovIL_imm16_LTGE(cmpOpL cmp, flagsRegL_LTGE xcc, iRegI dst, immI16 src) %{
+  match(Set dst (CMoveI (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge);
 
   ins_cost(140);
+  size(4);
   format %{ "MOVW$cmp  $dst,$src" %}
   ins_encode %{
     __ movw($dst$$Register, $src$$constant, (AsmCondition)($cmp$$cmpcode));
@@ -8570,11 +8586,12 @@ instruct cmovIL_imm_LTGE(cmpOpL cmp, flagsRegL_LTGE xcc, iRegI dst, immI16 src) 
   ins_pipe(ialu_imm);
 %}
 
-instruct cmovIL_imm_EQNE(cmpOpL cmp, flagsRegL_EQNE xcc, iRegI dst, immI16 src) %{
+instruct cmovIL_imm16_LTGE_U(cmpOpUL cmp, flagsRegUL_LTGE xcc, iRegI dst, immI16 src) %{
   match(Set dst (CMoveI (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge);
 
   ins_cost(140);
+  size(4);
   format %{ "MOVW$cmp  $dst,$src" %}
   ins_encode %{
     __ movw($dst$$Register, $src$$constant, (AsmCondition)($cmp$$cmpcode));
@@ -8582,21 +8599,152 @@ instruct cmovIL_imm_EQNE(cmpOpL cmp, flagsRegL_EQNE xcc, iRegI dst, immI16 src) 
   ins_pipe(ialu_imm);
 %}
 
-instruct cmovIL_imm_LEGT(cmpOpL_commute cmp, flagsRegL_LEGT xcc, iRegI dst, immI16 src) %{
+instruct cmovIL_imm16_EQNE(cmpOpL cmp, flagsRegL_EQNE xcc, iRegI dst, immI16 src) %{
   match(Set dst (CMoveI (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne);
 
   ins_cost(140);
+  size(4);
   format %{ "MOVW$cmp  $dst,$src" %}
   ins_encode %{
     __ movw($dst$$Register, $src$$constant, (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_imm);
+%}
+
+instruct cmovIL_imm16_EQNE_U(cmpOpUL cmp, flagsRegUL_EQNE xcc, iRegI dst, immI16 src) %{
+  match(Set dst (CMoveI (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne);
+
+  ins_cost(140);
+  size(4);
+  format %{ "MOVW$cmp  $dst,$src" %}
+  ins_encode %{
+    __ movw($dst$$Register, $src$$constant, (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_imm);
+%}
+
+instruct cmovIL_imm16_LEGT(cmpOpL_commute cmp, flagsRegL_LEGT xcc, iRegI dst, immI16 src) %{
+  match(Set dst (CMoveI (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt);
+
+  ins_cost(140);
+  size(4);
+  format %{ "MOVW$cmp  $dst,$src" %}
+  ins_encode %{
+    __ movw($dst$$Register, $src$$constant, (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_imm);
+%}
+
+instruct cmovIL_imm16_LEGT_U(cmpOpUL_commute cmp, flagsRegUL_LEGT xcc, iRegI dst, immI16 src) %{
+  match(Set dst (CMoveI (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt);
+
+  ins_cost(140);
+  size(4);
+  format %{ "MOVW$cmp  $dst,$src" %}
+  ins_encode %{
+    __ movw($dst$$Register, $src$$constant, (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_imm);
+%}
+
+instruct cmovIL_immMov_LTGE(cmpOpL cmp, flagsRegL_LTGE xcc, iRegI dst, immIMov src) %{
+  match(Set dst (CMoveI (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge);
+
+  ins_cost(140);
+  size(4);
+  format %{ "MOV$cmp  $dst,$src" %}
+  ins_encode %{
+    __ mov($dst$$Register, $src$$constant, (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_imm);
+%}
+
+instruct cmovIL_immMov_LTGE_U(cmpOpUL cmp, flagsRegUL_LTGE xcc, iRegI dst, immIMov src) %{
+  match(Set dst (CMoveI (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge);
+
+  ins_cost(140);
+  size(4);
+  format %{ "MOV$cmp  $dst,$src" %}
+  ins_encode %{
+    __ mov($dst$$Register, $src$$constant, (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_imm);
+%}
+
+instruct cmovIL_immMov_EQNE(cmpOpL cmp, flagsRegL_EQNE xcc, iRegI dst, immIMov src) %{
+  match(Set dst (CMoveI (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne);
+
+  ins_cost(140);
+  size(4);
+  format %{ "MOV$cmp  $dst,$src" %}
+  ins_encode %{
+    __ mov($dst$$Register, $src$$constant, (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_imm);
+%}
+
+instruct cmovIL_immMov_EQNE_U(cmpOpUL cmp, flagsRegUL_EQNE xcc, iRegI dst, immIMov src) %{
+  match(Set dst (CMoveI (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne);
+
+  ins_cost(140);
+  size(4);
+  format %{ "MOV$cmp  $dst,$src" %}
+  ins_encode %{
+    __ mov($dst$$Register, $src$$constant, (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_imm);
+%}
+
+instruct cmovIL_immMov_LEGT(cmpOpL_commute cmp, flagsRegL_LEGT xcc, iRegI dst, immIMov src) %{
+  match(Set dst (CMoveI (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt);
+
+  ins_cost(140);
+  size(4);
+  format %{ "MOV$cmp  $dst,$src" %}
+  ins_encode %{
+    __ mov($dst$$Register, $src$$constant, (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_imm);
+%}
+
+instruct cmovIL_immMov_LEGT_U(cmpOpUL_commute cmp, flagsRegUL_LEGT xcc, iRegI dst, immIMov src) %{
+  match(Set dst (CMoveI (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt);
+
+  ins_cost(140);
+  size(4);
+  format %{ "MOV$cmp  $dst,$src" %}
+  ins_encode %{
+    __ mov($dst$$Register, $src$$constant, (AsmCondition)($cmp$$cmpcode));
   %}
   ins_pipe(ialu_imm);
 %}
 
 instruct cmovPL_reg_LTGE(cmpOpL cmp, flagsRegL_LTGE xcc, iRegP dst, iRegP src) %{
   match(Set dst (CMoveP (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge);
+
+  ins_cost(150);
+  size(4);
+  format %{ "MOV$cmp  $dst,$src" %}
+  ins_encode %{
+    __ mov($dst$$Register, $src$$Register, (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_reg);
+%}
+
+instruct cmovPL_reg_LTGE_U(cmpOpUL cmp, flagsRegUL_LTGE xcc, iRegP dst, iRegP src) %{
+  match(Set dst (CMoveP (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge);
 
   ins_cost(150);
   size(4);
@@ -8609,7 +8757,20 @@ instruct cmovPL_reg_LTGE(cmpOpL cmp, flagsRegL_LTGE xcc, iRegP dst, iRegP src) %
 
 instruct cmovPL_reg_EQNE(cmpOpL cmp, flagsRegL_EQNE xcc, iRegP dst, iRegP src) %{
   match(Set dst (CMoveP (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne);
+
+  ins_cost(150);
+  size(4);
+  format %{ "MOV$cmp  $dst,$src" %}
+  ins_encode %{
+    __ mov($dst$$Register, $src$$Register, (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_reg);
+%}
+
+instruct cmovPL_reg_EQNE_U(cmpOpUL cmp, flagsRegUL_EQNE xcc, iRegP dst, iRegP src) %{
+  match(Set dst (CMoveP (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne);
 
   ins_cost(150);
   size(4);
@@ -8622,7 +8783,20 @@ instruct cmovPL_reg_EQNE(cmpOpL cmp, flagsRegL_EQNE xcc, iRegP dst, iRegP src) %
 
 instruct cmovPL_reg_LEGT(cmpOpL_commute cmp, flagsRegL_LEGT xcc, iRegP dst, iRegP src) %{
   match(Set dst (CMoveP (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt);
+
+  ins_cost(150);
+  size(4);
+  format %{ "MOV$cmp  $dst,$src" %}
+  ins_encode %{
+    __ mov($dst$$Register, $src$$Register, (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_reg);
+%}
+
+instruct cmovPL_reg_LEGT_U(cmpOpUL_commute cmp, flagsRegUL_LEGT xcc, iRegP dst, iRegP src) %{
+  match(Set dst (CMoveP (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt);
 
   ins_cost(150);
   size(4);
@@ -8635,9 +8809,23 @@ instruct cmovPL_reg_LEGT(cmpOpL_commute cmp, flagsRegL_LEGT xcc, iRegP dst, iReg
 
 instruct cmovPL_imm_LTGE(cmpOpL cmp, flagsRegL_LTGE xcc, iRegP dst, immP0 src) %{
   match(Set dst (CMoveP (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge);
 
   ins_cost(140);
+  size(4);
+  format %{ "MOVW$cmp  $dst,$src" %}
+  ins_encode %{
+    __ movw($dst$$Register, $src$$constant, (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_imm);
+%}
+
+instruct cmovPL_imm_LTGE_U(cmpOpUL cmp, flagsRegUL_LTGE xcc, iRegP dst, immP0 src) %{
+  match(Set dst (CMoveP (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge);
+
+  ins_cost(140);
+  size(4);
   format %{ "MOVW$cmp  $dst,$src" %}
   ins_encode %{
     __ movw($dst$$Register, $src$$constant, (AsmCondition)($cmp$$cmpcode));
@@ -8647,9 +8835,23 @@ instruct cmovPL_imm_LTGE(cmpOpL cmp, flagsRegL_LTGE xcc, iRegP dst, immP0 src) %
 
 instruct cmovPL_imm_EQNE(cmpOpL cmp, flagsRegL_EQNE xcc, iRegP dst, immP0 src) %{
   match(Set dst (CMoveP (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne);
 
   ins_cost(140);
+  size(4);
+  format %{ "MOVW$cmp  $dst,$src" %}
+  ins_encode %{
+    __ movw($dst$$Register, $src$$constant, (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_imm);
+%}
+
+instruct cmovPL_imm_EQNE_U(cmpOpUL cmp, flagsRegUL_EQNE xcc, iRegP dst, immP0 src) %{
+  match(Set dst (CMoveP (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne);
+
+  ins_cost(140);
+  size(4);
   format %{ "MOVW$cmp  $dst,$src" %}
   ins_encode %{
     __ movw($dst$$Register, $src$$constant, (AsmCondition)($cmp$$cmpcode));
@@ -8659,9 +8861,23 @@ instruct cmovPL_imm_EQNE(cmpOpL cmp, flagsRegL_EQNE xcc, iRegP dst, immP0 src) %
 
 instruct cmovPL_imm_LEGT(cmpOpL_commute cmp, flagsRegL_LEGT xcc, iRegP dst, immP0 src) %{
   match(Set dst (CMoveP (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt);
 
   ins_cost(140);
+  size(4);
+  format %{ "MOVW$cmp  $dst,$src" %}
+  ins_encode %{
+    __ movw($dst$$Register, $src$$constant, (AsmCondition)($cmp$$cmpcode));
+  %}
+  ins_pipe(ialu_imm);
+%}
+
+instruct cmovPL_imm_LEGT_U(cmpOpUL_commute cmp, flagsRegUL_LEGT xcc, iRegP dst, immP0 src) %{
+  match(Set dst (CMoveP (Binary cmp xcc) (Binary dst src)));
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt);
+
+  ins_cost(140);
+  size(4);
   format %{ "MOVW$cmp  $dst,$src" %}
   ins_encode %{
     __ movw($dst$$Register, $src$$constant, (AsmCondition)($cmp$$cmpcode));
@@ -8671,7 +8887,7 @@ instruct cmovPL_imm_LEGT(cmpOpL_commute cmp, flagsRegL_LEGT xcc, iRegP dst, immP
 
 instruct cmovFL_reg_LTGE(cmpOpL cmp, flagsRegL_LTGE xcc, regF dst, regF src) %{
   match(Set dst (CMoveF (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge);
   ins_cost(150);
   size(4);
   format %{ "FCPYS$cmp $dst,$src" %}
@@ -8683,7 +8899,7 @@ instruct cmovFL_reg_LTGE(cmpOpL cmp, flagsRegL_LTGE xcc, regF dst, regF src) %{
 
 instruct cmovFL_reg_EQNE(cmpOpL cmp, flagsRegL_EQNE xcc, regF dst, regF src) %{
   match(Set dst (CMoveF (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne);
   ins_cost(150);
   size(4);
   format %{ "FCPYS$cmp $dst,$src" %}
@@ -8695,7 +8911,7 @@ instruct cmovFL_reg_EQNE(cmpOpL cmp, flagsRegL_EQNE xcc, regF dst, regF src) %{
 
 instruct cmovFL_reg_LEGT(cmpOpL_commute cmp, flagsRegL_LEGT xcc, regF dst, regF src) %{
   match(Set dst (CMoveF (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt);
   ins_cost(150);
   size(4);
   format %{ "FCPYS$cmp $dst,$src" %}
@@ -8707,7 +8923,7 @@ instruct cmovFL_reg_LEGT(cmpOpL_commute cmp, flagsRegL_LEGT xcc, regF dst, regF 
 
 instruct cmovDL_reg_LTGE(cmpOpL cmp, flagsRegL_LTGE xcc, regD dst, regD src) %{
   match(Set dst (CMoveD (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::lt || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ge);
 
   ins_cost(150);
   size(4);
@@ -8720,7 +8936,7 @@ instruct cmovDL_reg_LTGE(cmpOpL cmp, flagsRegL_LTGE xcc, regD dst, regD src) %{
 
 instruct cmovDL_reg_EQNE(cmpOpL cmp, flagsRegL_EQNE xcc, regD dst, regD src) %{
   match(Set dst (CMoveD (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::eq || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::ne);
 
   ins_cost(150);
   size(4);
@@ -8733,7 +8949,7 @@ instruct cmovDL_reg_EQNE(cmpOpL cmp, flagsRegL_EQNE xcc, regD dst, regD src) %{
 
 instruct cmovDL_reg_LEGT(cmpOpL_commute cmp, flagsRegL_LEGT xcc, regD dst, regD src) %{
   match(Set dst (CMoveD (Binary cmp xcc) (Binary dst src)));
-  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt );
+  predicate(_kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::le || _kids[0]->_kids[0]->_leaf->as_Bool()->_test._test == BoolTest::gt);
 
   ins_cost(150);
   size(4);
@@ -8819,7 +9035,7 @@ instruct CallLeafDirect(method meth) %{
   effect(USE meth);
   ins_cost(CALL_COST);
   format %{ "CALL,runtime leaf" %}
-  // TODO: ned save_last_PC here?
+  // TODO: need save_last_PC here?
   ins_encode( Java_To_Runtime( meth ),
               call_epilog );
   ins_pipe(simple_call);
@@ -8831,7 +9047,7 @@ instruct CallLeafNoFPDirect(method meth) %{
   effect(USE meth);
   ins_cost(CALL_COST);
   format %{ "CALL,runtime leaf nofp" %}
-  // TODO: ned save_last_PC here?
+  // TODO: need save_last_PC here?
   ins_encode( Java_To_Runtime( meth ),
               call_epilog );
   ins_pipe(simple_call);
@@ -8841,12 +9057,12 @@ instruct CallLeafNoFPDirect(method meth) %{
 // Also known as an 'interprocedural jump'.
 // Target of jump will eventually return to caller.
 // TailJump below removes the return address.
-instruct TailCalljmpInd(IPRegP jump_target, inline_cache_regP method_oop) %{
-  match(TailCall jump_target method_oop );
+instruct TailCalljmpInd(IPRegP jump_target, inline_cache_regP method_ptr) %{
+  match(TailCall jump_target method_ptr);
 
   ins_cost(CALL_COST);
   format %{ "MOV    Rexception_pc, LR\n\t"
-            "jump   $jump_target  \t! $method_oop holds method oop" %}
+            "jump   $jump_target  \t! $method_ptr holds method" %}
   ins_encode %{
     __ mov(Rexception_pc, LR);   // this is used only to call
                                  // StubRoutines::forward_exception_entry()
@@ -8931,11 +9147,12 @@ instruct ShouldNotReachHere( )
   match(Halt);
   ins_cost(CALL_COST);
 
-  size(4);
   // Use the following format syntax
   format %{ "ShouldNotReachHere" %}
   ins_encode %{
-    __ udf(0xdead);
+    if (is_reachable()) {
+      __ stop(_halt_reason);
+    }
   %}
   ins_pipe(tail_call);
 %}
@@ -8968,7 +9185,6 @@ instruct partialSubtypeCheck( R0RegP index, R1RegP sub, R2RegP super, flagsRegP 
 instruct cmpFastLock(flagsRegP pcc, iRegP object, iRegP box, iRegP scratch2, iRegP scratch )
 %{
   match(Set pcc (FastLock object box));
-  predicate(!(UseBiasedLocking && !UseOptoBiasInlining));
 
   effect(TEMP scratch, TEMP scratch2);
   ins_cost(DEFAULT_COST*3);
@@ -8979,22 +9195,6 @@ instruct cmpFastLock(flagsRegP pcc, iRegP object, iRegP box, iRegP scratch2, iRe
   %}
   ins_pipe(long_memory_op);
 %}
-
-instruct cmpFastLock_noBiasInline(flagsRegP pcc, iRegP object, iRegP box, iRegP scratch2,
-                                  iRegP scratch, iRegP scratch3) %{
-  match(Set pcc (FastLock object box));
-  predicate(UseBiasedLocking && !UseOptoBiasInlining);
-
-  effect(TEMP scratch, TEMP scratch2, TEMP scratch3);
-  ins_cost(DEFAULT_COST*5);
-
-  format %{ "FASTLOCK  $object, $box; KILL $scratch, $scratch2, $scratch3" %}
-  ins_encode %{
-    __ fast_lock($object$$Register, $box$$Register, $scratch$$Register, $scratch2$$Register, $scratch3$$Register);
-  %}
-  ins_pipe(long_memory_op);
-%}
-
 
 instruct cmpFastUnlock(flagsRegP pcc, iRegP object, iRegP box, iRegP scratch2, iRegP scratch ) %{
   match(Set pcc (FastUnlock object box));
@@ -10372,7 +10572,7 @@ instruct vneg16B_reg(vecX dst, vecX src) %{
   ins_pipe( ialu_reg_reg ); // FIXME
 %}
 
-// ------------------------------ Shift ---------------------------------------
+// ------------------------------ ShiftCount ----------------------------------
 
 instruct vslcntD(vecD dst, iRegI cnt) %{
   predicate(n->as_Vector()->length_in_bytes() == 8 && VM_Version::has_simd());
@@ -10430,6 +10630,8 @@ instruct vsrcntX(vecX dst, iRegI cnt) %{
   %}
   ins_pipe( ialu_reg_reg ); // FIXME
 %}
+
+// ------------------------------ LogicalShift --------------------------------
 
 // Byte vector logical left/right shift based on sign
 instruct vsh8B_reg(vecD dst, vecD src, vecD shift) %{
@@ -10547,9 +10749,9 @@ instruct vsh2L_reg(vecX dst, vecX src, vecX shift) %{
   ins_pipe( ialu_reg_reg ); // FIXME
 %}
 
-// ------------------------------ LeftShift -----------------------------------
+// ------------------------------ LogicalLeftShift ----------------------------
 
-// Byte vector left shift
+// Byte vector logical left shift
 instruct vsl8B_reg(vecD dst, vecD src, vecD shift) %{
   predicate(n->as_Vector()->length() == 8);
   match(Set dst (LShiftVB src shift));
@@ -10571,8 +10773,8 @@ instruct vsl16B_reg(vecX dst, vecX src, vecX shift) %{
 %}
 
 instruct vsl8B_immI(vecD dst, vecD src, immI shift) %{
-  predicate(n->as_Vector()->length() == 8);
-  match(Set dst (LShiftVB src shift));
+  predicate(n->as_Vector()->length() == 8 && assert_not_var_shift(n));
+  match(Set dst (LShiftVB src (LShiftCntV shift)));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
   format %{
@@ -10587,8 +10789,8 @@ instruct vsl8B_immI(vecD dst, vecD src, immI shift) %{
 %}
 
 instruct vsl16B_immI(vecX dst, vecX src, immI shift) %{
-  predicate(n->as_Vector()->length() == 16);
-  match(Set dst (LShiftVB src shift));
+  predicate(n->as_Vector()->length() == 16 && assert_not_var_shift(n));
+  match(Set dst (LShiftVB src (LShiftCntV shift)));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
   format %{
@@ -10602,11 +10804,10 @@ instruct vsl16B_immI(vecX dst, vecX src, immI shift) %{
   ins_pipe( ialu_reg_reg ); // FIXME
 %}
 
-// Shorts/Chars vector logical left/right shift
+// Shorts/Chars vector logical left shift
 instruct vsl4S_reg(vecD dst, vecD src, vecD shift) %{
   predicate(n->as_Vector()->length() == 4);
   match(Set dst (LShiftVS src shift));
-  match(Set dst (URShiftVS src shift));
   size(4*1);
   ins_cost(DEFAULT_COST*1); // FIXME
   expand %{
@@ -10617,7 +10818,6 @@ instruct vsl4S_reg(vecD dst, vecD src, vecD shift) %{
 instruct vsl8S_reg(vecX dst, vecX src, vecX shift) %{
   predicate(n->as_Vector()->length() == 8);
   match(Set dst (LShiftVS src shift));
-  match(Set dst (URShiftVS src shift));
   size(4*1);
   ins_cost(DEFAULT_COST*1); // FIXME
   expand %{
@@ -10626,8 +10826,8 @@ instruct vsl8S_reg(vecX dst, vecX src, vecX shift) %{
 %}
 
 instruct vsl4S_immI(vecD dst, vecD src, immI shift) %{
-  predicate(n->as_Vector()->length() == 4);
-  match(Set dst (LShiftVS src shift));
+  predicate(n->as_Vector()->length() == 4 && assert_not_var_shift(n));
+  match(Set dst (LShiftVS src (LShiftCntV shift)));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
   format %{
@@ -10642,7 +10842,7 @@ instruct vsl4S_immI(vecD dst, vecD src, immI shift) %{
 %}
 
 instruct vsl8S_immI(vecX dst, vecX src, immI shift) %{
-  predicate(n->as_Vector()->length() == 8);
+  predicate(n->as_Vector()->length() == 8 && assert_not_var_shift(n));
   match(Set dst (LShiftVS src shift));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
@@ -10657,11 +10857,10 @@ instruct vsl8S_immI(vecX dst, vecX src, immI shift) %{
   ins_pipe( ialu_reg_reg ); // FIXME
 %}
 
-// Integers vector logical left/right shift
+// Integers vector logical left shift
 instruct vsl2I_reg(vecD dst, vecD src, vecD shift) %{
   predicate(n->as_Vector()->length() == 2 && VM_Version::has_simd());
   match(Set dst (LShiftVI src shift));
-  match(Set dst (URShiftVI src shift));
   size(4*1);
   ins_cost(DEFAULT_COST*1); // FIXME
   expand %{
@@ -10672,7 +10871,6 @@ instruct vsl2I_reg(vecD dst, vecD src, vecD shift) %{
 instruct vsl4I_reg(vecX dst, vecX src, vecX shift) %{
   predicate(n->as_Vector()->length() == 4 && VM_Version::has_simd());
   match(Set dst (LShiftVI src shift));
-  match(Set dst (URShiftVI src shift));
   size(4*1);
   ins_cost(DEFAULT_COST*1); // FIXME
   expand %{
@@ -10681,8 +10879,10 @@ instruct vsl4I_reg(vecX dst, vecX src, vecX shift) %{
 %}
 
 instruct vsl2I_immI(vecD dst, vecD src, immI shift) %{
-  predicate(n->as_Vector()->length() == 2 && VM_Version::has_simd());
-  match(Set dst (LShiftVI src shift));
+  predicate(n->as_Vector()->length() == 2 &&
+            VM_Version::has_simd() &&
+            assert_not_var_shift(n));
+  match(Set dst (LShiftVI src (LShiftCntV shift)));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
   format %{
@@ -10697,8 +10897,10 @@ instruct vsl2I_immI(vecD dst, vecD src, immI shift) %{
 %}
 
 instruct vsl4I_immI(vecX dst, vecX src, immI shift) %{
-  predicate(n->as_Vector()->length() == 4 && VM_Version::has_simd());
-  match(Set dst (LShiftVI src shift));
+  predicate(n->as_Vector()->length() == 4 &&
+            VM_Version::has_simd() &&
+            assert_not_var_shift(n));
+  match(Set dst (LShiftVI src (LShiftCntV shift)));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
   format %{
@@ -10712,11 +10914,10 @@ instruct vsl4I_immI(vecX dst, vecX src, immI shift) %{
   ins_pipe( ialu_reg_reg ); // FIXME
 %}
 
-// Longs vector logical left/right shift
+// Longs vector logical left shift
 instruct vsl2L_reg(vecX dst, vecX src, vecX shift) %{
   predicate(n->as_Vector()->length() == 2);
   match(Set dst (LShiftVL src shift));
-  match(Set dst (URShiftVL src shift));
   size(4*1);
   ins_cost(DEFAULT_COST*1); // FIXME
   expand %{
@@ -10725,8 +10926,8 @@ instruct vsl2L_reg(vecX dst, vecX src, vecX shift) %{
 %}
 
 instruct vsl2L_immI(vecX dst, vecX src, immI shift) %{
-  predicate(n->as_Vector()->length() == 2);
-  match(Set dst (LShiftVL src shift));
+  predicate(n->as_Vector()->length() == 2 && assert_not_var_shift(n));
+  match(Set dst (LShiftVL src (LShiftCntV shift)));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
   format %{
@@ -10746,10 +10947,80 @@ instruct vsl2L_immI(vecX dst, vecX src, immI shift) %{
 // for negative data because java code convert short value into int with
 // sign extension before a shift.
 
+// Right shift with vector shift count on aarch32 SIMD is implemented as left
+// shift by negative shift count value.
+//
+// Method is_var_shift() denotes that vector shift count is a variable shift:
+// 1) for this case, vector shift count should be negated before conducting
+//    right shifts. E.g., vsrl4S_reg_var rule.
+// 2) for the opposite case, vector shift count is generated via RShiftCntV
+//    rules and is already negated there. Hence, no negation is needed.
+//    E.g., vsrl4S_reg rule.
+
 // Chars vector logical right shift
-instruct vsrl4S_immI(vecD dst, vecD src, immI shift) %{
-  predicate(n->as_Vector()->length() == 4);
+instruct vsrl4S_reg(vecD dst, vecD src, vecD shift) %{
+  predicate(n->as_Vector()->length() == 4 && !n->as_ShiftV()->is_var_shift());
   match(Set dst (URShiftVS src shift));
+  size(4);
+  ins_cost(DEFAULT_COST);
+  expand %{
+    vsh4S_reg(dst, src, shift);
+  %}
+%}
+
+instruct vsrl4S_reg_var(vecD dst, vecD src, vecD shift, vecD tmp) %{
+  predicate(n->as_Vector()->length() == 4 && n->as_ShiftV()->is_var_shift());
+  match(Set dst (URShiftVS src shift));
+  effect(TEMP tmp);
+  size(4*2);
+  ins_cost(DEFAULT_COST*2);
+  format %{
+    "VNEG.S8 $tmp.D,$shift.D\n\t! neg packed8B"
+    "VSHL.U16 $dst.D,$src.D,$tmp.D\t! logical right shift packed4S"
+  %}
+  ins_encode %{
+    bool quad = false;
+    __ vnegI($tmp$$FloatRegister, $shift$$FloatRegister,
+             MacroAssembler::VELEM_SIZE_8, quad);
+    __ vshlUI($dst$$FloatRegister, $tmp$$FloatRegister, $src$$FloatRegister,
+              MacroAssembler::VELEM_SIZE_16, quad);
+  %}
+  ins_pipe(ialu_reg_reg);
+%}
+
+instruct vsrl8S_reg(vecX dst, vecX src, vecX shift) %{
+  predicate(n->as_Vector()->length() == 8 && !n->as_ShiftV()->is_var_shift());
+  match(Set dst (URShiftVS src shift));
+  size(4);
+  ins_cost(DEFAULT_COST);
+  expand %{
+    vsh8S_reg(dst, src, shift);
+  %}
+%}
+
+instruct vsrl8S_reg_var(vecX dst, vecX src, vecX shift, vecX tmp) %{
+  predicate(n->as_Vector()->length() == 8 && n->as_ShiftV()->is_var_shift());
+  match(Set dst (URShiftVS src shift));
+  effect(TEMP tmp);
+  size(4*2);
+  ins_cost(DEFAULT_COST*2);
+  format %{
+    "VNEG.S8 $tmp.Q,$shift.Q\n\t! neg packed16B"
+    "VSHL.U16 $dst.Q,$src.Q,$tmp.Q\t! logical right shift packed8S"
+  %}
+  ins_encode %{
+    bool quad = true;
+    __ vnegI($tmp$$FloatRegister, $shift$$FloatRegister,
+             MacroAssembler::VELEM_SIZE_8, quad);
+    __ vshlUI($dst$$FloatRegister, $tmp$$FloatRegister, $src$$FloatRegister,
+              MacroAssembler::VELEM_SIZE_16, quad);
+  %}
+  ins_pipe(ialu_reg_reg);
+%}
+
+instruct vsrl4S_immI(vecD dst, vecD src, immI shift) %{
+  predicate(n->as_Vector()->length() == 4 && assert_not_var_shift(n));
+  match(Set dst (URShiftVS src (RShiftCntV shift)));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
   format %{
@@ -10764,8 +11035,8 @@ instruct vsrl4S_immI(vecD dst, vecD src, immI shift) %{
 %}
 
 instruct vsrl8S_immI(vecX dst, vecX src, immI shift) %{
-  predicate(n->as_Vector()->length() == 8);
-  match(Set dst (URShiftVS src shift));
+  predicate(n->as_Vector()->length() == 8 && assert_not_var_shift(n));
+  match(Set dst (URShiftVS src (RShiftCntV shift)));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
   format %{
@@ -10780,9 +11051,79 @@ instruct vsrl8S_immI(vecX dst, vecX src, immI shift) %{
 %}
 
 // Integers vector logical right shift
-instruct vsrl2I_immI(vecD dst, vecD src, immI shift) %{
-  predicate(n->as_Vector()->length() == 2 && VM_Version::has_simd());
+instruct vsrl2I_reg(vecD dst, vecD src, vecD shift) %{
+  predicate(n->as_Vector()->length() == 2 &&
+            VM_Version::has_simd() &&
+            !n->as_ShiftV()->is_var_shift());
   match(Set dst (URShiftVI src shift));
+  size(4);
+  ins_cost(DEFAULT_COST);
+  expand %{
+    vsh2I_reg(dst, src, shift);
+  %}
+%}
+
+instruct vsrl2I_reg_var(vecD dst, vecD src, vecD shift, vecD tmp) %{
+  predicate(n->as_Vector()->length() == 2 &&
+            VM_Version::has_simd() &&
+            n->as_ShiftV()->is_var_shift());
+  match(Set dst (URShiftVI src shift));
+  effect(TEMP tmp);
+  size(4*2);
+  ins_cost(DEFAULT_COST*2);
+  format %{
+    "VNEG.S8 $tmp.D,$shift.D\n\t! neg packed8B"
+    "VSHL.U32 $dst.D,$src.D,$tmp.D\t! logical right shift packed2I"
+  %}
+  ins_encode %{
+    bool quad = false;
+    __ vnegI($tmp$$FloatRegister, $shift$$FloatRegister,
+             MacroAssembler::VELEM_SIZE_8, quad);
+    __ vshlUI($dst$$FloatRegister, $tmp$$FloatRegister, $src$$FloatRegister,
+              MacroAssembler::VELEM_SIZE_32, quad);
+  %}
+  ins_pipe(ialu_reg_reg);
+%}
+
+instruct vsrl4I_reg(vecX dst, vecX src, vecX shift) %{
+  predicate(n->as_Vector()->length() == 4 &&
+            VM_Version::has_simd() &&
+            !n->as_ShiftV()->is_var_shift());
+  match(Set dst (URShiftVI src shift));
+  size(4);
+  ins_cost(DEFAULT_COST);
+  expand %{
+    vsh4I_reg(dst, src, shift);
+  %}
+%}
+
+instruct vsrl4I_reg_var(vecX dst, vecX src, vecX shift, vecX tmp) %{
+  predicate(n->as_Vector()->length() == 4 &&
+            VM_Version::has_simd() &&
+            n->as_ShiftV()->is_var_shift());
+  match(Set dst (URShiftVI src shift));
+  effect(TEMP tmp);
+  size(4*2);
+  ins_cost(DEFAULT_COST*2);
+  format %{
+    "VNEG.S8 $tmp.Q,$shift.Q\n\t! neg packed16B"
+    "VSHL.U32 $dst.Q,$src.Q,$tmp.Q\t! logical right shift packed4I"
+  %}
+  ins_encode %{
+    bool quad = true;
+    __ vnegI($tmp$$FloatRegister, $shift$$FloatRegister,
+             MacroAssembler::VELEM_SIZE_8, quad);
+    __ vshlUI($dst$$FloatRegister, $tmp$$FloatRegister, $src$$FloatRegister,
+              MacroAssembler::VELEM_SIZE_32, quad);
+  %}
+  ins_pipe(ialu_reg_reg);
+%}
+
+instruct vsrl2I_immI(vecD dst, vecD src, immI shift) %{
+  predicate(n->as_Vector()->length() == 2 &&
+            VM_Version::has_simd() &&
+            assert_not_var_shift(n));
+  match(Set dst (URShiftVI src (RShiftCntV shift)));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
   format %{
@@ -10797,8 +11138,10 @@ instruct vsrl2I_immI(vecD dst, vecD src, immI shift) %{
 %}
 
 instruct vsrl4I_immI(vecX dst, vecX src, immI shift) %{
-  predicate(n->as_Vector()->length() == 4 && VM_Version::has_simd());
-  match(Set dst (URShiftVI src shift));
+  predicate(n->as_Vector()->length() == 4 &&
+            VM_Version::has_simd() &&
+            assert_not_var_shift(n));
+  match(Set dst (URShiftVI src (RShiftCntV shift)));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
   format %{
@@ -10813,9 +11156,39 @@ instruct vsrl4I_immI(vecX dst, vecX src, immI shift) %{
 %}
 
 // Longs vector logical right shift
-instruct vsrl2L_immI(vecX dst, vecX src, immI shift) %{
-  predicate(n->as_Vector()->length() == 2);
+instruct vsrl2L_reg(vecX dst, vecX src, vecX shift) %{
+  predicate(n->as_Vector()->length() == 2 && !n->as_ShiftV()->is_var_shift());
   match(Set dst (URShiftVL src shift));
+  size(4);
+  ins_cost(DEFAULT_COST);
+  expand %{
+    vsh2L_reg(dst, src, shift);
+  %}
+%}
+
+instruct vsrl2L_reg_var(vecX dst, vecX src, vecX shift, vecX tmp) %{
+  predicate(n->as_Vector()->length() == 2 && n->as_ShiftV()->is_var_shift());
+  match(Set dst (URShiftVL src shift));
+  effect(TEMP tmp, DEF dst, USE src, USE shift);
+  size(4*2);
+  ins_cost(DEFAULT_COST*2);
+  format %{
+    "VNEG.S8 $tmp.Q,$shift.Q\n\t! neg packed16B"
+    "VSHL.U64 $dst.Q,$src.Q,$tmp.Q\t! logical right shift packed2L"
+  %}
+  ins_encode %{
+    bool quad = true;
+    __ vnegI($tmp$$FloatRegister, $shift$$FloatRegister,
+             MacroAssembler::VELEM_SIZE_8, quad);
+    __ vshlUI($dst$$FloatRegister, $tmp$$FloatRegister, $src$$FloatRegister,
+              MacroAssembler::VELEM_SIZE_64, quad);
+  %}
+  ins_pipe(ialu_reg_reg);
+%}
+
+instruct vsrl2L_immI(vecX dst, vecX src, immI shift) %{
+  predicate(n->as_Vector()->length() == 2 && assert_not_var_shift(n));
+  match(Set dst (URShiftVL src (RShiftCntV shift)));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
   format %{
@@ -10948,9 +11321,8 @@ instruct vsha2L_reg(vecX dst, vecX src, vecX shift) %{
 %}
 
 // Byte vector arithmetic right shift
-
 instruct vsra8B_reg(vecD dst, vecD src, vecD shift) %{
-  predicate(n->as_Vector()->length() == 8);
+  predicate(n->as_Vector()->length() == 8 && !n->as_ShiftV()->is_var_shift());
   match(Set dst (RShiftVB src shift));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
@@ -10959,8 +11331,28 @@ instruct vsra8B_reg(vecD dst, vecD src, vecD shift) %{
   %}
 %}
 
-instruct vsrl16B_reg(vecX dst, vecX src, vecX shift) %{
-  predicate(n->as_Vector()->length() == 16);
+instruct vsra8B_reg_var(vecD dst, vecD src, vecD shift, vecD tmp) %{
+  predicate(n->as_Vector()->length() == 8 && n->as_ShiftV()->is_var_shift());
+  match(Set dst (RShiftVB src shift));
+  effect(TEMP tmp);
+  size(4*2);
+  ins_cost(DEFAULT_COST*2);
+  format %{
+    "VNEG.S8 $tmp.D,$shift.D\n\t! neg packed8B"
+    "VSHL.S8 $dst.D,$src.D,$tmp.D\t! arithmetic right shift packed8B"
+  %}
+  ins_encode %{
+    bool quad = false;
+    __ vnegI($tmp$$FloatRegister, $shift$$FloatRegister,
+             MacroAssembler::VELEM_SIZE_8, quad);
+    __ vshlSI($dst$$FloatRegister, $tmp$$FloatRegister, $src$$FloatRegister,
+              MacroAssembler::VELEM_SIZE_8, quad);
+  %}
+  ins_pipe(ialu_reg_reg);
+%}
+
+instruct vsra16B_reg(vecX dst, vecX src, vecX shift) %{
+  predicate(n->as_Vector()->length() == 16 && !n->as_ShiftV()->is_var_shift());
   match(Set dst (RShiftVB src shift));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
@@ -10969,13 +11361,33 @@ instruct vsrl16B_reg(vecX dst, vecX src, vecX shift) %{
   %}
 %}
 
-instruct vsrl8B_immI(vecD dst, vecD src, immI shift) %{
-  predicate(n->as_Vector()->length() == 8);
+instruct vsra16B_reg_var(vecX dst, vecX src, vecX shift, vecX tmp) %{
+  predicate(n->as_Vector()->length() == 16 && n->as_ShiftV()->is_var_shift());
   match(Set dst (RShiftVB src shift));
+  effect(TEMP tmp);
+  size(4*2);
+  ins_cost(DEFAULT_COST*2);
+  format %{
+    "VNEG.S8 $tmp.Q,$shift.Q\n\t! neg packed16B"
+    "VSHL.S8 $dst.Q,$src.Q,$tmp.Q\t! arithmetic right shift packed16B"
+  %}
+  ins_encode %{
+    bool quad = true;
+    __ vnegI($tmp$$FloatRegister, $shift$$FloatRegister,
+             MacroAssembler::VELEM_SIZE_8, quad);
+    __ vshlSI($dst$$FloatRegister, $tmp$$FloatRegister, $src$$FloatRegister,
+              MacroAssembler::VELEM_SIZE_8, quad);
+  %}
+  ins_pipe(ialu_reg_reg);
+%}
+
+instruct vsra8B_immI(vecD dst, vecD src, immI shift) %{
+  predicate(n->as_Vector()->length() == 8 && assert_not_var_shift(n));
+  match(Set dst (RShiftVB src (RShiftCntV shift)));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
   format %{
-    "VSHR.S8 $dst.D,$src.D,$shift\t! logical right shift packed8B"
+    "VSHR.S8 $dst.D,$src.D,$shift\t! arithmetic right shift packed8B"
   %}
   ins_encode %{
     bool quad = false;
@@ -10985,13 +11397,13 @@ instruct vsrl8B_immI(vecD dst, vecD src, immI shift) %{
   ins_pipe( ialu_reg_reg ); // FIXME
 %}
 
-instruct vsrl16B_immI(vecX dst, vecX src, immI shift) %{
-  predicate(n->as_Vector()->length() == 16);
-  match(Set dst (RShiftVB src shift));
+instruct vsra16B_immI(vecX dst, vecX src, immI shift) %{
+  predicate(n->as_Vector()->length() == 16 && assert_not_var_shift(n));
+  match(Set dst (RShiftVB src (RShiftCntV shift)));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
   format %{
-    "VSHR.S8 $dst.Q,$src.Q,$shift\t! logical right shift packed16B"
+    "VSHR.S8 $dst.Q,$src.Q,$shift\t! arithmetic right shift packed16B"
   %}
   ins_encode %{
     bool quad = true;
@@ -11003,7 +11415,7 @@ instruct vsrl16B_immI(vecX dst, vecX src, immI shift) %{
 
 // Shorts vector arithmetic right shift
 instruct vsra4S_reg(vecD dst, vecD src, vecD shift) %{
-  predicate(n->as_Vector()->length() == 4);
+  predicate(n->as_Vector()->length() == 4 && !n->as_ShiftV()->is_var_shift());
   match(Set dst (RShiftVS src shift));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
@@ -11012,8 +11424,28 @@ instruct vsra4S_reg(vecD dst, vecD src, vecD shift) %{
   %}
 %}
 
+instruct vsra4S_reg_var(vecD dst, vecD src, vecD shift, vecD tmp) %{
+  predicate(n->as_Vector()->length() == 4 && n->as_ShiftV()->is_var_shift());
+  match(Set dst (RShiftVS src shift));
+  effect(TEMP tmp);
+  size(4*2);
+  ins_cost(DEFAULT_COST*2);
+  format %{
+    "VNEG.S8 $tmp.D,$shift.D\n\t! neg packed8B"
+    "VSHL.S16 $dst.D,$src.D,$tmp.D\t! arithmetic right shift packed4S"
+  %}
+  ins_encode %{
+    bool quad = false;
+    __ vnegI($tmp$$FloatRegister, $shift$$FloatRegister,
+             MacroAssembler::VELEM_SIZE_8, quad);
+    __ vshlSI($dst$$FloatRegister, $tmp$$FloatRegister, $src$$FloatRegister,
+              MacroAssembler::VELEM_SIZE_16, quad);
+  %}
+  ins_pipe(ialu_reg_reg);
+%}
+
 instruct vsra8S_reg(vecX dst, vecX src, vecX shift) %{
-  predicate(n->as_Vector()->length() == 8);
+  predicate(n->as_Vector()->length() == 8 && !n->as_ShiftV()->is_var_shift());
   match(Set dst (RShiftVS src shift));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
@@ -11022,13 +11454,33 @@ instruct vsra8S_reg(vecX dst, vecX src, vecX shift) %{
   %}
 %}
 
-instruct vsra4S_immI(vecD dst, vecD src, immI shift) %{
-  predicate(n->as_Vector()->length() == 4);
+instruct vsra8S_reg_var(vecX dst, vecX src, vecX shift, vecX tmp) %{
+  predicate(n->as_Vector()->length() == 8 && n->as_ShiftV()->is_var_shift());
   match(Set dst (RShiftVS src shift));
+  effect(TEMP tmp);
+  size(4*2);
+  ins_cost(DEFAULT_COST*2);
+  format %{
+    "VNEG.S8 $tmp.Q,$shift.Q\n\t! neg packed16B"
+    "VSHL.S16 $dst.Q,$src.Q,$tmp.Q\t! arithmetic right shift packed8S"
+  %}
+  ins_encode %{
+    bool quad = true;
+    __ vnegI($tmp$$FloatRegister, $shift$$FloatRegister,
+             MacroAssembler::VELEM_SIZE_8, quad);
+    __ vshlSI($dst$$FloatRegister, $tmp$$FloatRegister, $src$$FloatRegister,
+              MacroAssembler::VELEM_SIZE_16, quad);
+  %}
+  ins_pipe(ialu_reg_reg);
+%}
+
+instruct vsra4S_immI(vecD dst, vecD src, immI shift) %{
+  predicate(n->as_Vector()->length() == 4 && assert_not_var_shift(n));
+  match(Set dst (RShiftVS src (RShiftCntV shift)));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
   format %{
-    "VSHR.S16 $dst.D,$src.D,$shift\t! logical right shift packed4S"
+    "VSHR.S16 $dst.D,$src.D,$shift\t! arithmetic right shift packed4S"
   %}
   ins_encode %{
     bool quad = false;
@@ -11039,12 +11491,12 @@ instruct vsra4S_immI(vecD dst, vecD src, immI shift) %{
 %}
 
 instruct vsra8S_immI(vecX dst, vecX src, immI shift) %{
-  predicate(n->as_Vector()->length() == 8);
-  match(Set dst (RShiftVS src shift));
+  predicate(n->as_Vector()->length() == 8 && assert_not_var_shift(n));
+  match(Set dst (RShiftVS src (RShiftCntV shift)));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
   format %{
-    "VSHR.S16 $dst.Q,$src.Q,$shift\t! logical right shift packed8S"
+    "VSHR.S16 $dst.Q,$src.Q,$shift\t! arithmetic right shift packed8S"
   %}
   ins_encode %{
     bool quad = true;
@@ -11056,7 +11508,7 @@ instruct vsra8S_immI(vecX dst, vecX src, immI shift) %{
 
 // Integers vector arithmetic right shift
 instruct vsra2I_reg(vecD dst, vecD src, vecD shift) %{
-  predicate(n->as_Vector()->length() == 2);
+  predicate(n->as_Vector()->length() == 2 && !n->as_ShiftV()->is_var_shift());
   match(Set dst (RShiftVI src shift));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
@@ -11065,8 +11517,28 @@ instruct vsra2I_reg(vecD dst, vecD src, vecD shift) %{
   %}
 %}
 
+instruct vsra2I_reg_var(vecD dst, vecD src, vecD shift, vecD tmp) %{
+  predicate(n->as_Vector()->length() == 2 && n->as_ShiftV()->is_var_shift());
+  match(Set dst (RShiftVI src shift));
+  effect(TEMP tmp);
+  size(4*2);
+  ins_cost(DEFAULT_COST*2);
+  format %{
+    "VNEG.S8 $tmp.D,$shift.D\n\t! neg packed8B"
+    "VSHL.S32 $dst.D,$src.D,$tmp.D\t! arithmetic right shift packed2I"
+  %}
+  ins_encode %{
+    bool quad = false;
+    __ vnegI($tmp$$FloatRegister, $shift$$FloatRegister,
+             MacroAssembler::VELEM_SIZE_8, quad);
+    __ vshlSI($dst$$FloatRegister, $tmp$$FloatRegister, $src$$FloatRegister,
+              MacroAssembler::VELEM_SIZE_32, quad);
+  %}
+  ins_pipe(ialu_reg_reg);
+%}
+
 instruct vsra4I_reg(vecX dst, vecX src, vecX shift) %{
-  predicate(n->as_Vector()->length() == 4);
+  predicate(n->as_Vector()->length() == 4 && !n->as_ShiftV()->is_var_shift());
   match(Set dst (RShiftVI src shift));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
@@ -11075,13 +11547,33 @@ instruct vsra4I_reg(vecX dst, vecX src, vecX shift) %{
   %}
 %}
 
-instruct vsra2I_immI(vecD dst, vecD src, immI shift) %{
-  predicate(n->as_Vector()->length() == 2);
+instruct vsra4I_reg_var(vecX dst, vecX src, vecX shift, vecX tmp) %{
+  predicate(n->as_Vector()->length() == 4 && n->as_ShiftV()->is_var_shift());
   match(Set dst (RShiftVI src shift));
+  effect(TEMP tmp);
+  size(4*2);
+  ins_cost(DEFAULT_COST*2);
+  format %{
+    "VNEG.S8 $tmp.Q,$shift.Q\n\t! neg packed16B"
+    "VSHL.S32 $dst.Q,$src.Q,$tmp.Q\t! arithmetic right shift packed4I"
+  %}
+  ins_encode %{
+    bool quad = true;
+    __ vnegI($tmp$$FloatRegister, $shift$$FloatRegister,
+             MacroAssembler::VELEM_SIZE_8, quad);
+    __ vshlSI($dst$$FloatRegister, $tmp$$FloatRegister, $src$$FloatRegister,
+              MacroAssembler::VELEM_SIZE_32, quad);
+  %}
+  ins_pipe(ialu_reg_reg);
+%}
+
+instruct vsra2I_immI(vecD dst, vecD src, immI shift) %{
+  predicate(n->as_Vector()->length() == 2 && assert_not_var_shift(n));
+  match(Set dst (RShiftVI src (RShiftCntV shift)));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
   format %{
-    "VSHR.S32 $dst.D,$src.D,$shift\t! logical right shift packed2I"
+    "VSHR.S32 $dst.D,$src.D,$shift\t! arithmetic right shift packed2I"
   %}
   ins_encode %{
     bool quad = false;
@@ -11092,12 +11584,12 @@ instruct vsra2I_immI(vecD dst, vecD src, immI shift) %{
 %}
 
 instruct vsra4I_immI(vecX dst, vecX src, immI shift) %{
-  predicate(n->as_Vector()->length() == 4);
-  match(Set dst (RShiftVI src shift));
+  predicate(n->as_Vector()->length() == 4 && assert_not_var_shift(n));
+  match(Set dst (RShiftVI src (RShiftCntV shift)));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
   format %{
-    "VSHR.S32 $dst.Q,$src.Q,$shift\t! logical right shift packed4I"
+    "VSHR.S32 $dst.Q,$src.Q,$shift\t! arithmetic right shift packed4I"
   %}
   ins_encode %{
     bool quad = true;
@@ -11109,7 +11601,7 @@ instruct vsra4I_immI(vecX dst, vecX src, immI shift) %{
 
 // Longs vector arithmetic right shift
 instruct vsra2L_reg(vecX dst, vecX src, vecX shift) %{
-  predicate(n->as_Vector()->length() == 2);
+  predicate(n->as_Vector()->length() == 2 && !n->as_ShiftV()->is_var_shift());
   match(Set dst (RShiftVL src shift));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
@@ -11118,13 +11610,33 @@ instruct vsra2L_reg(vecX dst, vecX src, vecX shift) %{
   %}
 %}
 
-instruct vsra2L_immI(vecX dst, vecX src, immI shift) %{
-  predicate(n->as_Vector()->length() == 2);
+instruct vsra2L_reg_var(vecX dst, vecX src, vecX shift, vecX tmp) %{
+  predicate(n->as_Vector()->length() == 2 && n->as_ShiftV()->is_var_shift());
   match(Set dst (RShiftVL src shift));
+  effect(TEMP tmp);
+  size(4*2);
+  ins_cost(DEFAULT_COST*2);
+  format %{
+    "VNEG.S8 $tmp.Q,$shift.Q\n\t! neg packed16B"
+    "VSHL.S64 $dst.Q,$src.Q,$tmp.Q\t! arithmetic right shift packed2L"
+  %}
+  ins_encode %{
+    bool quad = true;
+    __ vnegI($tmp$$FloatRegister, $shift$$FloatRegister,
+             MacroAssembler::VELEM_SIZE_8, quad);
+    __ vshlSI($dst$$FloatRegister, $tmp$$FloatRegister, $src$$FloatRegister,
+              MacroAssembler::VELEM_SIZE_64, quad);
+  %}
+  ins_pipe(ialu_reg_reg);
+%}
+
+instruct vsra2L_immI(vecX dst, vecX src, immI shift) %{
+  predicate(n->as_Vector()->length() == 2 && assert_not_var_shift(n));
+  match(Set dst (RShiftVL src (RShiftCntV shift)));
   size(4);
   ins_cost(DEFAULT_COST); // FIXME
   format %{
-    "VSHR.S64 $dst.Q,$src.Q,$shift\t! logical right shift packed2L"
+    "VSHR.S64 $dst.Q,$src.Q,$shift\t! arithmetic right shift packed2L"
   %}
   ins_encode %{
     bool quad = true;
@@ -11258,7 +11770,7 @@ instruct vxorX(vecX dst, vecX src1, vecX src2) %{
 //
 // // Change (inc mov) to lea
 // peephole %{
-//   // increment preceeded by register-register move
+//   // increment preceded by register-register move
 //   peepmatch ( incI_eReg movI );
 //   // require that the destination register of the increment
 //   // match the destination register of the move

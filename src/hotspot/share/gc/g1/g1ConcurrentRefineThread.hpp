@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,8 +25,10 @@
 #ifndef SHARE_GC_G1_G1CONCURRENTREFINETHREAD_HPP
 #define SHARE_GC_G1_G1CONCURRENTREFINETHREAD_HPP
 
+#include "gc/g1/g1ConcurrentRefineStats.hpp"
 #include "gc/shared/concurrentGCThread.hpp"
-#include "utilities/ticks.hpp"
+#include "runtime/mutex.hpp"
+#include "utilities/globalDefinitions.hpp"
 
 // Forward Decl.
 class G1ConcurrentRefine;
@@ -40,34 +42,66 @@ class G1ConcurrentRefineThread: public ConcurrentGCThread {
   double _vtime_start;  // Initial virtual time.
   double _vtime_accum;  // Accumulated virtual time.
 
-  Tickspan _total_refinement_time;
-  size_t _total_refined_cards;
+  Monitor _notifier;
+  bool _requested_active;
+
+  G1ConcurrentRefineStats _refinement_stats;
 
   uint _worker_id;
 
-  bool _active;
-  Monitor* _monitor;
   G1ConcurrentRefine* _cr;
 
-  void wait_for_completed_buffers();
+  NONCOPYABLE(G1ConcurrentRefineThread);
 
-  void set_active(bool x) { _active = x; }
-  // Deactivate this thread.
-  void deactivate();
+protected:
+  G1ConcurrentRefineThread(G1ConcurrentRefine* cr, uint worker_id);
 
-  bool is_primary() { return (_worker_id == 0); }
+  Monitor* notifier() { return &_notifier; }
+  bool requested_active() const { return _requested_active; }
 
-  void run_service();
-  void stop_service();
+  // Returns !should_terminate().
+  // precondition: this is the current thread.
+  virtual bool wait_for_completed_buffers() = 0;
+
+  // Deactivate if appropriate.  Returns true if deactivated.
+  // precondition: this is the current thread.
+  virtual bool maybe_deactivate();
+
+  // Attempt to do some refinement work.
+  // precondition: this is the current thread.
+  virtual void do_refinement_step() = 0;
+
+  // Helper for do_refinement_step implementations.  Try to perform some
+  // refinement work, limited by stop_at.  Returns true if any refinement work
+  // was performed, false if no work available per stop_at.
+  // precondition: this is the current thread.
+  bool try_refinement_step(size_t stop_at);
+
+  void report_active(const char* reason) const;
+  void report_inactive(const char* reason, const G1ConcurrentRefineStats& stats) const;
+
+  G1ConcurrentRefine* cr() const { return _cr; }
+
+  void run_service() override;
+  void stop_service() override;
+
 public:
-  G1ConcurrentRefineThread(G1ConcurrentRefine* cg1r, uint worker_id);
+  static G1ConcurrentRefineThread* create(G1ConcurrentRefine* cr, uint worker_id);
+  virtual ~G1ConcurrentRefineThread() = default;
 
-  bool is_active();
+  uint worker_id() const { return _worker_id; }
+
   // Activate this thread.
+  // precondition: this is not the current thread.
   void activate();
 
-  Tickspan total_refinement_time() const { return _total_refinement_time; }
-  size_t total_refined_cards() const { return _total_refined_cards; }
+  G1ConcurrentRefineStats* refinement_stats() {
+    return &_refinement_stats;
+  }
+
+  const G1ConcurrentRefineStats* refinement_stats() const {
+    return &_refinement_stats;
+  }
 
   // Total virtual time so far.
   double vtime_accum() { return _vtime_accum; }

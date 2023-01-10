@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,7 +29,9 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.Socket;
 
+import jdk.jfr.events.EventConfigurations;
 import jdk.jfr.events.SocketWriteEvent;
+import jdk.jfr.internal.event.EventConfiguration;
 
 /**
  * See {@link JITracer} for an explanation of this code.
@@ -40,30 +42,30 @@ final class SocketOutputStreamInstrumentor {
     private SocketOutputStreamInstrumentor() {
     }
 
-    @SuppressWarnings("deprecation")
     @JIInstrumentationMethod
     public void write(byte b[], int off, int len) throws IOException {
-        SocketWriteEvent event = SocketWriteEvent.EVENT.get();
-        if (!event.isEnabled()) {
+        EventConfiguration eventConfiguration = EventConfigurations.SOCKET_WRITE;
+        if (!eventConfiguration.isEnabled()) {
             write(b, off, len);
             return;
         }
         int bytesWritten = 0;
+        long start = 0;
         try {
-            event.begin();
+            start = EventConfiguration.timestamp();
             write(b, off, len);
             bytesWritten = len;
         } finally {
-            event.end() ;
-            if (event.shouldCommit()) {
+            long duration = EventConfiguration.timestamp() - start;
+            if (eventConfiguration.shouldCommit(duration)) {
                 InetAddress remote = parent.getInetAddress();
-                event.host = remote.getHostName();
-                event.address = remote.getHostAddress();
-                event.port = parent.getPort();
-                event.bytesWritten = bytesWritten;
-
-                event.commit();
-                event.reset();
+                SocketWriteEvent.commit(
+                        start,
+                        duration,
+                        remote.getHostName(),
+                        remote.getHostAddress(),
+                        parent.getPort(),
+                        bytesWritten);
             }
         }
     }

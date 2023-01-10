@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,16 +25,26 @@
 #include "precompiled.hpp"
 #include "memory/allocation.inline.hpp"
 #include "oops/constantPool.hpp"
+#include "oops/method.hpp"
 #include "oops/oop.inline.hpp"
 #include "runtime/handles.inline.hpp"
-#include "runtime/thread.inline.hpp"
+#include "runtime/javaThread.hpp"
 
 #ifdef ASSERT
+#define assert_handle_mark_nesting()                                                     \
+  assert(_handle_mark_nesting > 1, "memory leak: allocating handle outside HandleMark"); \
+  assert(_no_handle_mark_nesting == 0, "allocating handle inside NoHandleMark");         \
+
+
 oop* HandleArea::allocate_handle(oop obj) {
-  assert(_handle_mark_nesting > 1, "memory leak: allocating handle outside HandleMark");
-  assert(_no_handle_mark_nesting == 0, "allocating handle inside NoHandleMark");
+  assert_handle_mark_nesting();
   assert(oopDesc::is_oop(obj), "not an oop: " INTPTR_FORMAT, p2i(obj));
   return real_allocate_handle(obj);
+}
+
+oop* HandleArea::allocate_null_handle() {
+  assert_handle_mark_nesting();
+  return real_allocate_handle(NULL);
 }
 #endif
 
@@ -51,7 +61,7 @@ name##Handle::name##Handle(const name##Handle &h) {                    \
     } else {                                                           \
       _thread = Thread::current();                                     \
     }                                                                  \
-    assert (_thread->is_in_stack((address)this), "not on stack?");     \
+    assert(_thread->is_in_live_stack((address)this), "not on stack?"); \
     _thread->metadata_handles()->push((Metadata*)_value);              \
   } else {                                                             \
     _thread = NULL;                                                    \
@@ -68,7 +78,7 @@ name##Handle& name##Handle::operator=(const name##Handle &s) {         \
     } else {                                                           \
       _thread = Thread::current();                                     \
     }                                                                  \
-    assert (_thread->is_in_stack((address)this), "not on stack?");     \
+    assert(_thread->is_in_live_stack((address)this), "not on stack?"); \
     _thread->metadata_handles()->push((Metadata*)_value);              \
   } else {                                                             \
     _thread = NULL;                                                    \
@@ -116,7 +126,7 @@ void HandleArea::oops_do(OopClosure* f) {
 }
 
 void HandleMark::initialize(Thread* thread) {
-  _thread = thread;
+  _thread = thread;  // Not the current thread during thread creation.
   // Save area
   _area  = thread->handle_area();
   // Save current top

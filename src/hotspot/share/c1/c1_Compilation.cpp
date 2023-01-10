@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -77,7 +77,6 @@ static int totalInstructionNodes = 0;
 
 class PhaseTraceTime: public TraceTime {
  private:
-  JavaThread* _thread;
   CompileLog* _log;
   TimerName _timer;
 
@@ -363,6 +362,7 @@ int Compilation::emit_code_body() {
   }
 #endif /* PRODUCT */
 
+  _immediate_oops_patched = lir_asm.nr_immediate_oops_patched();
   return frame_map()->framesize();
 }
 
@@ -382,6 +382,10 @@ int Compilation::compile_java_method() {
     BAILOUT_("mdo allocation failed", no_frame_size);
   }
 
+  if (method()->is_synchronized()) {
+    set_has_monitors(true);
+  }
+
   {
     PhaseTraceTime timeit(_t_buildIR);
     build_hir();
@@ -398,6 +402,11 @@ int Compilation::compile_java_method() {
     emit_lir();
   }
   CHECK_BAILOUT_(no_frame_size);
+
+  // Dump compilation data to replay it.
+  if (_directive->DumpReplayOption) {
+    env()->dump_replay_data(env()->compile_id());
+  }
 
   {
     PhaseTraceTime timeit(_t_codeemit);
@@ -421,7 +430,9 @@ void Compilation::install_code(int frame_size) {
     implicit_exception_table(),
     compiler(),
     has_unsafe_access(),
-    SharedRuntime::is_wide_vector(max_vector_size())
+    SharedRuntime::is_wide_vector(max_vector_size()),
+    has_monitors(),
+    _immediate_oops_patched
   );
 }
 
@@ -446,7 +457,7 @@ void Compilation::compile_method() {
     dependency_recorder()->assert_evol_method(method());
   }
 
-  if (directive()->BreakAtCompileOption) {
+  if (env()->break_at_compile()) {
     BREAKPOINT;
   }
 
@@ -463,7 +474,7 @@ void Compilation::compile_method() {
   // Note: make sure we mark the method as not compilable!
   CHECK_BAILOUT();
 
-  if (InstallMethods) {
+  if (should_install_code()) {
     // install code
     PhaseTraceTime timeit(_t_codeinstall);
     install_code(frame_size);
@@ -539,7 +550,7 @@ void Compilation::generate_exception_handler_table() {
 }
 
 Compilation::Compilation(AbstractCompiler* compiler, ciEnv* env, ciMethod* method,
-                         int osr_bci, BufferBlob* buffer_blob, DirectiveSet* directive)
+                         int osr_bci, BufferBlob* buffer_blob, bool install_code, DirectiveSet* directive)
 : _next_id(0)
 , _next_block_id(0)
 , _compiler(compiler)
@@ -555,15 +566,19 @@ Compilation::Compilation(AbstractCompiler* compiler, ciEnv* env, ciMethod* metho
 , _has_exception_handlers(false)
 , _has_fpu_code(true)   // pessimistic assumption
 , _has_unsafe_access(false)
+, _has_irreducible_loops(false)
 , _would_profile(false)
 , _has_method_handle_invokes(false)
 , _has_reserved_stack_access(method->has_reserved_stack_access())
+, _has_monitors(false)
+, _install_code(install_code)
 , _bailout_msg(NULL)
 , _exception_info_list(NULL)
 , _allocator(NULL)
 , _code(buffer_blob)
 , _has_access_indexed(false)
 , _interpreter_frame_size(0)
+, _immediate_oops_patched(0)
 , _current_instruction(NULL)
 #ifndef PRODUCT
 , _last_instruction_printed(NULL)
@@ -582,7 +597,7 @@ Compilation::Compilation(AbstractCompiler* compiler, ciEnv* env, ciMethod* metho
 #endif
   compile_method();
   if (bailed_out()) {
-    _env->record_method_not_compilable(bailout_msg(), !TieredCompilation);
+    _env->record_method_not_compilable(bailout_msg());
     if (is_profiling()) {
       // Compilation failed, create MDO, which would signal the interpreter
       // to start profiling on its own.
@@ -597,6 +612,9 @@ Compilation::Compilation(AbstractCompiler* compiler, ciEnv* env, ciMethod* metho
 }
 
 Compilation::~Compilation() {
+  // simulate crash during compilation
+  assert(CICrashAt < 0 || (uintx)_env->compile_id() != (uintx)CICrashAt, "just as planned");
+
   _env->set_compiler_data(NULL);
 }
 
@@ -692,30 +710,15 @@ void Compilation::print_timers() {
 
 
 #ifndef PRODUCT
-void Compilation::compile_only_this_method() {
-  ResourceMark rm;
-  fileStream stream(fopen("c1_compile_only", "wt"));
-  stream.print_cr("# c1 compile only directives");
-  compile_only_this_scope(&stream, hir()->top_scope());
+void CompilationResourceObj::print() const       { print_on(tty); }
+
+void CompilationResourceObj::print_on(outputStream* st) const {
+  st->print_cr("CompilationResourceObj(" INTPTR_FORMAT ")", p2i(this));
 }
 
-
-void Compilation::compile_only_this_scope(outputStream* st, IRScope* scope) {
-  st->print("CompileOnly=");
-  scope->method()->holder()->name()->print_symbol_on(st);
-  st->print(".");
-  scope->method()->name()->print_symbol_on(st);
-  st->cr();
+// Called from debugger to get the interval with 'reg_num' during register allocation.
+Interval* find_interval(int reg_num) {
+  return Compilation::current()->allocator()->find_interval_at(reg_num);
 }
 
-
-void Compilation::exclude_this_method() {
-  fileStream stream(fopen(".hotspot_compiler", "at"));
-  stream.print("exclude ");
-  method()->holder()->name()->print_symbol_on(&stream);
-  stream.print(" ");
-  method()->name()->print_symbol_on(&stream);
-  stream.cr();
-  stream.cr();
-}
-#endif
+#endif // NOT PRODUCT

@@ -26,8 +26,9 @@
 #define SHARE_UTILITIES_WAITBARRIER_HPP
 
 #include "memory/allocation.hpp"
-#include "runtime/thread.hpp"
+#include "runtime/javaThread.hpp"
 #include "utilities/debug.hpp"
+#include "utilities/globalDefinitions.hpp"
 #include "utilities/waitBarrier_generic.hpp"
 
 #if defined(LINUX)
@@ -81,9 +82,7 @@ template <typename WaitBarrierImpl>
 class WaitBarrierType : public CHeapObj<mtInternal> {
   WaitBarrierImpl _impl;
 
-  // Prevent copying and assignment of WaitBarrier instances.
-  WaitBarrierType(const WaitBarrierDefault&);
-  WaitBarrierType& operator=(const WaitBarrierDefault&);
+  NONCOPYABLE(WaitBarrierType);
 
 #ifdef ASSERT
   int _last_arm_tag;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1995, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1995, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,11 +29,9 @@ package java.lang;
  * Thrown when an unknown but serious exception has occurred in the
  * Java Virtual Machine.
  *
- * @author unascribed
  * @since   1.0
  */
-public
-class UnknownError extends VirtualMachineError {
+public class UnknownError extends VirtualMachineError {
     @java.io.Serial
     private static final long serialVersionUID = 2524784860676771849L;
 

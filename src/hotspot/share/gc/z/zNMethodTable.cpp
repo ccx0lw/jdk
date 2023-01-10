@@ -34,7 +34,6 @@
 #include "gc/z/zNMethodTable.hpp"
 #include "gc/z/zNMethodTableEntry.hpp"
 #include "gc/z/zNMethodTableIteration.hpp"
-#include "gc/z/zOopClosures.inline.hpp"
 #include "gc/z/zSafeDelete.inline.hpp"
 #include "gc/z/zTask.hpp"
 #include "gc/z/zWorkers.hpp"
@@ -42,9 +41,9 @@
 #include "memory/allocation.hpp"
 #include "memory/iterator.hpp"
 #include "memory/resourceArea.hpp"
-#include "runtime/atomic.hpp"
-#include "runtime/orderAccess.hpp"
+#include "runtime/mutexLocker.hpp"
 #include "utilities/debug.hpp"
+#include "utilities/powerOfTwo.hpp"
 
 ZNMethodTableEntry* ZNMethodTable::_table = NULL;
 size_t ZNMethodTable::_size = 0;

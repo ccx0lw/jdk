@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -22,10 +22,11 @@
  */
 
 #include "precompiled.hpp"
+#include "gc/shared/gc_globals.hpp"
 #include "gc/z/zGlobals.hpp"
-#include "gc/z/zUtils.inline.hpp"
 #include "runtime/globals.hpp"
 #include "utilities/globalDefinitions.hpp"
+#include "utilities/powerOfTwo.hpp"
 
 //
 // The heap can have three different layouts, depending on the max heap size.
@@ -135,17 +136,12 @@
 //  * 63-48 Fixed (16-bits, always zero)
 //
 
-uintptr_t ZPlatformAddressBase() {
-  return 0;
-}
-
 size_t ZPlatformAddressOffsetBits() {
   const size_t min_address_offset_bits = 42; // 4TB
   const size_t max_address_offset_bits = 44; // 16TB
-  const size_t virtual_to_physical_ratio = 7; // 7:1
-  const size_t address_offset = ZUtils::round_up_power_of_2(MaxHeapSize * virtual_to_physical_ratio);
-  const size_t address_offset_bits = log2_intptr(address_offset);
-  return MIN2(MAX2(address_offset_bits, min_address_offset_bits), max_address_offset_bits);
+  const size_t address_offset = round_up_power_of_2(MaxHeapSize * ZVirtualToPhysicalRatio);
+  const size_t address_offset_bits = log2i_exact(address_offset);
+  return clamp(address_offset_bits, min_address_offset_bits, max_address_offset_bits);
 }
 
 size_t ZPlatformAddressMetadataShift() {

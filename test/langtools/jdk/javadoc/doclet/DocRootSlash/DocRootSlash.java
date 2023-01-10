@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2002, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,9 +23,8 @@
 
 /*
  * @test
- * @bug 4524350 4662945 4633447 8196202
+ * @bug 4524350 4662945 4633447 8196202 8261976
  * @summary stddoclet: {@docRoot} inserts an extra trailing "/"
- * @author dkramer
  * @library ../../lib
  * @modules jdk.javadoc/jdk.javadoc.internal.tool
  * @build javadoc.tester.*
@@ -44,7 +43,7 @@ import javadoc.tester.JavadocTester;
 public class DocRootSlash extends JavadocTester {
 
     public static void main(String... args) throws Exception {
-        DocRootSlash tester = new DocRootSlash();
+        var tester = new DocRootSlash();
         tester.runTests();
     }
 
@@ -57,7 +56,8 @@ public class DocRootSlash extends JavadocTester {
         javadoc("-d", "out",
                 "-Xdoclint:none",
                 "-overview", (srcdir + "/overview.html"),
-                "-header", "<A HREF=\"{@docroot}/element-list\">{&#064;docroot}</A> <A HREF=\"{@docRoot}/help-doc.html\">{&#064;docRoot}</A>",
+                "-header", """
+                    <A HREF="{@docroot}/element-list">{&#064;docroot}</A> <A HREF="{@docRoot}/help-doc.html">{&#064;docRoot}</A>""",
                 "-sourcepath", srcdir,
                 "p1", "p2");
 

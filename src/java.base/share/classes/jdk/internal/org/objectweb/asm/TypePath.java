@@ -56,6 +56,7 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 package jdk.internal.org.objectweb.asm;
 
 /**
@@ -147,7 +148,7 @@ public final class TypePath {
       * @return the corresponding TypePath object, or {@literal null} if the path is empty.
       */
     public static TypePath fromString(final String typePath) {
-        if (typePath == null || typePath.isEmpty()) {
+        if (typePath == null || typePath.length() == 0) {
             return null;
         }
         int typePathLength = typePath.length();
@@ -229,3 +230,4 @@ public final class TypePath {
         }
     }
 }
+

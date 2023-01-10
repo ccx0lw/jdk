@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,16 +27,21 @@
 
 #include "code/oopRecorder.hpp"
 #include "code/relocInfo.hpp"
+#include "compiler/compiler_globals.hpp"
 #include "utilities/align.hpp"
 #include "utilities/debug.hpp"
+#include "utilities/growableArray.hpp"
+#include "utilities/linkedlist.hpp"
+#include "utilities/resizeableResourceHash.hpp"
 #include "utilities/macros.hpp"
 
-class CodeStrings;
 class PhaseCFG;
 class Compile;
 class BufferBlob;
 class CodeBuffer;
 class Label;
+class ciMethod;
+class SharedStubToInterpRequest;
 
 class CodeOffsets: public StackObj {
 public:
@@ -92,7 +97,6 @@ class CodeSection {
   relocInfo*  _locs_limit;      // first byte after relocation information buf
   address     _locs_point;      // last relocated position (grows upward)
   bool        _locs_own;        // did I allocate the locs myself?
-  bool        _frozen;          // no more expansion of this section
   bool        _scratch_emit;    // Buffer is used for scratch emit, don't relocate.
   char        _index;           // my section number (SECT_INST, etc.)
   CodeBuffer* _outer;           // enclosing CodeBuffer
@@ -109,7 +113,6 @@ class CodeSection {
     _locs_limit    = NULL;
     _locs_point    = NULL;
     _locs_own      = false;
-    _frozen        = false;
     _scratch_emit  = false;
     debug_only(_index = (char)-1);
     debug_only(_outer = (CodeBuffer*)badAddress);
@@ -161,12 +164,10 @@ class CodeSection {
   address     locs_point() const    { return _locs_point; }
   csize_t     locs_point_off() const{ return (csize_t)(_locs_point - _start); }
   csize_t     locs_capacity() const { return (csize_t)(_locs_limit - _locs_start); }
-  csize_t     locs_remaining()const { return (csize_t)(_locs_limit - _locs_end); }
 
   int         index() const         { return _index; }
   bool        is_allocated() const  { return _start != NULL; }
   bool        is_empty() const      { return _start == _end; }
-  bool        is_frozen() const     { return _frozen; }
   bool        has_locs() const      { return _locs_end != NULL; }
 
   // Mark scratch buffer.
@@ -181,11 +182,15 @@ class CodeSection {
   bool allocates(address pc) const  { return pc >= _start && pc <  _limit; }
   bool allocates2(address pc) const { return pc >= _start && pc <= _limit; }
 
+  // checks if two CodeSections are disjoint
+  //
+  // limit is an exclusive address and can be the start of another
+  // section.
+  bool disjoint(CodeSection* cs) const { return cs->_limit <= _start || cs->_start >= _limit; }
+
   void    set_end(address pc)       { assert(allocates2(pc), "not in CodeBuffer memory: " INTPTR_FORMAT " <= " INTPTR_FORMAT " <= " INTPTR_FORMAT, p2i(_start), p2i(pc), p2i(_limit)); _end = pc; }
   void    set_mark(address pc)      { assert(contains2(pc), "not in codeBuffer");
                                       _mark = pc; }
-  void    set_mark_off(int offset)  { assert(contains2(offset+_start),"not in codeBuffer");
-                                      _mark = offset + _start; }
   void    set_mark()                { _mark = _end; }
   void    clear_mark()              { _mark = NULL; }
 
@@ -200,10 +205,43 @@ class CodeSection {
   }
 
   // Code emission
-  void emit_int8 ( int8_t  x)  { *((int8_t*)  end()) = x; set_end(end() + sizeof(int8_t)); }
-  void emit_int16( int16_t x)  { *((int16_t*) end()) = x; set_end(end() + sizeof(int16_t)); }
-  void emit_int32( int32_t x)  { *((int32_t*) end()) = x; set_end(end() + sizeof(int32_t)); }
-  void emit_int64( int64_t x)  { *((int64_t*) end()) = x; set_end(end() + sizeof(int64_t)); }
+  void emit_int8(uint8_t x1) {
+    address curr = end();
+    *((uint8_t*)  curr++) = x1;
+    set_end(curr);
+  }
+
+  void emit_int16(uint16_t x) { *((uint16_t*) end()) = x; set_end(end() + sizeof(uint16_t)); }
+  void emit_int16(uint8_t x1, uint8_t x2) {
+    address curr = end();
+    *((uint8_t*)  curr++) = x1;
+    *((uint8_t*)  curr++) = x2;
+    set_end(curr);
+  }
+
+  void emit_int24(uint8_t x1, uint8_t x2, uint8_t x3)  {
+    address curr = end();
+    *((uint8_t*)  curr++) = x1;
+    *((uint8_t*)  curr++) = x2;
+    *((uint8_t*)  curr++) = x3;
+    set_end(curr);
+  }
+
+  void emit_int32(uint32_t x) {
+    address curr = end();
+    *((uint32_t*) curr) = x;
+    set_end(curr + sizeof(uint32_t));
+  }
+  void emit_int32(uint8_t x1, uint8_t x2, uint8_t x3, uint8_t x4)  {
+    address curr = end();
+    *((uint8_t*)  curr++) = x1;
+    *((uint8_t*)  curr++) = x2;
+    *((uint8_t*)  curr++) = x3;
+    *((uint8_t*)  curr++) = x4;
+    set_end(curr);
+  }
+
+  void emit_int64( uint64_t x)  { *((uint64_t*) end()) = x; set_end(end() + sizeof(uint64_t)); }
 
   void emit_float( jfloat  x)  { *((jfloat*)  end()) = x; set_end(end() + sizeof(jfloat)); }
   void emit_double(jdouble x)  { *((jdouble*) end()) = x; set_end(end() + sizeof(jdouble)); }
@@ -219,20 +257,14 @@ class CodeSection {
   void relocate(address at, RelocationHolder const& rspec, int format = 0);
   void relocate(address at,    relocInfo::relocType rtype, int format = 0, jint method_index = 0);
 
-  // alignment requirement for starting offset
-  // Requirements are that the instruction area and the
-  // stubs area must start on CodeEntryAlignment, and
-  // the ctable on sizeof(jdouble)
-  int alignment() const             { return MAX2((int)sizeof(jdouble), (int)CodeEntryAlignment); }
+  int alignment() const;
 
   // Slop between sections, used only when allocating temporary BufferBlob buffers.
   static csize_t end_slop()         { return MAX2((int)sizeof(jdouble), (int)CodeEntryAlignment); }
 
-  csize_t align_at_start(csize_t off) const { return (csize_t) align_up(off, alignment()); }
-
-  // Mark a section frozen.  Assign its remaining space to
-  // the following section.  It will never expand after this point.
-  inline void freeze();         //  { _outer->freeze_section(this); }
+  csize_t align_at_start(csize_t off) const {
+    return (csize_t) align_up(off, alignment());
+  }
 
   // Ensure there's enough space left in the current section.
   // Return true if there was an expansion.
@@ -244,76 +276,77 @@ class CodeSection {
 #endif //PRODUCT
 };
 
-class CodeString;
-class CodeStrings {
+
+#ifndef PRODUCT
+
+class AsmRemarkCollection;
+class DbgStringCollection;
+
+// The assumption made here is that most code remarks (or comments) added to
+// the generated assembly code are unique, i.e. there is very little gain in
+// trying to share the strings between the different offsets tracked in a
+// buffer (or blob).
+
+class AsmRemarks {
+ public:
+  AsmRemarks();
+ ~AsmRemarks();
+
+  const char* insert(uint offset, const char* remstr);
+
+  bool is_empty() const;
+
+  void share(const AsmRemarks &src);
+  void clear();
+  uint print(uint offset, outputStream* strm = tty) const;
+
+  // For testing purposes only.
+  const AsmRemarkCollection* ref() const { return _remarks; }
+
 private:
-#ifndef PRODUCT
-  CodeString* _strings;
-  CodeString* _strings_last;
-#ifdef ASSERT
-  // Becomes true after copy-out, forbids further use.
-  bool _defunct; // Zero bit pattern is "valid", see memset call in decode_env::decode_env
-#endif
-  static const char* _prefix; // defaults to " ;; "
-#endif
-
-  CodeString* find(intptr_t offset) const;
-  CodeString* find_last(intptr_t offset) const;
-
-  void set_null_and_invalidate() {
-#ifndef PRODUCT
-    _strings = NULL;
-    _strings_last = NULL;
-#ifdef ASSERT
-    _defunct = true;
-#endif
-#endif
-  }
-
-public:
-  CodeStrings() {
-#ifndef PRODUCT
-    _strings = NULL;
-    _strings_last = NULL;
-#ifdef ASSERT
-    _defunct = false;
-#endif
-#endif
-  }
-
-  bool is_null() {
-#ifdef ASSERT
-    return _strings == NULL;
-#else
-    return true;
-#endif
-  }
-
-  const char* add_string(const char * string) PRODUCT_RETURN_(return NULL;);
-
-  void add_comment(intptr_t offset, const char * comment) PRODUCT_RETURN;
-  bool has_block_comment(intptr_t offset) const;
-  void print_block_comment(outputStream* stream, intptr_t offset) const PRODUCT_RETURN;
-  // MOVE strings from other to this; invalidate other.
-  void assign(CodeStrings& other)  PRODUCT_RETURN;
-  // COPY strings from other to this; leave other valid.
-  void copy(CodeStrings& other)  PRODUCT_RETURN;
-  // FREE strings; invalidate this.
-  void free() PRODUCT_RETURN;
-
-  // Guarantee that _strings are used at most once; assign and free invalidate a buffer.
-  inline void check_valid() const {
-#ifdef ASSERT
-    assert(!_defunct, "Use of invalid CodeStrings");
-#endif
-  }
-
-  static void set_prefix(const char *prefix) {
-#ifndef PRODUCT
-    _prefix = prefix;
-#endif
-  }
+  AsmRemarkCollection* _remarks;
 };
+
+// The assumption made here is that the number of debug strings (with a fixed
+// address requirement) is a rather small set per compilation unit.
+
+class DbgStrings {
+ public:
+  DbgStrings();
+ ~DbgStrings();
+
+  const char* insert(const char* dbgstr);
+
+  bool is_empty() const;
+
+  void share(const DbgStrings &src);
+  void clear();
+
+  // For testing purposes only.
+  const DbgStringCollection* ref() const { return _strings; }
+
+private:
+  DbgStringCollection* _strings;
+};
+#endif // not PRODUCT
+
+
+#ifdef ASSERT
+#include "utilities/copy.hpp"
+
+class Scrubber {
+ public:
+  Scrubber(void* addr, size_t size) : _addr(addr), _size(size) {}
+ ~Scrubber() {
+    Copy::fill_to_bytes(_addr, _size, badResourceValue);
+  }
+ private:
+  void*  _addr;
+  size_t _size;
+};
+#endif // ASSERT
+
+typedef GrowableArray<SharedStubToInterpRequest> SharedStubToInterpRequests;
 
 // A CodeBuffer describes a memory space into which assembly
 // code is generated.  This memory space usually occupies the
@@ -339,7 +372,7 @@ public:
 // Instructions and data in one section can contain relocatable references to
 // addresses in a sibling section.
 
-class CodeBuffer: public StackObj {
+class CodeBuffer: public StackObj DEBUG_ONLY(COMMA private Scrubber) {
   friend class CodeSection;
   friend class StubCodeGenerator;
 
@@ -347,7 +380,7 @@ class CodeBuffer: public StackObj {
   // CodeBuffers must be allocated on the stack except for a single
   // special case during expansion which is handled internally.  This
   // is done to guarantee proper cleanup of resources.
-  void* operator new(size_t size) throw() { return ResourceObj::operator new(size); }
+  void* operator new(size_t size) throw() { return resource_allocate_bytes(size); }
   void  operator delete(void* p)          { ShouldNotCallThis(); }
 
  public:
@@ -361,6 +394,9 @@ class CodeBuffer: public StackObj {
     SECT_STUBS,               // Outbound trampolines for supporting call sites.
     SECT_LIMIT, SECT_NONE = -1
   };
+
+  typedef LinkedListImpl<int> Offsets;
+  typedef ResizeableResourceHashtable<address, Offsets> SharedTrampolineRequests;
 
  private:
   enum {
@@ -381,19 +417,25 @@ class CodeBuffer: public StackObj {
   csize_t      _total_size;     // size in bytes of combined memory buffer
 
   OopRecorder* _oop_recorder;
-  CodeStrings  _code_strings;
-  bool         _collect_comments;      // Indicate if we need to collect block comments at all.
+
   OopRecorder  _default_oop_recorder;  // override with initialize_oop_recorder
   Arena*       _overflow_arena;
 
   address      _last_insn;      // used to merge consecutive memory barriers, loads or stores.
 
-#if INCLUDE_AOT
-  bool         _immutable_PIC;
-#endif
+  SharedStubToInterpRequests* _shared_stub_to_interp_requests; // used to collect requests for shared iterpreter stubs
+  SharedTrampolineRequests*   _shared_trampoline_requests;     // used to collect requests for shared trampolines
+  bool         _finalize_stubs; // Indicate if we need to finalize stubs to make CodeBuffer final.
 
-  address      _decode_begin;   // start address for decode
+  int          _const_section_alignment;
+
+#ifndef PRODUCT
+  AsmRemarks   _asm_remarks;
+  DbgStrings   _dbg_strings;
+  bool         _collect_comments; // Indicate if we need to collect block comments at all.
+  address      _decode_begin;     // start address for decode
   address      decode_begin();
+#endif
 
   void initialize_misc(const char * name) {
     // all pointers other than code_start/end and those inside the sections
@@ -402,14 +444,22 @@ class CodeBuffer: public StackObj {
     _before_expand   = NULL;
     _blob            = NULL;
     _oop_recorder    = NULL;
-    _decode_begin    = NULL;
     _overflow_arena  = NULL;
-    _code_strings    = CodeStrings();
     _last_insn       = NULL;
-#if INCLUDE_AOT
-    _immutable_PIC   = false;
-#endif
+    _finalize_stubs  = false;
+    _shared_stub_to_interp_requests = NULL;
+    _shared_trampoline_requests = NULL;
 
+    _consts.initialize_outer(this, SECT_CONSTS);
+    _insts.initialize_outer(this,  SECT_INSTS);
+    _stubs.initialize_outer(this,  SECT_STUBS);
+
+    // Default is to align on 8 bytes. A compiler can change this
+    // if larger alignment (e.g., 32-byte vector masks) is required.
+    _const_section_alignment = (int) sizeof(jdouble);
+
+#ifndef PRODUCT
+    _decode_begin    = NULL;
     // Collect block comments, but restrict collection to cases where a disassembly is output.
     _collect_comments = ( PrintAssembly
                        || PrintStubCode
@@ -418,12 +468,10 @@ class CodeBuffer: public StackObj {
                        || PrintSignatureHandlers
                        || UnlockDiagnosticVMOptions
                         );
+#endif
   }
 
   void initialize(address code_start, csize_t code_size) {
-    _consts.initialize_outer(this,  SECT_CONSTS);
-    _insts.initialize_outer(this,   SECT_INSTS);
-    _stubs.initialize_outer(this,   SECT_STUBS);
     _total_start = code_start;
     _total_size  = code_size;
     // Initialize the main section:
@@ -434,8 +482,6 @@ class CodeBuffer: public StackObj {
   }
 
   void initialize_section_size(CodeSection* cs, csize_t size);
-
-  void freeze_section(CodeSection* cs);
 
   // helper for CodeBuffer::expand()
   void take_over_code_from(CodeBuffer* cs);
@@ -465,11 +511,13 @@ class CodeBuffer: public StackObj {
 
  public:
   // (1) code buffer referring to pre-allocated instruction memory
-  CodeBuffer(address code_start, csize_t code_size) {
+  CodeBuffer(address code_start, csize_t code_size)
+    DEBUG_ONLY(: Scrubber(this, sizeof(*this)))
+  {
     assert(code_start != NULL, "sanity");
     initialize_misc("static buffer");
     initialize(code_start, code_size);
-    verify_section_allocation();
+    debug_only(verify_section_allocation();)
   }
 
   // (2) CodeBuffer referring to pre-allocated CodeBlob.
@@ -478,14 +526,18 @@ class CodeBuffer: public StackObj {
   // (3) code buffer allocating codeBlob memory for code & relocation
   // info but with lazy initialization.  The name must be something
   // informative.
-  CodeBuffer(const char* name) {
+  CodeBuffer(const char* name)
+    DEBUG_ONLY(: Scrubber(this, sizeof(*this)))
+  {
     initialize_misc(name);
   }
 
   // (4) code buffer allocating codeBlob memory for code & relocation
   // info.  The name must be something informative and code_size must
   // include both code and stubs sizes.
-  CodeBuffer(const char* name, csize_t code_size, csize_t locs_size) {
+  CodeBuffer(const char* name, csize_t code_size, csize_t locs_size)
+    DEBUG_ONLY(: Scrubber(this, sizeof(*this)))
+  {
     initialize_misc(name);
     initialize(code_size, locs_size);
   }
@@ -528,7 +580,11 @@ class CodeBuffer: public StackObj {
   static int locator_sect(int locator)  { return locator &  sect_mask; }
   static int locator(int pos, int sect) { return (pos << sect_bits) | sect; }
   int        locator(address addr) const;
-  address    locator_address(int locator) const;
+  address    locator_address(int locator) const {
+    if (locator < 0)  return NULL;
+    address start = code_section(locator_sect(locator))->start();
+    return start + locator_pos(locator);
+  }
 
   // Heuristic for pre-packing the taken/not-taken bit of a predicted branch.
   bool is_backward_branch(Label& L);
@@ -545,10 +601,8 @@ class CodeBuffer: public StackObj {
   address       insts_begin() const      { return _insts.start();      }
   address       insts_end() const        { return _insts.end();        }
   void      set_insts_end(address end)   {        _insts.set_end(end); }
-  address       insts_limit() const      { return _insts.limit();      }
   address       insts_mark() const       { return _insts.mark();       }
   void      set_insts_mark()             {        _insts.set_mark();   }
-  void    clear_insts_mark()             {        _insts.clear_mark(); }
 
   // is there anything in the buffer other than the current section?
   bool    is_pure() const                { return insts_size() == total_content_size(); }
@@ -606,35 +660,21 @@ class CodeBuffer: public StackObj {
   // Override default oop recorder.
   void initialize_oop_recorder(OopRecorder* r);
 
-  OopRecorder* oop_recorder() const   { return _oop_recorder; }
-  CodeStrings& strings()              { return _code_strings; }
+  OopRecorder* oop_recorder() const { return _oop_recorder; }
 
   address last_insn() const { return _last_insn; }
   void set_last_insn(address a) { _last_insn = a; }
   void clear_last_insn() { set_last_insn(NULL); }
 
-  void free_strings() {
-    if (!_code_strings.is_null()) {
-      _code_strings.free(); // sets _strings Null as a side-effect.
-    }
-  }
+#ifndef PRODUCT
+  AsmRemarks &asm_remarks() { return _asm_remarks; }
+  DbgStrings &dbg_strings() { return _dbg_strings; }
 
-  // Directly disassemble code buffer.
-  // Print the comment associated with offset on stream, if there is one.
-  virtual void print_block_comment(outputStream* stream, address block_begin) {
-#ifndef PRODUCT
-    intptr_t offset = (intptr_t)(block_begin - _total_start);  // I assume total_start is not correct for all code sections.
-    _code_strings.print_block_comment(stream, offset);
-#endif
+  void clear_strings() {
+    _asm_remarks.clear();
+    _dbg_strings.clear();
   }
-  bool has_block_comment(address block_begin) {
-#ifndef PRODUCT
-    intptr_t offset = (intptr_t)(block_begin - _total_start);  // I assume total_start is not correct for all code sections.
-    return _code_strings.has_block_comment(offset);
-#else
-    return false;
 #endif
-  }
 
   // Code generation
   void relocate(address at, RelocationHolder const& rspec, int format = 0) {
@@ -659,21 +699,21 @@ class CodeBuffer: public StackObj {
     }
   }
 
-  // Transform an address from the code in this code buffer to a specified code buffer
-  address transform_address(const CodeBuffer &cb, address addr) const;
-
-  void block_comment(intptr_t offset, const char * comment) PRODUCT_RETURN;
+  void block_comment(ptrdiff_t offset, const char* comment) PRODUCT_RETURN;
   const char* code_string(const char* str) PRODUCT_RETURN_(return NULL;);
 
   // Log a little info about section usage in the CodeBuffer
   void log_section_sizes(const char* name);
 
-#if INCLUDE_AOT
-  // True if this is a code buffer used for immutable PIC, i.e. AOT
-  // compilation.
-  bool immutable_PIC() { return _immutable_PIC; }
-  void set_immutable_PIC(bool pic) { _immutable_PIC = pic; }
-#endif
+  // Make a set of stubs final. It can create/optimize stubs.
+  void finalize_stubs();
+
+  // Request for a shared stub to the interpreter
+  void shared_stub_to_interp_for(ciMethod* callee, csize_t call_offset);
+
+  void set_const_section_alignment(int align) {
+    _const_section_alignment = align_up(align, HeapWordSize);
+  }
 
 #ifndef PRODUCT
  public:
@@ -690,10 +730,22 @@ class CodeBuffer: public StackObj {
 
 };
 
+// A Java method can have calls of Java methods which can be statically bound.
+// Calls of Java methods need stubs to the interpreter. Calls sharing the same Java method
+// can share a stub to the interpreter.
+// A SharedStubToInterpRequest is a request for a shared stub to the interpreter.
+class SharedStubToInterpRequest : public ResourceObj {
+ private:
+  ciMethod* _shared_method;
+  CodeBuffer::csize_t _call_offset; // The offset of the call in CodeBuffer
 
-inline void CodeSection::freeze() {
-  _outer->freeze_section(this);
-}
+ public:
+  SharedStubToInterpRequest(ciMethod* method = NULL, CodeBuffer::csize_t call_offset = -1) : _shared_method(method),
+      _call_offset(call_offset) {}
+
+  ciMethod* shared_method() const { return _shared_method; }
+  CodeBuffer::csize_t call_offset() const { return _call_offset; }
+};
 
 inline bool CodeSection::maybe_expand_to_ensure_remaining(csize_t amount) {
   if (remaining() < amount) { _outer->expand(this, amount); return true; }

@@ -1,5 +1,6 @@
 /*
- * Copyright (c) 2018, Red Hat, Inc. All rights reserved.
+ * Copyright (c) 2018, 2019, Red Hat, Inc. All rights reserved.
+ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
@@ -55,7 +56,7 @@ void HdrSeq::add(double val) {
   int mag;
   if (v > 0) {
     mag = 0;
-    while (v > 1) {
+    while (v >= 1) {
       mag++;
       v /= 10;
     }
@@ -70,7 +71,7 @@ void HdrSeq::add(double val) {
   int bucket = -MagMinimum + mag;
   int sub_bucket = (int) (v * ValBuckets);
 
-  // Defensively saturate for product bits:
+  // Defensively saturate for product bits
   if (bucket < 0) {
     assert (false, "bucket index (%d) underflow for value (%8.2f)", bucket, val);
     bucket = 0;
@@ -121,20 +122,24 @@ double HdrSeq::percentile(double level) const {
 
 BinaryMagnitudeSeq::BinaryMagnitudeSeq() {
   _mags = NEW_C_HEAP_ARRAY(size_t, BitsPerSize_t, mtInternal);
-  for (int c = 0; c < BitsPerSize_t; c++) {
-    _mags[c] = 0;
-  }
-  _sum = 0;
+  clear();
 }
 
 BinaryMagnitudeSeq::~BinaryMagnitudeSeq() {
   FREE_C_HEAP_ARRAY(size_t, _mags);
 }
 
-void BinaryMagnitudeSeq::add(size_t val) {
-  Atomic::add(val, &_sum);
+void BinaryMagnitudeSeq::clear() {
+  for (int c = 0; c < BitsPerSize_t; c++) {
+    _mags[c] = 0;
+  }
+  _sum = 0;
+}
 
-  int mag = log2_intptr(val) + 1;
+void BinaryMagnitudeSeq::add(size_t val) {
+  Atomic::add(&_sum, val);
+
+  int mag = log2i_graceful(val) + 1;
 
   // Defensively saturate for product bits:
   if (mag < 0) {
@@ -147,7 +152,7 @@ void BinaryMagnitudeSeq::add(size_t val) {
     mag = BitsPerSize_t - 1;
   }
 
-  Atomic::add((size_t)1, &_mags[mag]);
+  Atomic::add(&_mags[mag], (size_t)1);
 }
 
 size_t BinaryMagnitudeSeq::level(int level) const {

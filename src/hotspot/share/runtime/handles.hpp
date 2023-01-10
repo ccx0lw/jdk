@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -80,7 +80,9 @@ class Handle {
   oop     operator -> () const                   { return non_null_obj(); }
 
   bool operator == (oop o) const                 { return obj() == o; }
+  bool operator != (oop o) const                 { return obj() != o; }
   bool operator == (const Handle& h) const       { return obj() == h.obj(); }
+  bool operator != (const Handle& h) const       { return obj() != h.obj(); }
 
   // Null checks
   bool    is_null() const                        { return _handle == NULL; }
@@ -96,8 +98,10 @@ class Handle {
 
   // Raw handle access. Allows easy duplication of Handles. This can be very unsafe
   // since duplicates is only valid as long as original handle is alive.
-  oop* raw_value()                               { return _handle; }
+  oop* raw_value() const                         { return _handle; }
   static oop raw_resolve(oop *handle)            { return handle == NULL ? (oop)NULL : *handle; }
+
+  inline void replace(oop obj);
 };
 
 // Specific Handles for different oop types
@@ -109,9 +113,10 @@ class Handle {
                                                  \
    public:                                       \
     /* Constructors */                           \
-    type##Handle ()                              : Handle()                 {} \
+    type##Handle ()                              : Handle() {} \
     inline type##Handle (Thread* thread, type##Oop obj); \
-    \
+    type##Handle (oop *handle, bool dummy)       : Handle(handle, dummy) {} \
+                                                 \
     /* Operators for ease of use */              \
     type##Oop    operator () () const            { return obj(); } \
     type##Oop    operator -> () const            { return non_null_obj(); } \
@@ -119,6 +124,7 @@ class Handle {
 
 
 DEF_HANDLE(instance         , is_instance_noinline         )
+DEF_HANDLE(stackChunk       , is_stackChunk_noinline       )
 DEF_HANDLE(array            , is_array_noinline            )
 DEF_HANDLE(objArray         , is_objArray_noinline         )
 DEF_HANDLE(typeArray        , is_typeArray_noinline        )
@@ -143,7 +149,6 @@ DEF_HANDLE(typeArray        , is_typeArray_noinline        )
    public:                                       \
     /* Constructors */                           \
     name##Handle () : _value(NULL), _thread(NULL) {}   \
-    name##Handle (type* obj);                    \
     name##Handle (Thread* thread, type* obj);    \
                                                  \
     name##Handle (const name##Handle &h);        \
@@ -191,26 +196,21 @@ class HandleArea: public Arena {
   // Handle allocation
  private:
   oop* real_allocate_handle(oop obj) {
-#ifdef ASSERT
-    oop* handle = (oop*) (UseMallocOnly ? internal_malloc_4(oopSize) : Amalloc_4(oopSize));
-#else
-    oop* handle = (oop*) Amalloc_4(oopSize);
-#endif
+    oop* handle = (oop*)internal_amalloc(oopSize);
     *handle = obj;
     return handle;
   }
  public:
 #ifdef ASSERT
   oop* allocate_handle(oop obj);
+  oop* allocate_null_handle();
 #else
   oop* allocate_handle(oop obj) { return real_allocate_handle(obj); }
+  oop* allocate_null_handle()   { return allocate_handle(nullptr); }
 #endif
 
   // Garbage collection support
   void oops_do(OopClosure* f);
-
-  // Number of handles in use
-  size_t used() const     { return Arena::used() / oopSize; }
 
   debug_only(bool no_handle_mark_active() { return _no_handle_mark_nesting > 0; })
 };
@@ -227,7 +227,7 @@ class HandleArea: public Arena {
 //
 //   Handle h;
 //   {
-//     HandleMark hm;
+//     HandleMark hm(THREAD);
 //     h = Handle(THREAD, obj);
 //   }
 //   h()->print();       // WRONG, h destroyed by HandleMark destructor.
@@ -256,7 +256,6 @@ class HandleMark {
   // remove all chunks beginning with the next
   void chop_later_chunks();
  public:
-  HandleMark();                            // see handles_inline.hpp
   HandleMark(Thread* thread)                      { initialize(thread); }
   ~HandleMark();
 
@@ -288,6 +287,9 @@ class NoHandleMark: public StackObj {
 };
 
 
+// ResetNoHandleMark is called in a context where there is an enclosing
+// NoHandleMark. A thread in _thread_in_native must not create handles so
+// this is used when transitioning via ThreadInVMfromNative.
 class ResetNoHandleMark: public StackObj {
   int _no_handle_mark_nesting;
  public:

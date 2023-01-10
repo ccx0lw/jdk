@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -28,7 +28,6 @@ package com.sun.tools.javac.platform;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.net.URI;
-import java.nio.charset.Charset;
 import java.nio.file.DirectoryStream;
 import java.nio.file.FileSystem;
 import java.nio.file.FileSystems;
@@ -67,9 +66,12 @@ import com.sun.tools.javac.code.Source.Feature;
 import com.sun.tools.javac.file.CacheFSInfo;
 import com.sun.tools.javac.file.JavacFileManager;
 import com.sun.tools.javac.jvm.Target;
+import com.sun.tools.javac.main.Option;
 import com.sun.tools.javac.util.Context;
 import com.sun.tools.javac.util.Log;
 import com.sun.tools.javac.util.StringUtils;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
 
 /** PlatformProvider for JDK N.
  *
@@ -121,7 +123,7 @@ public class JDKPlatformProvider implements PlatformProvider {
                         continue;
                     for (char ver : section.getFileName().toString().toCharArray()) {
                         String verString = Character.toString(ver);
-                        Target t = Target.lookup("" + Integer.parseInt(verString, 16));
+                        Target t = Target.lookup("" + Integer.parseInt(verString, Character.MAX_RADIX));
 
                         if (t != null) {
                             SUPPORTED_JAVA_PLATFORM_VERSIONS.add(targetNumericVersion(t));
@@ -146,7 +148,7 @@ public class JDKPlatformProvider implements PlatformProvider {
         PlatformDescriptionImpl(String sourceVersion) {
             this.sourceVersion = sourceVersion;
             this.ctSymVersion =
-                    StringUtils.toUpperCase(Integer.toHexString(Integer.parseInt(sourceVersion)));
+                    StringUtils.toUpperCase(Integer.toString(Integer.parseInt(sourceVersion), Character.MAX_RADIX));
         }
 
         @Override
@@ -238,13 +240,15 @@ public class JDKPlatformProvider implements PlatformProvider {
 
                 @Override
                 public String inferBinaryName(Location location, JavaFileObject file) {
-                    if (file instanceof SigJavaFileObject) {
-                        file = ((SigJavaFileObject) file).getDelegate();
+                    if (file instanceof SigJavaFileObject sigJavaFileObject) {
+                        file = sigJavaFileObject.getDelegate();
                     }
                     return super.inferBinaryName(location, file);
                 }
 
             };
+
+            fm.handleOption(Option.MULTIRELEASE, sourceVersion);
 
             Path file = findCtSym();
             // file == ${jdk.home}/lib/ct.sym
@@ -259,7 +263,6 @@ public class JDKPlatformProvider implements PlatformProvider {
                     boolean hasModules =
                             Feature.MODULES.allowedInSource(Source.lookup(sourceVersion));
                     Path systemModules = root.resolve(ctSymVersion).resolve("system-modules");
-                    Charset utf8 = Charset.forName("UTF-8");
 
                     if (!hasModules) {
                         List<Path> paths = new ArrayList<>();
@@ -285,7 +288,7 @@ public class JDKPlatformProvider implements PlatformProvider {
                                 FileSystems.getFileSystem(URI.create("jrt:/"))
                                            .getPath("modules");
                         try (Stream<String> lines =
-                                Files.lines(systemModules, utf8)) {
+                                Files.lines(systemModules, UTF_8)) {
                             lines.map(line -> jrtModules.resolve(line))
                                  .filter(mod -> Files.exists(mod))
                                  .forEach(mod -> setModule(fm, mod));

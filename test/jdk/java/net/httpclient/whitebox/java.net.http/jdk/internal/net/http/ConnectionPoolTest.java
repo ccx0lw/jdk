@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -47,6 +47,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Flow;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.IntStream;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -62,7 +63,6 @@ import jdk.internal.net.http.common.FlowTube;
  *          connection deadlines and purges the right connections
  *          from the cache.
  * @bug 8187044 8187111 8221395
- * @author danielfuchs
  */
 public class ConnectionPoolTest {
 
@@ -402,7 +402,7 @@ public class ConnectionPoolTest {
         }
         @Override
         public int read(ByteBuffer dst) throws IOException {
-            return error();
+            return isConnected() ? 0 : -1;
         }
         @Override
         public long read(ByteBuffer[] dsts, int offset, int length) throws IOException {
@@ -441,6 +441,8 @@ public class ConnectionPoolTest {
     // Emulates an HttpConnection that has a strong reference to its HttpClient.
     static class HttpConnectionStub extends HttpConnection {
 
+        static final AtomicLong IDS = new AtomicLong();
+
         public HttpConnectionStub(
                 HttpClient client,
                 InetSocketAddress address,
@@ -455,7 +457,7 @@ public class ConnectionPoolTest {
                 InetSocketAddress proxy,
                 boolean secured) {
             super(address, impl);
-            this.key = ConnectionPool.cacheKey(address, proxy);
+            this.key = ConnectionPool.cacheKey(secured, address, proxy);
             this.address = address;
             this.proxy = proxy;
             this.secured = secured;
@@ -473,6 +475,12 @@ public class ConnectionPoolTest {
         final SocketChannel channel;
         volatile boolean closed, finished;
 
+        // Called from within super constructor
+        @Override
+        long newConnectionId(HttpClientImpl client) {
+            return IDS.incrementAndGet();
+        }
+
         // Used for testing closeOrReturnToPool.
         void finish(boolean finished) { this.finished = finished; }
         void reopen() { closed = finished = false;}
@@ -481,6 +489,7 @@ public class ConnectionPoolTest {
         @Override boolean connected() {return !closed;}
         @Override boolean isSecure() {return secured;}
         @Override boolean isProxied() {return proxy!=null;}
+        @Override InetSocketAddress proxy() { return proxy; }
         @Override ConnectionPool.CacheKey cacheKey() {return key;}
         @Override FlowTube getConnectionFlow() {return flow;}
         @Override SocketChannel channel() {return channel;}

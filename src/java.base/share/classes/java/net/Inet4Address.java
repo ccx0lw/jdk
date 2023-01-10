@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -51,7 +51,7 @@ import java.io.ObjectStreamException;
  * <p> When four parts are specified, each is interpreted as a byte of
  * data and assigned, from left to right, to the four bytes of an IPv4
  * address.
-
+ *
  * <p> When a three part address is specified, the last part is
  * interpreted as a 16-bit quantity and placed in the right most two
  * bytes of the network address. This makes the three part address
@@ -106,7 +106,7 @@ class Inet4Address extends InetAddress {
         holder().family = IPv4;
     }
 
-    Inet4Address(String hostName, byte addr[]) {
+    Inet4Address(String hostName, byte[] addr) {
         holder().hostName = hostName;
         holder().family = IPv4;
         if (addr != null) {
@@ -186,7 +186,7 @@ class Inet4Address extends InetAddress {
     }
 
     /**
-     * Utility routine to check if the InetAddress is an link local address.
+     * Utility routine to check if the InetAddress is a link local address.
      *
      * @return a {@code boolean} indicating if the InetAddress is
      * a link local address; or false if address is not a link local unicast address.
@@ -311,6 +311,13 @@ class Inet4Address extends InetAddress {
     }
 
     /**
+     * Returns the 32-bit IPv4 address.
+     */
+    int addressValue() {
+        return holder().getAddress();
+    }
+
+    /**
      * Returns the IP address string in textual presentation form.
      *
      * @return  the raw IP address in a string format.
@@ -345,8 +352,8 @@ class Inet4Address extends InetAddress {
      * @see     java.net.InetAddress#getAddress()
      */
     public boolean equals(Object obj) {
-        return (obj != null) && (obj instanceof Inet4Address) &&
-            (((InetAddress)obj).holder().getAddress() == holder().getAddress());
+        return (obj instanceof Inet4Address inet4Address) &&
+            inet4Address.holder().getAddress() == holder().getAddress();
     }
 
     // Utilities

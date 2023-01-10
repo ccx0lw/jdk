@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,6 +23,7 @@
  */
 
 #include "precompiled.hpp"
+#include "classfile/vmSymbols.hpp"
 #include "c1/c1_InstructionPrinter.hpp"
 #include "c1/c1_ValueStack.hpp"
 #include "ci/ciArray.hpp"
@@ -33,19 +34,11 @@
 #ifndef PRODUCT
 
 const char* InstructionPrinter::basic_type_name(BasicType type) {
-  switch (type) {
-    case T_BOOLEAN: return "boolean";
-    case T_BYTE   : return "byte";
-    case T_CHAR   : return "char";
-    case T_SHORT  : return "short";
-    case T_INT    : return "int";
-    case T_LONG   : return "long";
-    case T_FLOAT  : return "float";
-    case T_DOUBLE : return "double";
-    case T_ARRAY  : return "array";
-    case T_OBJECT : return "object";
-    default       : return "???";
+  const char* n = type2name(type);
+  if (n == NULL || type > T_VOID) {
+    return "???";
   }
+  return n;
 }
 
 
@@ -247,7 +240,7 @@ void InstructionPrinter::print_stack(ValueStack* stack) {
     output()->cr();
     fill_to(start_position, ' ');
     output()->print("locks [");
-    for (int i = i = 0; i < stack->locks_size(); i++) {
+    for (int i = 0; i < stack->locks_size(); i++) {
       Value t = stack->lock_at(i);
       if (i > 0) output()->print(", ");
       output()->print("%d:", i);
@@ -269,23 +262,7 @@ void InstructionPrinter::print_inline_level(BlockBegin* block) {
 
 
 void InstructionPrinter::print_unsafe_op(UnsafeOp* op, const char* name) {
-  output()->print("%s", name);
-  output()->print(".(");
-}
-
-void InstructionPrinter::print_unsafe_raw_op(UnsafeRawOp* op, const char* name) {
-  print_unsafe_op(op, name);
-  output()->print("base ");
-  print_value(op->base());
-  if (op->has_index()) {
-    output()->print(", index "); print_value(op->index());
-    output()->print(", log2_scale %d", op->log2_scale());
-  }
-}
-
-
-void InstructionPrinter::print_unsafe_object_op(UnsafeObjectOp* op, const char* name) {
-  print_unsafe_op(op, name);
+  output()->print("%s(", name);
   print_value(op->object());
   output()->print(", ");
   print_value(op->offset());
@@ -337,7 +314,9 @@ void InstructionPrinter::print_head() {
 void InstructionPrinter::print_line(Instruction* instr) {
   // print instruction data on one line
   if (instr->is_pinned()) output()->put('.');
-  fill_to(bci_pos  ); output()->print("%d", instr->printable_bci());
+  if (instr->has_printable_bci()) {
+    fill_to(bci_pos  ); output()->print("%d", instr->printable_bci());
+  }
   fill_to(use_pos  ); output()->print("%d", instr->use_count());
   fill_to(temp_pos ); print_temp(instr);
   fill_to(instr_pos); print_instr(instr);
@@ -633,14 +612,7 @@ void InstructionPrinter::do_BlockBegin(BlockBegin* x) {
     output()->print(" dom B%d", x->dominator()->block_id());
   }
 
-  // print predecessors and successors
-  if (x->successors()->length() > 0) {
-    output()->print(" sux:");
-    for (int i = 0; i < x->successors()->length(); i ++) {
-      output()->print(" B%d", x->successors()->at(i)->block_id());
-    }
-  }
-
+  // print predecessors
   if (x->number_of_preds() > 0) {
     output()->print(" pred:");
     for (int i = 0; i < x->number_of_preds(); i ++) {
@@ -745,11 +717,6 @@ void InstructionPrinter::do_If(If* x) {
 }
 
 
-void InstructionPrinter::do_IfInstanceOf(IfInstanceOf* x) {
-  output()->print("<IfInstanceOf>");
-}
-
-
 void InstructionPrinter::do_TableSwitch(TableSwitch* x) {
   output()->print("tableswitch ");
   if (x->is_safepoint()) output()->print("(safepoint) ");
@@ -819,36 +786,20 @@ void InstructionPrinter::do_RoundFP(RoundFP* x) {
   print_value(x->input());
 }
 
-
-void InstructionPrinter::do_UnsafeGetRaw(UnsafeGetRaw* x) {
-  print_unsafe_raw_op(x, "UnsafeGetRaw");
+void InstructionPrinter::do_UnsafeGet(UnsafeGet* x) {
+  print_unsafe_op(x, x->is_raw() ? "UnsafeGet (raw)" : "UnsafeGet");
   output()->put(')');
 }
 
-
-void InstructionPrinter::do_UnsafePutRaw(UnsafePutRaw* x) {
-  print_unsafe_raw_op(x, "UnsafePutRaw");
+void InstructionPrinter::do_UnsafePut(UnsafePut* x) {
+  print_unsafe_op(x, "UnsafePut");
   output()->print(", value ");
   print_value(x->value());
   output()->put(')');
 }
 
-
-void InstructionPrinter::do_UnsafeGetObject(UnsafeGetObject* x) {
-  print_unsafe_object_op(x, "UnsafeGetObject");
-  output()->put(')');
-}
-
-
-void InstructionPrinter::do_UnsafePutObject(UnsafePutObject* x) {
-  print_unsafe_object_op(x, "UnsafePutObject");
-  output()->print(", value ");
-  print_value(x->value());
-  output()->put(')');
-}
-
-void InstructionPrinter::do_UnsafeGetAndSetObject(UnsafeGetAndSetObject* x) {
-  print_unsafe_object_op(x, x->is_add()?"UnsafeGetAndSetObject (add)":"UnsafeGetAndSetObject");
+void InstructionPrinter::do_UnsafeGetAndSet(UnsafeGetAndSet* x) {
+  print_unsafe_op(x, x->is_add()?"UnsafeGetAndSet (add)":"UnsafeGetAndSet");
   output()->print(", value ");
   print_value(x->value());
   output()->put(')');

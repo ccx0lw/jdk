@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -30,7 +30,6 @@ import javax.lang.model.*;
 import javax.lang.model.element.*;
 import static javax.lang.model.element.ElementKind.*;
 import static javax.lang.model.element.NestingKind.*;
-import static javax.lang.model.element.ModuleElement.DirectiveKind.*;
 import static javax.lang.model.element.ModuleElement.*;
 import javax.lang.model.type.*;
 import javax.lang.model.util.*;
@@ -39,6 +38,7 @@ import java.io.PrintWriter;
 import java.io.Writer;
 import java.util.*;
 import java.util.stream.Collectors;
+
 
 import com.sun.tools.javac.util.DefinedBy;
 import com.sun.tools.javac.util.DefinedBy.Api;
@@ -55,7 +55,7 @@ import com.sun.tools.javac.util.StringUtils;
  * deletion without notice.</b>
  */
 @SupportedAnnotationTypes("*")
-@SupportedSourceVersion(SourceVersion.RELEASE_14)
+@SupportedSourceVersion(SourceVersion.RELEASE_21)
 public class PrintingProcessor extends AbstractProcessor {
     PrintWriter writer;
 
@@ -89,7 +89,7 @@ public class PrintingProcessor extends AbstractProcessor {
      * Used for the -Xprint option and called by Elements.printElements
      */
     public static class PrintingElementVisitor
-        extends SimpleElementVisitor9<PrintingElementVisitor, Boolean> {
+        extends SimpleElementVisitor14<PrintingElementVisitor, Boolean> {
         int indentation; // Indentation level;
         final PrintWriter writer;
         final Elements elementUtils;
@@ -111,6 +111,13 @@ public class PrintingProcessor extends AbstractProcessor {
         }
 
         @Override @DefinedBy(Api.LANGUAGE_MODEL)
+        public PrintingElementVisitor visitRecordComponent(RecordComponentElement e, Boolean p) {
+                // Do nothing; printing of component information done by
+                // printing the record type itself
+            return this;
+        }
+
+        @Override @DefinedBy(Api.LANGUAGE_MODEL)
         public PrintingElementVisitor visitExecutable(ExecutableElement e, Boolean p) {
             ElementKind kind = e.getKind();
 
@@ -123,7 +130,7 @@ public class PrintingProcessor extends AbstractProcessor {
                     enclosing != null &&
                     NestingKind.ANONYMOUS ==
                     // Use an anonymous class to determine anonymity!
-                    (new SimpleElementVisitor9<NestingKind, Void>() {
+                    (new SimpleElementVisitor14<NestingKind, Void>() {
                         @Override @DefinedBy(Api.LANGUAGE_MODEL)
                         public NestingKind visitType(TypeElement e, Void p) {
                             return e.getNestingKind();
@@ -216,6 +223,16 @@ public class PrintingProcessor extends AbstractProcessor {
 
                 printFormalTypeParameters(e, false);
 
+                if (kind == RECORD) {
+                    // Print out record components
+                    writer.print("(");
+                    writer.print(e.getRecordComponents()
+                                 .stream()
+                                 .map(recordDes -> annotationsToString(recordDes) + recordDes.asType().toString() + " " + recordDes.getSimpleName())
+                                 .collect(Collectors.joining(", ")));
+                    writer.print(")");
+                }
+
                 // Print superclass information if informative
                 if (kind == CLASS) {
                     TypeMirror supertype = e.getSuperclass();
@@ -228,6 +245,7 @@ public class PrintingProcessor extends AbstractProcessor {
                 }
 
                 printInterfaces(e);
+                printPermittedSubclasses(e);
             }
             writer.println(" {");
             indentation++;
@@ -255,7 +273,13 @@ public class PrintingProcessor extends AbstractProcessor {
                 for(Element element : enclosedElements)
                     this.visit(element);
             } else {
-                for(Element element : e.getEnclosedElements())
+                for(Element element :
+                        (kind != RECORD ?
+                         e.getEnclosedElements() :
+                         e.getEnclosedElements()
+                         .stream()
+                         .filter(elt -> elementUtils.getOrigin(elt) == Elements.Origin.EXPLICIT )
+                         .toList() ) )
                     this.visit(element);
             }
 
@@ -423,7 +447,7 @@ public class PrintingProcessor extends AbstractProcessor {
 
         private void printModifiers(Element e) {
             ElementKind kind = e.getKind();
-            if (kind == PARAMETER) {
+            if (kind == PARAMETER || kind == RECORD_COMPONENT) {
                 // Print annotation inline
                 writer.print(annotationsToString(e));
             } else {
@@ -431,7 +455,7 @@ public class PrintingProcessor extends AbstractProcessor {
                 indent();
             }
 
-            if (kind == ENUM_CONSTANT)
+            if (kind == ENUM_CONSTANT || kind == RECORD_COMPONENT)
                 return;
 
             Set<Modifier> modifiers = new LinkedHashSet<>();
@@ -446,6 +470,11 @@ public class PrintingProcessor extends AbstractProcessor {
             case ENUM:
                 modifiers.remove(Modifier.FINAL);
                 modifiers.remove(Modifier.ABSTRACT);
+                modifiers.remove(Modifier.SEALED);
+                break;
+
+            case RECORD:
+                modifiers.remove(Modifier.FINAL);
                 break;
 
             case METHOD:
@@ -492,9 +521,82 @@ public class PrintingProcessor extends AbstractProcessor {
         private void printAnnotations(Element e) {
             List<? extends AnnotationMirror> annots = e.getAnnotationMirrors();
             for(AnnotationMirror annotationMirror : annots) {
-                indent();
-                writer.println(annotationMirror);
+                // Handle compiler-generated container annotations specially
+                if (!printedContainerAnnotation(e, annotationMirror)) {
+                    indent();
+                    writer.println(annotationMirror);
+                }
             }
+        }
+
+        private boolean printedContainerAnnotation(Element e,
+                                                   AnnotationMirror annotationMirror) {
+            /*
+             * If the annotation mirror is marked as mandated and
+             * looks like a container annotation, elide printing the
+             * container and just print the wrapped contents.
+             */
+            if (elementUtils.getOrigin(e, annotationMirror) == Elements.Origin.MANDATED) {
+                // From JLS Chapter 9, an annotation interface AC is a
+                // containing annotation interface of A if AC declares
+                // a value() method whose return type is A[] and any
+                // methods declared by AC other than value() have a
+                // default value. As an implementation choice, if more
+                // than one annotation element is found on the outer
+                // annotation, in other words, something besides a
+                // "value" method, the annotation will not be treated
+                // as a wrapper for the purposes of printing. These
+                // checks are intended to preserve correctness in the
+                // face of some other kind of annotation being marked
+                // as mandated.
+
+                var entries = annotationMirror.getElementValues().entrySet();
+                if (entries.size() == 1) {
+                    var annotationType = annotationMirror.getAnnotationType();
+                    var annotationTypeAsElement = annotationType.asElement();
+
+                    var entry = entries.iterator().next();
+                    var annotationElements = entry.getValue();
+
+                    // Check that the annotation type declaration has
+                    // a single method named "value" and that it
+                    // returns an array. A stricter check would be
+                    // that it is an array of an annotation type and
+                    // that annotation type in turn was repeatable.
+                    if (annotationTypeAsElement.getKind() == ElementKind.ANNOTATION_TYPE) {
+                        var annotationMethods =
+                            ElementFilter.methodsIn(annotationTypeAsElement.getEnclosedElements());
+                        if (annotationMethods.size() == 1) {
+                            var valueMethod = annotationMethods.get(0);
+                            var returnType = valueMethod.getReturnType();
+
+                            if ("value".equals(valueMethod.getSimpleName().toString()) &&
+                                returnType.getKind() == TypeKind.ARRAY) {
+                                // Use annotation value visitor that
+                                // returns a boolean if it prints out
+                                // contained annotations as expected
+                                // and false otherwise
+
+                                return (new SimpleAnnotationValueVisitor14<Boolean, Void>(false) {
+                                    @Override
+                                    public Boolean visitArray(List<? extends AnnotationValue> vals, Void p) {
+                                        if (vals.size() < 2) {
+                                            return false;
+                                        } else {
+                                            for (var annotValue: vals) {
+                                                indent();
+                                                writer.println(annotValue.toString());
+                                            }
+                                            return true;
+                                        }
+                                    }
+                                }).visit(annotationElements);
+                            }
+                        }
+                    }
+                }
+            }
+            return false;
         }
 
         // TODO: Refactor
@@ -569,6 +671,17 @@ public class PrintingProcessor extends AbstractProcessor {
                                  .map(TypeMirror::toString)
                                  .collect(Collectors.joining(", ")));
                 }
+            }
+        }
+
+        private void printPermittedSubclasses(TypeElement e) {
+            List<? extends TypeMirror> subtypes = e.getPermittedSubclasses();
+            if (!subtypes.isEmpty()) { // could remove this check with more complicated joining call
+                writer.print(" permits ");
+                writer.print(subtypes
+                             .stream()
+                             .map(subtype -> subtype.toString())
+                             .collect(Collectors.joining(", ")));
             }
         }
 

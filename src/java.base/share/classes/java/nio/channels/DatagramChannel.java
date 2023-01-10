@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -33,6 +33,7 @@ import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.spi.AbstractSelectableChannel;
 import java.nio.channels.spi.SelectorProvider;
+import static java.util.Objects.requireNonNull;
 
 /**
  * A selectable channel for datagram-oriented sockets.
@@ -149,6 +150,9 @@ public abstract class DatagramChannel
      *
      * @throws  IOException
      *          If an I/O error occurs
+     *
+     * @see     <a href="../../net/doc-files/net-properties.html#Ipv4IPv6">
+     *          java.net.preferIPv4Stack</a> system property
      */
     public static DatagramChannel open() throws IOException {
         return SelectorProvider.provider().openDatagramChannel();
@@ -168,6 +172,9 @@ public abstract class DatagramChannel
      * java.nio.channels.spi.SelectorProvider} object.  The channel will not be
      * connected.
      *
+     * @apiNote {@linkplain java.net.StandardProtocolFamily#UNIX Unix domain}
+     *          sockets are not supported.
+     *
      * @param   family
      *          The protocol family
      *
@@ -181,10 +188,13 @@ public abstract class DatagramChannel
      * @throws  IOException
      *          If an I/O error occurs
      *
+     * @see     <a href="../../net/doc-files/net-properties.html#Ipv4IPv6">
+     *          java.net.preferIPv4Stack</a> system property
+     *
      * @since   1.7
      */
     public static DatagramChannel open(ProtocolFamily family) throws IOException {
-        return SelectorProvider.provider().openDatagramChannel(family);
+        return SelectorProvider.provider().openDatagramChannel(requireNonNull(family));
     }
 
     /**
@@ -234,9 +244,6 @@ public abstract class DatagramChannel
     /**
      * Retrieves a datagram socket associated with this channel.
      *
-     * <p> The returned object will not declare any public methods that are not
-     * declared in the {@link java.net.DatagramSocket} class.  </p>
-     *
      * @return  A datagram socket associated with this channel
      */
     public abstract DatagramSocket socket();
@@ -255,8 +262,11 @@ public abstract class DatagramChannel
      * <p> The channel's socket is configured so that it only receives
      * datagrams from, and sends datagrams to, the given remote <i>peer</i>
      * address.  Once connected, datagrams may not be received from or sent to
-     * any other address.  A datagram socket remains connected until it is
-     * explicitly disconnected or until it is closed.
+     * any other address.  Datagrams in the channel's {@linkplain
+     * java.net.StandardSocketOptions#SO_RCVBUF socket receive buffer}, which
+     * have not been {@linkplain #receive(ByteBuffer) received} before invoking
+     * this method, may be discarded.  The channel's socket remains connected
+     * until it is explicitly disconnected or until it is closed.
      *
      * <p> This method performs exactly the same security checks as the {@link
      * java.net.DatagramSocket#connect connect} method of the {@link
@@ -270,12 +280,13 @@ public abstract class DatagramChannel
      * should be taken to ensure that a connected datagram channel is not shared
      * with untrusted code.
      *
-     * <p> This method may be invoked at any time.  It will not have any effect
-     * on read or write operations that are already in progress at the moment
-     * that it is invoked. If this channel's socket is not bound then this method
-     * will first cause the socket to be bound to an address that is assigned
+     * <p> This method may be invoked at any time.  If another thread has
+     * already initiated a read or write operation upon this channel, then an
+     * invocation of this method will block until any such operation is
+     * complete.  If this channel's socket is not bound then this method will
+     * first cause the socket to be bound to an address that is assigned
      * automatically, as if invoking the {@link #bind bind} method with a
-     * parameter of {@code null}. </p>
+     * parameter of {@code null}.  </p>
      *
      * @param  remote
      *         The remote address to which this channel is to be connected
@@ -305,8 +316,10 @@ public abstract class DatagramChannel
      *          If the type of the given remote address is not supported
      *
      * @throws  SecurityException
-     *          If a security manager has been installed
-     *          and it does not permit access to the given remote address
+     *          If a security manager has been installed and it does not
+     *          permit access to the given remote address, or if unbound,
+     *          the security manager {@link SecurityManager#checkListen checkListen}
+     *          method denies the operation
      *
      * @throws  IOException
      *          If some other I/O error occurs
@@ -321,9 +334,10 @@ public abstract class DatagramChannel
      * from, and sends datagrams to, any remote address so long as the security
      * manager, if installed, permits it.
      *
-     * <p> This method may be invoked at any time.  It will not have any effect
-     * on read or write operations that are already in progress at the moment
-     * that it is invoked.
+     * <p> This method may be invoked at any time.  If another thread has
+     * already initiated a read or write operation upon this channel, then an
+     * invocation of this method will block until any such operation is
+     * complete.
      *
      * <p> If this channel's socket is not connected, or if the channel is
      * closed, then invoking this method has no effect.  </p>
@@ -396,6 +410,9 @@ public abstract class DatagramChannel
      *          or {@code null} if this channel is in non-blocking mode
      *          and no datagram was immediately available
      *
+     * @throws  IllegalArgumentException
+     *          If the buffer is read-only
+     *
      * @throws  ClosedChannelException
      *          If this channel is closed
      *
@@ -408,6 +425,11 @@ public abstract class DatagramChannel
      *          while the read operation is in progress, thereby
      *          closing the channel and setting the current thread's
      *          interrupt status
+     *
+     * @throws  SecurityException
+     *          If unbound, and a security manager has been installed and
+     *          its {@link SecurityManager#checkListen checkListen} method
+     *          denies the operation
      *
      * @throws  IOException
      *          If some other I/O error occurs
@@ -480,9 +502,10 @@ public abstract class DatagramChannel
      *          If the type of the given remote address is not supported
      *
      * @throws  SecurityException
-     *          If a security manager has been installed
-     *          and it does not permit datagrams to be sent
-     *          to the given address
+     *          If a security manager has been installed and it does not permit
+     *          datagrams to be sent to the given address, or if unbound, and
+     *          the security manager's {@link SecurityManager#checkListen checkListen}
+     *          method denies the operation
      *
      * @throws  IOException
      *          If some other I/O error occurs
@@ -505,6 +528,10 @@ public abstract class DatagramChannel
      *
      * @throws  NotYetConnectedException
      *          If this channel's socket is not connected
+     *
+     * @throws  ClosedChannelException      {@inheritDoc}
+     * @throws  AsynchronousCloseException  {@inheritDoc}
+     * @throws  ClosedByInterruptException  {@inheritDoc}
      */
     public abstract int read(ByteBuffer dst) throws IOException;
 
@@ -520,6 +547,10 @@ public abstract class DatagramChannel
      *
      * @throws  NotYetConnectedException
      *          If this channel's socket is not connected
+     *
+     * @throws  ClosedChannelException      {@inheritDoc}
+     * @throws  AsynchronousCloseException  {@inheritDoc}
+     * @throws  ClosedByInterruptException  {@inheritDoc}
      */
     public abstract long read(ByteBuffer[] dsts, int offset, int length)
         throws IOException;
@@ -536,6 +567,10 @@ public abstract class DatagramChannel
      *
      * @throws  NotYetConnectedException
      *          If this channel's socket is not connected
+     *
+     * @throws  ClosedChannelException      {@inheritDoc}
+     * @throws  AsynchronousCloseException  {@inheritDoc}
+     * @throws  ClosedByInterruptException  {@inheritDoc}
      */
     public final long read(ByteBuffer[] dsts) throws IOException {
         return read(dsts, 0, dsts.length);
@@ -551,6 +586,10 @@ public abstract class DatagramChannel
      *
      * @throws  NotYetConnectedException
      *          If this channel's socket is not connected
+     *
+     * @throws  ClosedChannelException      {@inheritDoc}
+     * @throws  AsynchronousCloseException  {@inheritDoc}
+     * @throws  ClosedByInterruptException  {@inheritDoc}
      */
     public abstract int write(ByteBuffer src) throws IOException;
 
@@ -570,6 +609,10 @@ public abstract class DatagramChannel
      *
      * @throws  NotYetConnectedException
      *          If this channel's socket is not connected
+     *
+     * @throws  ClosedChannelException      {@inheritDoc}
+     * @throws  AsynchronousCloseException  {@inheritDoc}
+     * @throws  ClosedByInterruptException  {@inheritDoc}
      */
     public abstract long write(ByteBuffer[] srcs, int offset, int length)
         throws IOException;
@@ -590,6 +633,10 @@ public abstract class DatagramChannel
      *
      * @throws  NotYetConnectedException
      *          If this channel's socket is not connected
+     *
+     * @throws  ClosedChannelException      {@inheritDoc}
+     * @throws  AsynchronousCloseException  {@inheritDoc}
+     * @throws  ClosedByInterruptException  {@inheritDoc}
      */
     public final long write(ByteBuffer[] srcs) throws IOException {
         return write(srcs, 0, srcs.length);
@@ -615,5 +662,4 @@ public abstract class DatagramChannel
      */
     @Override
     public abstract SocketAddress getLocalAddress() throws IOException;
-
 }

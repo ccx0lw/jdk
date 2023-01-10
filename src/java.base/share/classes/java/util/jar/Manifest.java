@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -33,9 +33,8 @@ import java.io.OutputStream;
 import java.util.HashMap;
 import java.util.Map;
 
+import sun.nio.cs.UTF_8;
 import sun.security.util.SecurityProperties;
-
-import static java.nio.charset.StandardCharsets.UTF_8;
 
 /**
  * The Manifest class is used to maintain Manifest entry names and their
@@ -237,7 +236,7 @@ public class Manifest implements Cloneable {
      */
     static void println72(OutputStream out, String line) throws IOException {
         if (!line.isEmpty()) {
-            byte[] lineBytes = line.getBytes(UTF_8);
+            byte[] lineBytes = line.getBytes(UTF_8.INSTANCE);
             int length = lineBytes.length;
             // first line can hold one byte more than subsequent lines which
             // start with a continuation line break space
@@ -337,7 +336,7 @@ public class Manifest implements Cloneable {
                     lastline = buf;
                     continue;
                 }
-                name = new String(buf, 0, buf.length, UTF_8);
+                name = new String(buf, UTF_8.INSTANCE);
                 lastline = null;
             }
             Attributes attr = getAttributes(name);
@@ -362,11 +361,7 @@ public class Manifest implements Cloneable {
         if (toLower(lbuf[0]) == 'n' && toLower(lbuf[1]) == 'a' &&
             toLower(lbuf[2]) == 'm' && toLower(lbuf[3]) == 'e' &&
             lbuf[4] == ':' && lbuf[5] == ' ') {
-            try {
-                return new String(lbuf, 6, len - 6, UTF_8);
-            }
-            catch (Exception e) {
-            }
+            return new String(lbuf, 6, len - 6, UTF_8.INSTANCE);
         }
         return null;
     }
@@ -384,13 +379,9 @@ public class Manifest implements Cloneable {
      * the same main Attributes and entries
      */
     public boolean equals(Object o) {
-        if (o instanceof Manifest) {
-            Manifest m = (Manifest)o;
-            return attr.equals(m.getMainAttributes()) &&
-                   entries.equals(m.getEntries());
-        } else {
-            return false;
-        }
+        return o instanceof Manifest m
+                && attr.equals(m.getMainAttributes())
+                && entries.equals(m.getEntries());
     }
 
     /**
@@ -542,7 +533,7 @@ public class Manifest implements Cloneable {
             if (n > avail) {
                 n = avail;
             }
-            pos += n;
+            pos += (int) n;
             return n;
         }
 

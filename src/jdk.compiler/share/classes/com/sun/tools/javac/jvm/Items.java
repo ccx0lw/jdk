@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -174,9 +174,9 @@ public class Items {
 
     /** Make an item representing a conditional or unconditional jump.
      *  @param opcode      The jump's opcode.
-     *  @param trueJumps   A chain encomassing all jumps that can be taken
+     *  @param trueJumps   A chain encompassing all jumps that can be taken
      *                     if the condition evaluates to true.
-     *  @param falseJumps  A chain encomassing all jumps that can be taken
+     *  @param falseJumps  A chain encompassing all jumps that can be taken
      *                     if the condition evaluates to false.
      */
     CondItem makeCondItem(int opcode, Chain trueJumps, Chain falseJumps) {
@@ -669,7 +669,7 @@ public class Items {
             } else {
                 switch (targetcode) {
                 case INTcode:
-                    if (Code.truncate(typecode) == INTcode)
+                    if (Code.truncate(typecode) == INTcode && typecode != CHARcode)
                         return this;
                     else
                         return new ImmediateItem(
@@ -754,12 +754,12 @@ public class Items {
      */
     class CondItem extends Item {
 
-        /** A chain encomassing all jumps that can be taken
+        /** A chain encompassing all jumps that can be taken
          *  if the condition evaluates to true.
          */
         Chain trueJumps;
 
-        /** A chain encomassing all jumps that can be taken
+        /** A chain encompassing all jumps that can be taken
          *  if the condition evaluates to false.
          */
         Chain falseJumps;

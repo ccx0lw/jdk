@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -30,7 +30,7 @@
 
 // See if this register (or pairs, or vector) already contains the value.
 static bool register_contains_value(Node* val, OptoReg::Name reg, int n_regs,
-                                    Node_List& value) {
+                                    const Node_List &value) {
   for (int i = 0; i < n_regs; i++) {
     OptoReg::Name nreg = OptoReg::add(reg,-i);
     if (value[nreg] != val)
@@ -77,7 +77,7 @@ bool PhaseChaitin::may_be_copy_of_callee( Node *def ) const {
 
 //------------------------------yank-----------------------------------
 // Helper function for yank_if_dead
-int PhaseChaitin::yank( Node *old, Block *current_block, Node_List *value, Node_List *regnd ) {
+int PhaseChaitin::yank(Node *old, Block *current_block, Node_List *value, Node_List *regnd) {
   int blk_adjust=0;
   Block *oldb = _cfg.get_block_for_node(old);
   oldb->find_remove(old);
@@ -87,9 +87,10 @@ int PhaseChaitin::yank( Node *old, Block *current_block, Node_List *value, Node_
   }
   _cfg.unmap_node_from_block(old);
   OptoReg::Name old_reg = lrgs(_lrg_map.live_range_id(old)).reg();
-  if( regnd && (*regnd)[old_reg]==old ) { // Instruction is currently available?
-    value->map(old_reg,NULL);  // Yank from value/regnd maps
-    regnd->map(old_reg,NULL);  // This register's value is now unknown
+  assert(value != NULL || regnd == NULL, "sanity");
+  if (value != NULL && regnd != NULL && regnd->at(old_reg) == old) { // Instruction is currently available?
+    value->map(old_reg, NULL); // Yank from value/regnd maps
+    regnd->map(old_reg, NULL); // This register's value is now unknown
   }
   return blk_adjust;
 }
@@ -152,7 +153,7 @@ int PhaseChaitin::yank_if_dead_recurse(Node *old, Node *orig_old, Block *current
       }
     }
     // Disconnect control and remove precedence edges if any exist
-    old->disconnect_inputs(NULL, C);
+    old->disconnect_inputs(C);
   }
   return blk_adjust;
 }
@@ -161,7 +162,7 @@ int PhaseChaitin::yank_if_dead_recurse(Node *old, Node *orig_old, Block *current
 // Use the prior value instead of the current value, in an effort to make
 // the current value go dead.  Return block iterator adjustment, in case
 // we yank some instructions from this block.
-int PhaseChaitin::use_prior_register( Node *n, uint idx, Node *def, Block *current_block, Node_List &value, Node_List &regnd ) {
+int PhaseChaitin::use_prior_register( Node *n, uint idx, Node *def, Block *current_block, Node_List *value, Node_List *regnd ) {
   // No effect?
   if( def == n->in(idx) ) return 0;
   // Def is currently dead and can be removed?  Do not resurrect
@@ -207,7 +208,7 @@ int PhaseChaitin::use_prior_register( Node *n, uint idx, Node *def, Block *curre
   _post_alloc++;
 
   // Is old def now dead?  We successfully yanked a copy?
-  return yank_if_dead(old,current_block,&value,&regnd);
+  return yank_if_dead(old,current_block,value,regnd);
 }
 
 
@@ -229,7 +230,7 @@ Node *PhaseChaitin::skip_copies( Node *c ) {
 
 //------------------------------elide_copy-------------------------------------
 // Remove (bypass) copies along Node n, edge k.
-int PhaseChaitin::elide_copy( Node *n, int k, Block *current_block, Node_List &value, Node_List &regnd, bool can_change_regs ) {
+int PhaseChaitin::elide_copy( Node *n, int k, Block *current_block, Node_List *value, Node_List *regnd, bool can_change_regs ) {
   int blk_adjust = 0;
 
   uint nk_idx = _lrg_map.live_range_id(n->in(k));
@@ -253,11 +254,14 @@ int PhaseChaitin::elide_copy( Node *n, int k, Block *current_block, Node_List &v
 
   // Phis and 2-address instructions cannot change registers so easily - their
   // outputs must match their input.
-  if( !can_change_regs )
+  if (!can_change_regs) {
     return blk_adjust;          // Only check stupid copies!
-
+  }
   // Loop backedges won't have a value-mapping yet
-  if( &value == NULL ) return blk_adjust;
+  assert(regnd != NULL || value == NULL, "sanity");
+  if (value == NULL || regnd == NULL) {
+    return blk_adjust;
+  }
 
   // Skip through all copies to the _value_ being used.  Do not change from
   // int to pointer.  This attempts to jump through a chain of copies, where
@@ -266,17 +270,18 @@ int PhaseChaitin::elide_copy( Node *n, int k, Block *current_block, Node_List &v
   Node *val = skip_copies(n->in(k));
   if (val == x) return blk_adjust; // No progress?
 
-  int n_regs = RegMask::num_registers(val->ideal_reg());
   uint val_idx = _lrg_map.live_range_id(val);
   OptoReg::Name val_reg = lrgs(val_idx).reg();
+  int n_regs = RegMask::num_registers(val->ideal_reg(), lrgs(val_idx));
 
   // See if it happens to already be in the correct register!
   // (either Phi's direct register, or the common case of the name
   // never-clobbered original-def register)
-  if (register_contains_value(val, val_reg, n_regs, value)) {
-    blk_adjust += use_prior_register(n,k,regnd[val_reg],current_block,value,regnd);
-    if( n->in(k) == regnd[val_reg] ) // Success!  Quit trying
-      return blk_adjust;
+  if (register_contains_value(val, val_reg, n_regs, *value)) {
+    blk_adjust += use_prior_register(n,k,regnd->at(val_reg),current_block,value,regnd);
+    if (n->in(k) == regnd->at(val_reg)) {
+      return blk_adjust; // Success!  Quit trying
+    }
   }
 
   // See if we can skip the copy by changing registers.  Don't change from
@@ -304,11 +309,28 @@ int PhaseChaitin::elide_copy( Node *n, int k, Block *current_block, Node_List &v
       if (ignore_self) continue;
     }
 
-    Node *vv = value[reg];
+    Node *vv = value->at(reg);
+    // For scalable register, number of registers may be inconsistent between
+    // "val_reg" and "reg". For example, when "val" resides in register
+    // but "reg" is located in stack.
+    if (lrgs(val_idx).is_scalable()) {
+      assert(val->ideal_reg() == Op_VecA || val->ideal_reg() == Op_RegVectMask, "scalable register");
+      if (OptoReg::is_stack(reg)) {
+        n_regs = lrgs(val_idx).scalable_reg_slots();
+      } else {
+        n_regs = lrgs(val_idx)._is_predicate ? RegMask::SlotsPerRegVectMask : RegMask::SlotsPerVecA;
+      }
+    }
     if (n_regs > 1) { // Doubles and vectors check for aligned-adjacent set
-      uint last = (n_regs-1); // Looking for the last part of a set
+      uint last;
+      if (lrgs(val_idx).is_scalable() && val->ideal_reg() == Op_VecA) {
+        // For scalable vector register, regmask is always SlotsPerVecA bits aligned
+        last = RegMask::SlotsPerVecA - 1;
+      } else {
+        last = (n_regs-1); // Looking for the last part of a set
+      }
       if ((reg&last) != last) continue; // Wrong part of a set
-      if (!register_contains_value(vv, reg, n_regs, value)) continue; // Different value
+      if (!register_contains_value(vv, reg, n_regs, *value)) continue; // Different value
     }
     if( vv == val ||            // Got a direct hit?
         (t && vv && vv->bottom_type() == t && vv->is_Mach() &&
@@ -316,9 +338,9 @@ int PhaseChaitin::elide_copy( Node *n, int k, Block *current_block, Node_List &v
       assert( !n->is_Phi(), "cannot change registers at a Phi so easily" );
       if( OptoReg::is_stack(nk_reg) || // CISC-loading from stack OR
           OptoReg::is_reg(reg) || // turning into a register use OR
-          regnd[reg]->outcnt()==1 ) { // last use of a spill-load turns into a CISC use
-        blk_adjust += use_prior_register(n,k,regnd[reg],current_block,value,regnd);
-        if( n->in(k) == regnd[reg] ) // Success!  Quit trying
+          regnd->at(reg)->outcnt()==1 ) { // last use of a spill-load turns into a CISC use
+        blk_adjust += use_prior_register(n,k,regnd->at(reg),current_block,value,regnd);
+        if( n->in(k) == regnd->at(reg) ) // Success!  Quit trying
           return blk_adjust;
       } // End of if not degrading to a stack
     } // End of if found value in another register
@@ -442,7 +464,7 @@ int PhaseChaitin::possibly_merge_multidef(Node *n, uint k, Block *block, RegToDe
           if (use == n) {
             break;
           }
-          use->replace_edge(def, merge);
+          use->replace_edge(def, merge, NULL);
         }
       }
       if (merge->find_edge(n->in(k)) == -1) {
@@ -518,7 +540,7 @@ void PhaseChaitin::post_allocate_copy_removal() {
       Block* pb = _cfg.get_block_for_node(block->pred(j));
       // Remove copies along phi edges
       for (uint k = 1; k < phi_dex; k++) {
-        elide_copy(block->get_node(k), j, block, *blk2value[pb->_pre_order], *blk2regnd[pb->_pre_order], false);
+        elide_copy(block->get_node(k), j, block, blk2value[pb->_pre_order], blk2regnd[pb->_pre_order], false);
       }
       if (blk2value[pb->_pre_order]) { // Have a mapping on this edge?
         // See if this predecessor's mappings have been used by everybody
@@ -540,35 +562,28 @@ void PhaseChaitin::post_allocate_copy_removal() {
       }
     }
 
-
     // Extract Node_List mappings.  If 'freed' is non-zero, we just popped
     // 'freed's blocks off the list
-    Node_List &regnd = *(free_list.is_empty() ? new Node_List() : free_list.pop());
-    Node_List &value = *(free_list.is_empty() ? new Node_List() : free_list.pop());
+    Node_List &regnd = *(free_list.is_empty() ? new Node_List(_max_reg) : free_list.pop());
+    Node_List &value = *(free_list.is_empty() ? new Node_List(_max_reg) : free_list.pop());
     assert( !freed || blk2value[freed->_pre_order] == &value, "" );
-    value.map(_max_reg,NULL);
-    regnd.map(_max_reg,NULL);
     // Set mappings as OUR mappings
     blk2value[block->_pre_order] = &value;
     blk2regnd[block->_pre_order] = &regnd;
 
     // Initialize value & regnd for this block
     if (missing_some_inputs) {
-      // Some predecessor has not yet been visited; zap map to empty
-      for (uint k = 0; k < (uint)_max_reg; k++) {
-        value.map(k,NULL);
-        regnd.map(k,NULL);
+      // Some predecessor has not yet been visited; zap map to empty if necessary
+      if (freed) {
+        value.clear();
+        regnd.clear();
       }
     } else {
-      if( !freed ) {            // Didn't get a freebie prior block
+      if (!freed) {            // Didn't get a freebie prior block
         // Must clone some data
         freed = _cfg.get_block_for_node(block->pred(1));
-        Node_List &f_value = *blk2value[freed->_pre_order];
-        Node_List &f_regnd = *blk2regnd[freed->_pre_order];
-        for( uint k = 0; k < (uint)_max_reg; k++ ) {
-          value.map(k,f_value[k]);
-          regnd.map(k,f_regnd[k]);
-        }
+        value.copy(*blk2value[freed->_pre_order]);
+        regnd.copy(*blk2regnd[freed->_pre_order]);
       }
       // Merge all inputs together, setting to NULL any conflicts.
       for (j = 1; j < block->num_preds(); j++) {
@@ -577,10 +592,10 @@ void PhaseChaitin::post_allocate_copy_removal() {
           continue; // Did self already via freelist
         }
         Node_List &p_regnd = *blk2regnd[pb->_pre_order];
-        for( uint k = 0; k < (uint)_max_reg; k++ ) {
-          if( regnd[k] != p_regnd[k] ) { // Conflict on reaching defs?
-            value.map(k,NULL); // Then no value handy
-            regnd.map(k,NULL);
+        for (uint k = 0; k < (uint)_max_reg; k++) {
+          if (regnd[k] != p_regnd[k]) { // Conflict on reaching defs?
+            value.map(k, NULL); // Then no value handy
+            regnd.map(k, NULL);
           }
         }
       }
@@ -591,7 +606,7 @@ void PhaseChaitin::post_allocate_copy_removal() {
       uint k;
       Node *phi = block->get_node(j);
       uint pidx = _lrg_map.live_range_id(phi);
-      OptoReg::Name preg = lrgs(_lrg_map.live_range_id(phi)).reg();
+      OptoReg::Name preg = lrgs(pidx).reg();
 
       // Remove copies remaining on edges.  Check for junk phi.
       Node *u = NULL;
@@ -600,7 +615,7 @@ void PhaseChaitin::post_allocate_copy_removal() {
         if( phi != x && u != x ) // Found a different input
           u = u ? NodeSentinel : x; // Capture unique input, or NodeSentinel for 2nd input
       }
-      if (u != NodeSentinel) {    // Junk Phi.  Remove
+      if (u != NodeSentinel || phi->outcnt() == 0) {    // Junk Phi.  Remove
         phi->replace_by(u);
         j -= yank_if_dead(phi, block, &value, &regnd);
         phi_dex--;
@@ -616,14 +631,14 @@ void PhaseChaitin::post_allocate_copy_removal() {
       // can lead to situations where some uses are from the old and some from
       // the new values.  Not illegal by itself but throws the over-strong
       // assert in scheduling.
-      if( pidx ) {
-        value.map(preg,phi);
-        regnd.map(preg,phi);
-        int n_regs = RegMask::num_registers(phi->ideal_reg());
+      if (pidx) {
+        value.map(preg, phi);
+        regnd.map(preg, phi);
+        int n_regs = RegMask::num_registers(phi->ideal_reg(), lrgs(pidx));
         for (int l = 1; l < n_regs; l++) {
           OptoReg::Name preg_lo = OptoReg::add(preg,-l);
-          value.map(preg_lo,phi);
-          regnd.map(preg_lo,phi);
+          value.map(preg_lo, phi);
+          regnd.map(preg_lo, phi);
         }
       }
     }
@@ -663,7 +678,7 @@ void PhaseChaitin::post_allocate_copy_removal() {
             regnd.map(ureg,   def);
             // Record other half of doubles
             uint def_ideal_reg = def->ideal_reg();
-            int n_regs = RegMask::num_registers(def_ideal_reg);
+            int n_regs = RegMask::num_registers(def_ideal_reg, lrgs(_lrg_map.live_range_id(def)));
             for (int l = 1; l < n_regs; l++) {
               OptoReg::Name ureg_lo = OptoReg::add(ureg,-l);
               if (!value[ureg_lo] &&
@@ -681,7 +696,7 @@ void PhaseChaitin::post_allocate_copy_removal() {
 
       // Remove copies along input edges
       for (k = 1; k < n->req(); k++) {
-        j -= elide_copy(n, k, block, value, regnd, two_adr != k);
+        j -= elide_copy(n, k, block, &value, &regnd, two_adr != k);
       }
 
       // Unallocated Nodes define no registers
@@ -707,7 +722,7 @@ void PhaseChaitin::post_allocate_copy_removal() {
       }
 
       uint n_ideal_reg = n->ideal_reg();
-      int n_regs = RegMask::num_registers(n_ideal_reg);
+      int n_regs = RegMask::num_registers(n_ideal_reg, lrgs(lidx));
       if (n_regs == 1) {
         // If Node 'n' does not change the value mapped by the register,
         // then 'n' is a useless copy.  Do not update the register->node
@@ -773,15 +788,12 @@ void PhaseChaitin::post_allocate_copy_removal() {
       }
 
       // Fat projections kill many registers
-      if( n_ideal_reg == MachProjNode::fat_proj ) {
-        RegMask rm = n->out_RegMask();
-        // wow, what an expensive iterator...
-        nreg = rm.find_first_elem();
-        while( OptoReg::is_valid(nreg)) {
-          rm.Remove(nreg);
-          value.map(nreg,n);
-          regnd.map(nreg,n);
-          nreg = rm.find_first_elem();
+      if (n_ideal_reg == MachProjNode::fat_proj) {
+        RegMaskIterator rmi(n->out_RegMask());
+        while (rmi.has_next()) {
+          nreg = rmi.next();
+          value.map(nreg, n);
+          regnd.map(nreg, n);
         }
       }
 

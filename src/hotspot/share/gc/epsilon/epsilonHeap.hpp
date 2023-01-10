@@ -1,5 +1,6 @@
 /*
- * Copyright (c) 2017, 2018, Red Hat, Inc. All rights reserved.
+ * Copyright (c) 2017, 2022, Red Hat, Inc. All rights reserved.
+ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
@@ -24,11 +25,12 @@
 #ifndef SHARE_GC_EPSILON_EPSILONHEAP_HPP
 #define SHARE_GC_EPSILON_EPSILONHEAP_HPP
 
+#include "gc/epsilon/epsilonBarrierSet.hpp"
+#include "gc/epsilon/epsilonMonitoringSupport.hpp"
 #include "gc/shared/collectedHeap.hpp"
 #include "gc/shared/softRefPolicy.hpp"
 #include "gc/shared/space.hpp"
-#include "gc/epsilon/epsilonMonitoringSupport.hpp"
-#include "gc/epsilon/epsilonBarrierSet.hpp"
+#include "memory/virtualspace.hpp"
 #include "services/memoryManager.hpp"
 
 class EpsilonHeap : public CollectedHeap {
@@ -51,7 +53,8 @@ public:
   static EpsilonHeap* heap();
 
   EpsilonHeap() :
-          _memory_manager("Epsilon Heap", "") {};
+          _memory_manager("Epsilon Heap", ""),
+          _space(NULL) {};
 
   virtual Name kind() const {
     return CollectedHeap::Epsilon;
@@ -66,7 +69,6 @@ public:
   }
 
   virtual jint initialize();
-  virtual void post_initialize();
   virtual void initialize_serviceability();
 
   virtual GrowableArray<GCMemoryManager*> memory_managers();
@@ -80,20 +82,21 @@ public:
     return _space->is_in(p);
   }
 
+  virtual bool requires_barriers(stackChunkOop obj) const { return false; }
+
   virtual bool is_maximal_no_gc() const {
     // No GC is going to happen. Return "we are at max", when we are about to fail.
     return used() == capacity();
   }
 
   // Allocation
-  HeapWord* allocate_work(size_t size);
+  HeapWord* allocate_work(size_t size, bool verbose = true);
   virtual HeapWord* mem_allocate(size_t size, bool* gc_overhead_limit_was_exceeded);
   virtual HeapWord* allocate_new_tlab(size_t min_size,
                                       size_t requested_size,
                                       size_t* actual_size);
 
   // TLAB allocation
-  virtual bool supports_tlab_allocation()           const { return true;           }
   virtual size_t tlab_capacity(Thread* thr)         const { return capacity();     }
   virtual size_t tlab_used(Thread* thr)             const { return used();         }
   virtual size_t max_tlab_size()                    const { return _max_tlab_size; }
@@ -103,10 +106,7 @@ public:
   virtual void do_full_collection(bool clear_all_soft_refs);
 
   // Heap walking support
-  virtual void safe_object_iterate(ObjectClosure* cl);
-  virtual void object_iterate(ObjectClosure* cl) {
-    safe_object_iterate(cl);
-  }
+  virtual void object_iterate(ObjectClosure* cl);
 
   // Object pinning support: every object is implicitly pinned
   virtual bool supports_object_pinning() const           { return true; }
@@ -118,26 +118,23 @@ public:
   bool block_is_obj(const HeapWord* addr) const { return false; }
 
   // No GC threads
-  virtual void print_gc_threads_on(outputStream* st) const {}
   virtual void gc_threads_do(ThreadClosure* tc) const {}
 
   // No nmethod handling
   virtual void register_nmethod(nmethod* nm) {}
   virtual void unregister_nmethod(nmethod* nm) {}
-  virtual void flush_nmethod(nmethod* nm) {}
   virtual void verify_nmethod(nmethod* nm) {}
 
   // No heap verification
   virtual void prepare_for_verify() {}
   virtual void verify(VerifyOption option) {}
 
-  virtual jlong millis_since_last_gc() {
-    // Report time since the VM start
-    return os::elapsed_counter() / NANOSECS_PER_MILLISEC;
-  }
-
   MemRegion reserved_region() const { return _reserved; }
   bool is_in_reserved(const void* addr) const { return _reserved.contains(addr); }
+
+  // Support for loading objects from CDS archive into the heap
+  virtual bool can_load_archived_objects() const { return UseCompressedOops; }
+  virtual HeapWord* allocate_loaded_archive_space(size_t size);
 
   virtual void print_on(outputStream* st) const;
   virtual void print_tracing_info() const;

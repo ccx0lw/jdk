@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,7 +26,6 @@
  * @bug      4924383 8149402 8196202
  * @summary  Test to make sure the -group option works correctly
  *           with the given pattern usages.
- * @author   jamieh
  * @library  ../../lib
  * @modules  jdk.javadoc/jdk.javadoc.internal.tool
  * @build    javadoc.tester.*
@@ -38,7 +37,7 @@ import javadoc.tester.JavadocTester;
 public class TestGroupOption extends JavadocTester {
 
     public static void main(String... args) throws Exception {
-        TestGroupOption tester = new TestGroupOption();
+        var tester = new TestGroupOption();
         tester.runTests();
     }
 

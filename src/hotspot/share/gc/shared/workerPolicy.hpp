@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,7 +25,7 @@
 #ifndef SHARE_GC_SHARED_WORKERPOLICY_HPP
 #define SHARE_GC_SHARED_WORKERPOLICY_HPP
 
-#include "memory/allocation.hpp"
+#include "memory/allStatic.hpp"
 #include "utilities/globalDefinitions.hpp"
 
 class WorkerPolicy : public AllStatic {
@@ -59,14 +59,11 @@ public:
   // Return number of GC threads to use in the next GC.
   // This is called sparingly so as not to change the
   // number of GC workers gratuitously.
-  //   For ParNew collections
   //   For PS scavenge and ParOld collections
   //   For G1 evacuation pauses (subject to update)
   //   For G1 Full GCs (subject to update)
   // Other collection phases inherit the number of
-  // GC workers from the calls above.  For example,
-  // a CMS parallel remark uses the same number of GC
-  // workers as the most recent ParNew collection.
+  // GC workers from the calls above.
   static uint calc_active_workers(uintx total_workers,
                                   uintx active_workers,
                                   uintx application_workers);

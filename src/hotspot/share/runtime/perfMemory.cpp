@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,10 +27,10 @@
 #include "logging/log.hpp"
 #include "memory/allocation.inline.hpp"
 #include "runtime/arguments.hpp"
+#include "runtime/atomic.hpp"
 #include "runtime/java.hpp"
 #include "runtime/mutex.hpp"
 #include "runtime/mutexLocker.hpp"
-#include "runtime/orderAccess.hpp"
 #include "runtime/os.hpp"
 #include "runtime/perfData.hpp"
 #include "runtime/perfMemory.hpp"
@@ -96,7 +96,7 @@ void PerfMemory::initialize() {
   size_t capacity = align_up(PerfDataMemorySize,
                              os::vm_allocation_granularity());
 
-  log_debug(perf, memops)("PerfDataMemorySize = " SIZE_FORMAT ","
+  log_debug(perf, memops)("PerfDataMemorySize = %d,"
                           " os::vm_allocation_granularity = %d,"
                           " adjusted size = " SIZE_FORMAT,
                           PerfDataMemorySize,
@@ -156,7 +156,7 @@ void PerfMemory::initialize() {
   _prologue->overflow = 0;
   _prologue->mod_time_stamp = 0;
 
-  OrderAccess::release_store(&_initialized, 1);
+  Atomic::release_store(&_initialized, 1);
 }
 
 void PerfMemory::destroy() {
@@ -269,5 +269,5 @@ char* PerfMemory::get_perfdata_file_path() {
 }
 
 bool PerfMemory::is_initialized() {
-  return OrderAccess::load_acquire(&_initialized) != 0;
+  return Atomic::load_acquire(&_initialized) != 0;
 }

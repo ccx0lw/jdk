@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1994, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1994, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -35,11 +35,9 @@ package java.lang;
  * executing class was compiled, but the definition can no longer be
  * found.
  *
- * @author  unascribed
  * @since   1.0
  */
-public
-class NoClassDefFoundError extends LinkageError {
+public class NoClassDefFoundError extends LinkageError {
     @java.io.Serial
     private static final long serialVersionUID = 9095859863287012458L;
 

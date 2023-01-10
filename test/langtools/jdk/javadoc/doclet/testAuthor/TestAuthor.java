@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,7 +23,7 @@
 
 /*
  * @test
- * @bug      8202947
+ * @bug      8202947 8239804
  * @summary  test the at-author tag, and corresponding option
  * @library  /tools/lib ../../lib
  * @modules jdk.javadoc/jdk.javadoc.internal.tool
@@ -31,6 +31,7 @@
  * @run main TestAuthor
  */
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -41,7 +42,7 @@ import toolbox.ToolBox;
 public class TestAuthor extends JavadocTester {
 
     public static void main(String... args) throws Exception {
-        TestAuthor tester = new TestAuthor();
+        var tester = new TestAuthor();
         tester.runTests();
     }
 
@@ -51,11 +52,13 @@ public class TestAuthor extends JavadocTester {
     TestAuthor() throws Exception {
         src = Files.createDirectories(Paths.get("src"));
         tb.writeJavaFiles(src,
-                  "package pkg;\n"
-                + "/** Introduction. \n"
-                + " * @author anonymous\n"
-                + " */\n"
-                + "public class Test { }\n");
+                  """
+                      package pkg;
+                      /** Introduction.\s
+                       * @author anonymous
+                       */
+                      public class Test { }
+                      """);
     }
 
     @Test
@@ -79,11 +82,51 @@ public class TestAuthor extends JavadocTester {
         checkAuthor(false);
     }
 
+    @Test
+    public void testBadAuthor_NoWarning(Path base) throws IOException {
+        testBadAuthor(base, false);
+    }
+
+    @Test
+    public void testBadAuthor_Warning(Path base) throws IOException {
+        testBadAuthor(base, true);
+    }
+
+    public void testBadAuthor(Path base, boolean useAuthorOption) throws IOException {
+        Path src = base.resolve("src");
+        tb.writeJavaFiles(src,
+                """
+                    package pkg;
+                    /** Comment. */
+                    public class Test {
+                        private Test() { }
+                        /**
+                         * Comment.
+                         * @author anonymous
+                         */
+                        public void m() { }
+                    }""");
+
+        javadoc("-d", base.resolve("out").toString(),
+                "-sourcepath", src.toString(),
+                "-Xdoclint:none",
+                (useAuthorOption ? "-author" : "-XDdummy=dummy"),
+                "pkg");
+        checkExit(Exit.OK);
+
+        // bad tags never cause corresponding output, whether the option is enabled or not
+        checkAuthor(false);
+
+        checkOutput(Output.OUT, useAuthorOption,
+                "warning: Tag @author cannot be used in method documentation.");
+    }
+
     void checkAuthor(boolean on) {
         checkOutput("pkg/Test.html", on,
-                "<dl>\n"
-                + "<dt><span class=\"simpleTagLabel\">Author:</span></dt>\n"
-                + "<dd>anonymous</dd>\n"
-                + "</dl>");
+                """
+                    <dl class="notes">
+                    <dt>Author:</dt>
+                    <dd>anonymous</dd>
+                    </dl>""");
     }
 }

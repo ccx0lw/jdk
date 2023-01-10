@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -71,7 +71,7 @@ import javax.swing.event.DocumentEvent;
  * as of 1.4.
  *
  * @author  Scott Violet
- * @see IconView
+ * @see javax.swing.text.IconView
  * @since 1.4
  */
 public class ImageView extends View {
@@ -196,6 +196,7 @@ public class ImageView extends View {
 
         URL reference = ((HTMLDocument)getDocument()).getBase();
         try {
+            @SuppressWarnings("deprecation")
             URL u = new URL(reference,src);
             return u;
         } catch (MalformedURLException e) {
@@ -293,7 +294,7 @@ public class ImageView extends View {
 
     /**
      * For images the tooltip text comes from text specified with the
-     * <code>ALT</code> attribute. This is overriden to return
+     * <code>ALT</code> attribute. This is overridden to return
      * <code>getAltText</code>.
      *
      * @see JTextComponent#getToolTipText
@@ -557,7 +558,7 @@ public class ImageView extends View {
      * @param pos the position to convert
      * @param a the allocated region to render into
      * @return the bounding box of the given position
-     * @exception BadLocationException  if the given position does not represent a
+     * @throws BadLocationException  if the given position does not represent a
      *   valid location in the associated document
      * @see View#modelToView
      */
@@ -783,6 +784,22 @@ public class ImageView extends View {
                 newState |= HEIGHT_FLAG;
             }
 
+            Image img;
+            synchronized(this) {
+                img = image;
+            }
+            if (newWidth <= 0) {
+                newWidth = img.getWidth(imageObserver);
+                if (newWidth <= 0) {
+                    newWidth = DEFAULT_WIDTH;
+                }
+            }
+            if (newHeight <= 0) {
+                newHeight = img.getHeight(imageObserver);
+                if (newHeight <= 0) {
+                    newHeight = DEFAULT_HEIGHT;
+                }
+            }
             /*
             If synchronous loading flag is set, then make sure that the image is
             scaled appropriately.
@@ -790,8 +807,7 @@ public class ImageView extends View {
             appropriately.
             */
             if (getLoadsSynchronously()) {
-                Dimension d = adjustWidthHeight(image.getWidth(imageObserver),
-                                                image.getHeight(imageObserver));
+                Dimension d = adjustWidthHeight(newWidth, newHeight);
                 newWidth = d.width;
                 newHeight = d.height;
                 newState |= (WIDTH_FLAG | HEIGHT_FLAG);
@@ -958,7 +974,7 @@ public class ImageView extends View {
                 synchronized(ImageView.this) {
                     if (image == img) {
                         // Be sure image hasn't changed since we don't
-                        // initialy synchronize
+                        // initially synchronize
                         image = null;
                         if ((state & WIDTH_FLAG) != WIDTH_FLAG) {
                             width = DEFAULT_WIDTH;
@@ -1038,10 +1054,10 @@ public class ImageView extends View {
 
     /**
      * ImageLabelView is used if the image can't be loaded, and
-     * the attribute specified an alt attribute. It overriden a handle of
+     * the attribute specified an alt attribute. It overridden a handle of
      * methods as the text is hardcoded and does not come from the document.
      */
-    private class ImageLabelView extends InlineView {
+    private static class ImageLabelView extends InlineView {
         private Segment segment;
         private Color fg;
 

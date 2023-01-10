@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -52,12 +52,6 @@ import java.util.zip.ZipException;
  * @author Xueming Shen, Rajendra Gutupalli, Jaya Hangal
  */
 public class ZipFileSystemProvider extends FileSystemProvider {
-
-    // Property used to specify the entry version to use for a multi-release JAR
-    static final String PROPERTY_RELEASE_VERSION = "releaseVersion";
-    // Original property used to specify the entry version to use for a
-    // multi-release JAR which is kept for backwards compatibility.
-    static final String PROPERTY_MULTI_RELEASE = "multi-release";
     private final Map<Path, ZipFileSystem> filesystems = new HashMap<>();
 
     public ZipFileSystemProvider() {}
@@ -127,21 +121,14 @@ public class ZipFileSystemProvider extends FileSystemProvider {
     }
 
     private ZipFileSystem getZipFileSystem(Path path, Map<String, ?> env) throws IOException {
-        ZipFileSystem zipfs;
         try {
-            if (env.containsKey(PROPERTY_RELEASE_VERSION) ||
-                    env.containsKey(PROPERTY_MULTI_RELEASE)) {
-                zipfs = new JarFileSystem(this, path, env);
-            } else {
-                zipfs = new ZipFileSystem(this, path, env);
-            }
+            return new ZipFileSystem(this, path, env);
         } catch (ZipException ze) {
             String pname = path.toString();
             if (pname.endsWith(".zip") || pname.endsWith(".jar"))
                 throw ze;
             throw new UnsupportedOperationException();
         }
-        return zipfs;
     }
 
     @Override
@@ -202,6 +189,15 @@ public class ZipFileSystemProvider extends FileSystemProvider {
     @Override
     public final void delete(Path path) throws IOException {
         toZipPath(path).delete();
+    }
+
+    @Override
+    public boolean exists(Path path, LinkOption... options) {
+        if (options.length == 0) {
+            return toZipPath(path).exists();
+        } else {
+            return super.exists(path, options);
+        }
     }
 
     @Override
@@ -298,6 +294,16 @@ public class ZipFileSystemProvider extends FileSystemProvider {
     }
 
     @Override
+    @SuppressWarnings("unchecked") // Cast to A
+    public <A extends BasicFileAttributes> A readAttributesIfExists(Path path,
+                                                                    Class<A> type,
+                                                                    LinkOption... options)
+        throws IOException
+    {
+        return (A) toZipPath(path).readAttributesIfExists();
+    }
+
+    @Override
     public Path readSymbolicLink(Path link) {
         throw new UnsupportedOperationException("Not supported.");
     }
@@ -311,6 +317,7 @@ public class ZipFileSystemProvider extends FileSystemProvider {
     }
 
     //////////////////////////////////////////////////////////////
+    @SuppressWarnings("removal")
     void removeFileSystem(Path zfpath, ZipFileSystem zfs) throws IOException {
         synchronized (filesystems) {
             Path tempPath = zfpath;
@@ -320,8 +327,7 @@ public class ZipFileSystemProvider extends FileSystemProvider {
             } catch (PrivilegedActionException e) {
                 throw (IOException) e.getException();
             }
-            if (filesystems.get(zfpath) == zfs)
-                filesystems.remove(zfpath);
+            filesystems.remove(zfpath, zfs);
         }
     }
 }

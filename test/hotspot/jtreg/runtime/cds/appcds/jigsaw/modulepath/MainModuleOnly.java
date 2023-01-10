@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,8 +26,9 @@
  * @test
  * @requires vm.cds
  * @library /test/lib /test/hotspot/jtreg/runtime/cds/appcds
- * @modules jdk.jartool/sun.tools.jar
- * @run main/othervm MainModuleOnly
+ * @build jdk.test.whitebox.WhiteBox
+ * @run driver jdk.test.lib.helpers.ClassFileInstaller jdk.test.whitebox.WhiteBox
+ * @run main/othervm/timeout=480 -XX:+UnlockDiagnosticVMOptions -XX:+WhiteBoxAPI -Xbootclasspath/a:. MainModuleOnly
  * @summary Test some scenarios with a main modular jar specified in the --module-path and -cp options in the command line.
  */
 
@@ -37,13 +38,17 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
 
+import jdk.test.lib.cds.CDSTestUtils;
 import jdk.test.lib.cds.CDSTestUtils.Result;
 import jdk.test.lib.process.OutputAnalyzer;
 import jdk.test.lib.Platform;
 
+import jtreg.SkippedException;
+import jdk.test.whitebox.code.Compiler;
+
 public class MainModuleOnly {
 
-    private static final Path USER_DIR = Paths.get(System.getProperty("user.dir"));
+    private static final Path USER_DIR = Paths.get(CDSTestUtils.getOutputDir());
 
     private static final String TEST_SRC = System.getProperty("test.src");
 
@@ -137,19 +142,25 @@ public class MainModuleOnly {
                    .shouldMatch("CDS is disabled when the.*option is specified")
                    .shouldMatch(".class.load. com.simple.Main source:.*com.simple.jar");
             });
-        // run with the archive with the --limit-modules option.
-        // CDS will be disabled with this options and the main class will be
-        // loaded from the modular jar.
-        TestCommon.run("-Xlog:class+load=trace",
-                       "-cp", destJar.toString(),
-                       "--limit-modules", "java.base," + TEST_MODULE1,
-                       "--module-path", moduleDir.toString(),
-                       "-m", TEST_MODULE1)
-            .assertSilentlyDisabledCDS(out -> {
-                out.shouldHaveExitValue(0)
-                   .shouldMatch("CDS is disabled when the.*option is specified")
-                   .shouldMatch(".class.load. com.simple.Main source:.*com.simple.jar");
+
+        boolean skippedTest = false;
+        if (!Compiler.isGraalEnabled()) {
+            // run with the archive with the --limit-modules option.
+            // CDS will be disabled with this options and the main class will be
+            // loaded from the modular jar.
+            TestCommon.run("-Xlog:class+load=trace",
+                           "-cp", destJar.toString(),
+                           "--limit-modules", "java.base," + TEST_MODULE1,
+                           "--module-path", moduleDir.toString(),
+                           "-m", TEST_MODULE1)
+                .assertSilentlyDisabledCDS(out -> {
+                    out.shouldHaveExitValue(0)
+                       .shouldMatch("CDS is disabled when the.*option is specified")
+                       .shouldMatch(".class.load. com.simple.Main source:.*com.simple.jar");
             });
+        } else {
+            skippedTest = true;
+        }
         // run with the archive with the --patch-module option.
         // CDS will be disabled with this options and the main class will be
         // loaded from the modular jar.
@@ -229,6 +240,10 @@ public class MainModuleOnly {
                                           "-m", TEST_MODULE1);
         if (output.getExitValue() != 0) {
             output.shouldMatch("os::stat error.*CDS dump aborted");
+        }
+
+        if (skippedTest) {
+            throw new SkippedException("Skipped --limit-modules test; it can't be run with Graal enabled");
         }
     }
 }

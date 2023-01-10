@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,7 +29,6 @@
  * @requires vm.cds
  * @requires vm.cds.custom.loaders
  * @library /test/lib /test/hotspot/jtreg/runtime/cds/appcds
- * @modules jdk.jartool/sun.tools.jar
  * @compile test-classes/LoaderSegregation.java
  *          test-classes/CustomLoadee.java test-classes/CustomLoadee2.java
  *          test-classes/CustomInterface2_ia.java test-classes/CustomInterface2_ib.java
@@ -37,13 +36,13 @@
  *          test-classes/OnlyBuiltin.java
  *          test-classes/OnlyUnregistered.java
  *          ../test-classes/Util.java
- * @build sun.hotspot.WhiteBox
- * @run driver ClassFileInstaller sun.hotspot.WhiteBox
+ * @build jdk.test.whitebox.WhiteBox
+ * @run driver jdk.test.lib.helpers.ClassFileInstaller jdk.test.whitebox.WhiteBox
  * @run driver LoaderSegregationTest
  */
 
 import jdk.test.lib.process.OutputAnalyzer;
-import sun.hotspot.WhiteBox;
+import jdk.test.whitebox.WhiteBox;
 
 /**
  * See "Handling of the classes in the AppCDS archive" at the top of
@@ -60,7 +59,7 @@ import sun.hotspot.WhiteBox;
  */
 public class LoaderSegregationTest {
     public static void main(String[] args) throws Exception {
-        String wbJar = JarBuilder.build(true, "WhiteBox", "sun/hotspot/WhiteBox");
+        String wbJar = JarBuilder.build(true, "WhiteBox", "jdk/test/whitebox/WhiteBox");
         String use_whitebox_jar = "-Xbootclasspath/a:" + wbJar;
 
         String appJar = JarBuilder.build("LoaderSegregation_app", "LoaderSegregation", "LoaderSegregation$1",

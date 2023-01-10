@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2009, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,9 +23,8 @@
 
 /*
  * @test
- * @bug 6802694 8025633 8026567 8183511 8074407 8182765
+ * @bug 6802694 8025633 8026567 8183511 8074407 8182765 8232644
  * @summary This test verifies deprecation info in serialized-form.html.
- * @author Bhavesh Patel
  * @library ../../lib
  * @modules jdk.javadoc/jdk.javadoc.internal.tool
  * @build javadoc.tester.*
@@ -37,7 +36,7 @@ import javadoc.tester.JavadocTester;
 public class TestSerializedFormDeprecationInfo extends JavadocTester {
 
     public static void main(String... args) throws Exception {
-        TestSerializedFormDeprecationInfo tester = new TestSerializedFormDeprecationInfo();
+        var tester = new TestSerializedFormDeprecationInfo();
         tester.runTests();
     }
 
@@ -45,6 +44,7 @@ public class TestSerializedFormDeprecationInfo extends JavadocTester {
     public void testDefault() {
         javadoc("-d", "out-default",
                 "-sourcepath", testSrc,
+                "--no-platform-links",
                 "pkg1");
         checkExit(Exit.OK);
 
@@ -69,6 +69,7 @@ public class TestSerializedFormDeprecationInfo extends JavadocTester {
         javadoc("-d", "out-nodepr",
                 "-nodeprecated",
                 "-sourcepath", testSrc,
+                "--no-platform-links",
                 "pkg1");
         checkExit(Exit.OK);
 
@@ -92,45 +93,48 @@ public class TestSerializedFormDeprecationInfo extends JavadocTester {
     // display the inline comments, tags and deprecation information if any.
     void checkCommentDeprecated(boolean expectFound) {
         checkOutput("serialized-form.html", expectFound,
-                "<dl>\n"
-                + "<dt><span class=\"throwsLabel\">Throws:</span></dt>\n"
-                + "<dd><code>"
-                + "java.io.IOException</code> - on error</dd>\n"
-                + "<dt><span class=\"seeLabel\">See Also:</span>"
-                + "</dt>\n"
-                + "<dd><a href=\"pkg1/C1.html#setUndecorated(boolean)\">"
-                + "<code>C1.setUndecorated(boolean)</code></a></dd>\n"
-                + "</dl>",
-                "<span class=\"deprecatedLabel\">Deprecated.</span>\n"
-                + "<div class=\"deprecationComment\">As of JDK version 1.5, replaced by\n"
-                + " <a href=\"pkg1/C1.html#setUndecorated(boolean)\">"
-                + "<code>setUndecorated(boolean)</code></a>.</div>\n"
-                + "</div>\n"
-                + "<div class=\"block\">This field indicates whether the C1 "
-                + "is undecorated.</div>\n"
-                + "&nbsp;\n"
-                + "<dl>\n"
-                + "<dt><span class=\"simpleTagLabel\">Since:</span></dt>\n"
-                + "<dd>1.4</dd>\n"
-                + "<dt><span class=\"seeLabel\">See Also:</span>"
-                + "</dt>\n"
-                + "<dd><a href=\"pkg1/C1.html#setUndecorated(boolean)\">"
-                + "<code>C1.setUndecorated(boolean)</code></a></dd>\n"
-                + "</dl>",
-                "<span class=\"deprecatedLabel\">Deprecated.</span>\n"
-                + "<div class=\"deprecationComment\">As of JDK version 1.5, replaced by\n"
-                + " <a href=\"pkg1/C1.html#setUndecorated(boolean)\">"
-                + "<code>setUndecorated(boolean)</code></a>.</div>\n"
-                + "</div>\n"
-                + "<div class=\"block\">Reads the object stream.</div>\n"
-                + "<dl>\n"
-                + "<dt><span class=\"throwsLabel\">Throws:</span></dt>\n"
-                + "<dd><code>java.io.IOException</code> - on error</dd>\n"
-                + "</dl>",
-                "<span class=\"deprecatedLabel\">Deprecated.</span>"
-                + "</div>\n"
-                + "<div class=\"block\">"
-                + "The name for this class.</div>");
+                """
+                    <dl class="notes">
+                    <dt>Throws:</dt>
+                    <dd><code>java.io.IOException</code> - on error</dd>
+                    <dt>See Also:</dt>
+                    <dd>
+                    <ul class="tag-list">
+                    <li><a href="pkg1/C1.html#setUndecorated(boolean)"><code>C1.setUndecorated(boolean)</code></a></li>
+                    </ul>
+                    </dd>
+                    </dl>""",
+                """
+                    <span class="deprecated-label">Deprecated.</span>
+                    <div class="deprecation-comment">As of JDK version 1.5, replaced by
+                     <a href="pkg1/C1.html#setUndecorated(boolean)"><code>setUndecorated(boolean)</code></a>.</div>
+                    </div>
+                    <div class="block">This field indicates whether the C1 is undecorated.</div>
+                    <dl class="notes">
+                    <dt>Since:</dt>
+                    <dd>1.4</dd>
+                    <dt>See Also:</dt>
+                    <dd>
+                    <ul class="tag-list">
+                    <li><a href="pkg1/C1.html#setUndecorated(boolean)"><code>C1.setUndecorated(boolean)</code></a></li>
+                    </ul>
+                    </dd>
+                    </dl>""",
+                """
+                    <span class="deprecated-label">Deprecated.</span>
+                    <div class="deprecation-comment">As of JDK version 1.5, replaced by
+                     <a href="pkg1/C1.html#setUndecorated(boolean)"><code>setUndecorated(boolean)</code></a>.</div>
+                    </div>
+                    <div class="block">Reads the object stream.</div>
+                    <dl class="notes">
+                    <dt>Parameters:</dt>
+                    <dd><code>s</code> - ObjectInputStream</dd>
+                    <dt>Throws:</dt>
+                    <dd><code>java.io.IOException</code> - on error</dd>
+                    </dl>""",
+                """
+                    <span class="deprecated-label">Deprecated.</span></div>
+                    <div class="block">The name for this class.</div>""");
     }
 
     // Test with -nocomment option. The serialized-form.html should
@@ -138,22 +142,19 @@ public class TestSerializedFormDeprecationInfo extends JavadocTester {
     // information if any.
     void checkNoComment(boolean expectFound) {
         checkOutput("serialized-form.html", expectFound,
-                "<pre>boolean undecorated</pre>\n"
-                + "<div class=\"deprecationBlock\"><span class=\"deprecatedLabel\">Deprecated.</span>\n"
-                + "<div class=\"deprecationComment\">"
-                + "As of JDK version 1.5, replaced by\n"
-                + " <a href=\"pkg1/C1.html#setUndecorated(boolean)\"><code>"
-                + "setUndecorated(boolean)</code></a>.</div>\n"
-                + "</div>\n"
-                + "</li>",
-                "<span class=\"deprecatedLabel\">"
-                + "Deprecated.</span>\n"
-                + "<div class=\"deprecationComment\">As of JDK version"
-                + " 1.5, replaced by\n"
-                + " <a href=\"pkg1/C1.html#setUndecorated(boolean)\">"
-                + "<code>setUndecorated(boolean)</code></a>.</div>\n"
-                + "</div>\n"
-                + "</li>");
+                """
+                    <pre>boolean undecorated</pre>
+                    <div class="deprecation-block"><span class="deprecated-label">Deprecated.</span>
+                    <div class="deprecation-comment">As of JDK version 1.5, replaced by
+                     <a href="pkg1/C1.html#setUndecorated(boolean)"><code>setUndecorated(boolean)</code></a>.</div>
+                    </div>
+                    </li>""",
+                """
+                    <span class="deprecated-label">Deprecated.</span>
+                    <div class="deprecation-comment">As of JDK version 1.5, replaced by
+                     <a href="pkg1/C1.html#setUndecorated(boolean)"><code>setUndecorated(boolean)</code></a>.</div>
+                    </div>
+                    </li>""");
     }
 
     // Test with -nodeprecated option. The serialized-form.html should

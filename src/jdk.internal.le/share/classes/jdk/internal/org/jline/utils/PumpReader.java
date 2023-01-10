@@ -4,7 +4,7 @@
  * This software is distributable under the BSD license. See the terms of the
  * BSD license in the documentation provided with this software.
  *
- * http://www.opensource.org/licenses/bsd-license.php
+ * https://opensource.org/licenses/BSD-3-Clause
  */
 package jdk.internal.org.jline.utils;
 
@@ -183,7 +183,7 @@ public class PumpReader extends Reader {
     }
 
     @Override
-    public int read(CharBuffer target) throws IOException {
+    public synchronized int read(CharBuffer target) throws IOException {
         if (!target.hasRemaining()) {
             return 0;
         }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,7 +23,7 @@
 
 /*
  * @test
- * @bug 7069824 8042360 8032842 8175539 8210443
+ * @bug 7069824 8042360 8032842 8175539 8210443 8242010 8276302
  * @summary Verify implementation for Locale matching.
  * @run testng/othervm Bug7069824
  */
@@ -118,9 +118,10 @@ public class Bug7069824 {
                                 new LanguageRange("hak-CN", 0.8),
                                 new LanguageRange("zh-hakka-CN", 0.8),
                                 new LanguageRange("i-hak-CN", 0.8),
+                                new LanguageRange("zh-hak-CN", 0.8),
                                 new LanguageRange("cmn-CN", 0.1),
-                                new LanguageRange("zh-cmn-CN", 0.1),
-                                new LanguageRange("zh-guoyu-CN", 0.1))},
+                                new LanguageRange("zh-guoyu-CN", 0.1),
+                                new LanguageRange("zh-cmn-CN", 0.1))},
                 {"Accept-Language: rki;q=0.4, no-bok-NO;q=0.9, ccq;q=0.5",
                         List.of(new LanguageRange("no-bok-no", 0.9),
                                 new LanguageRange("nb-no", 0.9),
@@ -207,27 +208,61 @@ public class Bug7069824 {
     Object[][] LFilterTagsData() {
         return new Object[][] {
                 // Range, LanguageTags, FilteringMode, Expected language tags
+                {"fr-FR, fr-BG;q=0.8, *;q=0.5, en;q=0", "en-US, fr-FR, fr-CA, fr-BG",
+                        null, "fr-FR, fr-BG, fr-CA"},
+                {"fr-FR, fr-*-BG;q=0.8, *;q=0.5, en;q=0", "en-US, fr-FR, fr-CA, fr-BG",
+                        null, "fr-FR, fr-BG, fr-CA"},
+
                 {"en;q=0.2, *;q=0.6, ja", "de-DE, en, ja-JP-hepburn, fr-JP, he",
-                        null, "de-DE, en, ja-JP-hepburn, fr-JP, he"},
+                        null, "ja-JP-hepburn, de-DE, en, fr-JP, he"},
                 {"en;q=0.2, ja-JP, fr-JP", "de-DE, en, ja-JP-hepburn, fr, he",
                         null, "ja-JP-hepburn, en"},
                 {"en;q=0.2, ja-JP, fr-JP, iw", "de-DE, he, en, ja-JP-hepburn, fr, he-IL",
                         null, "ja-JP-hepburn, he, he-IL, en"},
                 {"en;q=0.2, ja-JP, fr-JP, he", "de-DE, en, ja-JP-hepburn, fr, iw-IL",
                         null, "ja-JP-hepburn, iw-IL, en"},
+
                 {"de-DE", "de-DE, de-de, de-Latn-DE, de-Latf-DE, de-DE-x-goethe, "
                         + "de-Latn-DE-1996, de-Deva-DE, de, de-x-DE, de-Deva",
-                        MAP_EXTENDED_RANGES, "de-DE, de-DE-x-goethe"},
+                        null, "de-DE, de-DE-x-goethe"},
+                {"de-*-DE", "de-DE, de-de, de-Latn-DE, de-Latf-DE, de-DE-x-goethe, "
+                        + "de-Latn-DE-1996, de-Deva-DE, de, de-x-DE, de-Deva",
+                        null,
+                        "de-DE, de-Latn-DE, de-Latf-DE, de-DE-x-goethe, "
+                                + "de-Latn-DE-1996, de-Deva-DE"},
+
                 {"de-DE", "de-DE, de-de, de-Latn-DE, de-Latf-DE, de-DE-x-goethe, "
                         + "de-Latn-DE-1996, de-Deva-DE, de, de-x-DE, de-Deva",
                         EXTENDED_FILTERING,
                         "de-DE, de-Latn-DE, de-Latf-DE, de-DE-x-goethe, "
-                                + "de-Latn-DE-1996, de-Deva-DE"},
+                        + "de-Latn-DE-1996, de-Deva-DE"},
                 {"de-*-DE", "de-DE, de-de, de-Latn-DE, de-Latf-DE, de-DE-x-goethe, "
                         + "de-Latn-DE-1996, de-Deva-DE, de, de-x-DE, de-Deva",
                         EXTENDED_FILTERING,
                         "de-DE, de-Latn-DE, de-Latf-DE, de-DE-x-goethe, "
-                                + "de-Latn-DE-1996, de-Deva-DE"},
+                        + "de-Latn-DE-1996, de-Deva-DE"},
+
+                {"de-DE", "de-DE, de-de, de-Latn-DE, de-Latf-DE, de-DE-x-goethe, "
+                        + "de-Latn-DE-1996, de-Deva-DE, de, de-x-DE, de-Deva",
+                        IGNORE_EXTENDED_RANGES,
+                        "de-DE, de-DE-x-goethe"},
+                {"de-*-DE", "de-DE, de-de, de-Latn-DE, de-Latf-DE, de-DE-x-goethe, "
+                        + "de-Latn-DE-1996, de-Deva-DE, de, de-x-DE, de-Deva",
+                        IGNORE_EXTENDED_RANGES,
+                        ""},
+
+                {"de-DE", "de-DE, de-de, de-Latn-DE, de-Latf-DE, de-DE-x-goethe, "
+                        + "de-Latn-DE-1996, de-Deva-DE, de, de-x-DE, de-Deva",
+                        MAP_EXTENDED_RANGES, "de-DE, de-DE-x-goethe"},
+                {"de-*-DE", "de-DE, de-de, de-Latn-DE, de-Latf-DE, de-DE-x-goethe, "
+                        + "de-Latn-DE-1996, de-Deva-DE, de, de-x-DE, de-Deva",
+                        MAP_EXTENDED_RANGES, "de-DE, de-DE-x-goethe"},
+
+                {"de-DE", "de-DE, de-de, de-Latn-DE, de-Latf-DE, de-DE-x-goethe, "
+                        + "de-Latn-DE-1996, de-Deva-DE, de, de-x-DE, de-Deva",
+                        REJECT_EXTENDED_RANGES, "de-DE, de-DE-x-goethe"},
+
+                // The next test in this chain is in testLFilterTagsIAE.
         };
     }
 
@@ -377,6 +412,15 @@ public class Bug7069824 {
         assertEquals(actualTags, expectedTags,
                 showErrorMessage("    L.FilterTags(" + (mode != null ? mode : "") + ")",
                         ranges, tags, expectedTags, actualTags));
+    }
+
+    @Test(expectedExceptions = IllegalArgumentException.class)
+    public void testLFilterTagsIAE() {
+        String ranges = "de-*-DE";
+        String tags = "de-DE, de-de, de-Latn-DE, de-Latf-DE, de-DE-x-goethe, "
+                + "de-Latn-DE-1996, de-Deva-DE, de, de-x-DE, de-Deva";
+        List<LanguageRange> priorityList = LanguageRange.parse(ranges);
+        showLanguageTags(Locale.filterTags(priorityList, generateLanguageTags(tags), REJECT_EXTENDED_RANGES));
     }
 
     @Test(dataProvider = "LLookupData")

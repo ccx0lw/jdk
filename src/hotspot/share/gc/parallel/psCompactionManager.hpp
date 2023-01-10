@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2005, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2005, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,7 +25,10 @@
 #ifndef SHARE_GC_PARALLEL_PSCOMPACTIONMANAGER_HPP
 #define SHARE_GC_PARALLEL_PSCOMPACTIONMANAGER_HPP
 
+#include "gc/parallel/psParallelCompact.hpp"
+#include "gc/shared/stringdedup/stringDedup.hpp"
 #include "gc/shared/taskqueue.hpp"
+#include "gc/shared/taskTerminator.hpp"
 #include "memory/allocation.hpp"
 #include "utilities/stack.hpp"
 
@@ -37,69 +40,74 @@ class ParallelCompactData;
 class ParMarkBitMap;
 
 class ParCompactionManager : public CHeapObj<mtGC> {
-  friend class ParallelTaskTerminator;
+  friend class MarkFromRootsTask;
+  friend class ParallelCompactRefProcProxyTask;
+  friend class ParallelScavengeRefProcProxyTask;
   friend class ParMarkBitMap;
   friend class PSParallelCompact;
-  friend class CompactionWithStealingTask;
-  friend class UpdateAndFillClosure;
-  friend class RefProcTaskExecutor;
-  friend class PCRefProcTask;
-  friend class MarkFromRootsTask;
   friend class UpdateDensePrefixAndCompactionTask;
 
- public:
-
-// ------------------------  Don't putback if not needed
-  // Actions that the compaction manager should take.
-  enum Action {
-    Update,
-    Copy,
-    UpdateAndCopy,
-    CopyAndUpdate,
-    NotValid
-  };
-// ------------------------  End don't putback if not needed
-
  private:
+  typedef GenericTaskQueue<oop, mtGC>             OopTaskQueue;
+  typedef GenericTaskQueueSet<OopTaskQueue, mtGC> OopTaskQueueSet;
+
   // 32-bit:  4K * 8 = 32KiB; 64-bit:  8K * 16 = 128KiB
   #define QUEUE_SIZE (1 << NOT_LP64(12) LP64_ONLY(13))
   typedef OverflowTaskQueue<ObjArrayTask, mtGC, QUEUE_SIZE> ObjArrayTaskQueue;
   typedef GenericTaskQueueSet<ObjArrayTaskQueue, mtGC>      ObjArrayTaskQueueSet;
   #undef QUEUE_SIZE
+  typedef OverflowTaskQueue<size_t, mtGC>             RegionTaskQueue;
+  typedef GenericTaskQueueSet<RegionTaskQueue, mtGC>  RegionTaskQueueSet;
 
   static ParCompactionManager** _manager_array;
-  static OopTaskQueueSet*       _stack_array;
-  static ObjArrayTaskQueueSet*  _objarray_queues;
+  static OopTaskQueueSet*       _oop_task_queues;
+  static ObjArrayTaskQueueSet*  _objarray_task_queues;
   static ObjectStartArray*      _start_array;
-  static RegionTaskQueueSet*    _region_array;
+  static RegionTaskQueueSet*    _region_task_queues;
   static PSOldGen*              _old_gen;
 
-private:
   OverflowTaskQueue<oop, mtGC>        _marking_stack;
   ObjArrayTaskQueue             _objarray_stack;
+  size_t                        _next_shadow_region;
 
   // Is there a way to reuse the _marking_stack for the
   // saving empty regions?  For now just create a different
   // type of TaskQueue.
   RegionTaskQueue              _region_stack;
 
+  GrowableArray<HeapWord*>*    _deferred_obj_array;
+
   static ParMarkBitMap* _mark_bitmap;
 
-  Action _action;
+  // Contains currently free shadow regions. We use it in
+  // a LIFO fashion for better data locality and utilization.
+  static GrowableArray<size_t>* _shadow_region_array;
+
+  // Provides mutual exclusive access of _shadow_region_array.
+  // See pop/push_shadow_region_mt_safe() below
+  static Monitor*               _shadow_region_monitor;
 
   HeapWord* _last_query_beg;
   oop _last_query_obj;
   size_t _last_query_ret;
 
+  StringDedup::Requests _string_dedup_requests;
+
   static PSOldGen* old_gen()             { return _old_gen; }
   static ObjectStartArray* start_array() { return _start_array; }
-  static OopTaskQueueSet* stack_array()  { return _stack_array; }
+  static OopTaskQueueSet* oop_task_queues()  { return _oop_task_queues; }
 
   static void initialize(ParMarkBitMap* mbm);
 
+  void publish_and_drain_oop_tasks();
+  // Try to publish all contents from the objArray task queue overflow stack to
+  // the shared objArray stack.
+  // Returns true and a valid task if there has not been enough space in the shared
+  // objArray stack, otherwise returns false and the task is invalid.
+  bool publish_or_pop_objarray_tasks(ObjArrayTask& task);
  protected:
-  // Array of tasks.  Needed by the ParallelTaskTerminator.
-  static RegionTaskQueueSet* region_array()      { return _region_array; }
+  // Array of task queues.  Needed by the task terminator.
+  static RegionTaskQueueSet* region_task_queues()      { return _region_task_queues; }
   OverflowTaskQueue<oop, mtGC>*  marking_stack()       { return &_marking_stack; }
 
   // Pushes onto the marking stack.  If the marking stack is full,
@@ -109,14 +117,30 @@ private:
   // marking stack and overflow stack directly.
 
  public:
+  static const size_t InvalidShadow = ~0;
+  static size_t  pop_shadow_region_mt_safe(PSParallelCompact::RegionData* region_ptr);
+  static void    push_shadow_region_mt_safe(size_t shadow_region);
+  static void    push_shadow_region(size_t shadow_region);
+  static void    remove_all_shadow_regions();
+
+  inline size_t  next_shadow_region() { return _next_shadow_region; }
+  inline void    set_next_shadow_region(size_t record) { _next_shadow_region = record; }
+  inline size_t  move_next_shadow_region_by(size_t workers) {
+    _next_shadow_region += workers;
+    return next_shadow_region();
+  }
+
+  void push_deferred_object(HeapWord* addr);
+
   void reset_bitmap_query_cache() {
     _last_query_beg = NULL;
     _last_query_obj = NULL;
     _last_query_ret = 0;
   }
 
-  Action action() { return _action; }
-  void set_action(Action v) { _action = v; }
+  void flush_string_dedup_requests() {
+    _string_dedup_requests.flush();
+  }
 
   // Bitmap query support, cache last query and result
   HeapWord* last_query_begin() { return _last_query_beg; }
@@ -129,9 +153,13 @@ private:
 
   static void reset_all_bitmap_query_caches();
 
+  static void flush_all_string_dedup_requests();
+
   RegionTaskQueue* region_stack()                { return &_region_stack; }
 
-  inline static ParCompactionManager* manager_array(uint index);
+  // Get the compaction manager when doing evacuation work from the VM thread.
+  // Simply use the first compaction manager here.
+  static ParCompactionManager* get_vmthread_cm() { return _manager_array[0]; }
 
   ParCompactionManager();
 
@@ -154,10 +182,6 @@ private:
   // Check mark and maybe push on marking stack.
   template <typename T> inline void mark_and_push(T* p);
 
-  inline void follow_klass(Klass* klass);
-
-  void follow_class_loader(ClassLoaderData* klass);
-
   // Access function for compaction managers
   static ParCompactionManager* gc_thread_compaction_manager(uint index);
 
@@ -171,6 +195,7 @@ private:
 
   // Process tasks remaining on any stack
   void drain_region_stacks();
+  void drain_deferred_objects();
 
   void follow_contents(oop obj);
   void follow_array(objArrayOop array, int index);
@@ -180,17 +205,20 @@ private:
   class FollowStackClosure: public VoidClosure {
    private:
     ParCompactionManager* _compaction_manager;
+    TaskTerminator* _terminator;
+    uint _worker_id;
    public:
-    FollowStackClosure(ParCompactionManager* cm) : _compaction_manager(cm) { }
+    FollowStackClosure(ParCompactionManager* cm, TaskTerminator* terminator, uint worker_id)
+      : _compaction_manager(cm), _terminator(terminator), _worker_id(worker_id) { }
     virtual void do_void();
   };
-};
 
-inline ParCompactionManager* ParCompactionManager::manager_array(uint index) {
-  assert(_manager_array != NULL, "access of NULL manager_array");
-  assert(index <= ParallelGCThreads, "out of range manager_array access");
-  return _manager_array[index];
-}
+  // Called after marking.
+  static void verify_all_marking_stack_empty() NOT_DEBUG_RETURN;
+
+  // Region staks hold regions in from-space; called after compaction.
+  static void verify_all_region_stack_empty() NOT_DEBUG_RETURN;
+};
 
 bool ParCompactionManager::marking_stacks_empty() const {
   return _marking_stack.is_empty() && _objarray_stack.is_empty();

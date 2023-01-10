@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,7 +23,7 @@
 
 /**
  * @test
- * @bug 8056174
+ * @bug 8056174 8242068 8255536 8267319
  * @summary Make sure JarSigner impl conforms to spec
  * @library /test/lib
  * @modules java.base/sun.security.tools.keytool
@@ -31,7 +31,7 @@
  *          jdk.jartool
  *          jdk.crypto.ec
  * @build jdk.test.lib.util.JarUtils
- * @run main Spec
+ * @run main/othervm Spec
  */
 
 import com.sun.jarsigner.ContentSigner;
@@ -70,6 +70,9 @@ public class Spec {
         sun.security.tools.keytool.Main.main(
                 ("-keystore ks -storepass changeit -keypass changeit -dname" +
                         " CN=DSA -alias d -genkeypair -keyalg dsa").split(" "));
+        sun.security.tools.keytool.Main.main(
+                ("-keystore ks -storepass changeit -keypass changeit -dname" +
+                        " CN=Ed25519 -alias e -genkeypair -keyalg Ed25519").split(" "));
 
         char[] pass = "changeit".toCharArray();
 
@@ -125,6 +128,7 @@ public class Spec {
         iae(()->b1.setProperty("internalsf", "Hello"));
         npe(()->b1.setProperty("sectionsonly", null));
         iae(()->b1.setProperty("sectionsonly", "OK"));
+        npe(()->b1.setProperty("sectionsonly", null));
         npe(()->b1.setProperty("altsigner", null));
         npe(()->b1.eventHandler(null));
 
@@ -174,14 +178,15 @@ public class Spec {
         assertTrue(js3.getProperty("altsigner").equals("MyContentSigner"));
         assertTrue(js3.getProperty("altsignerpath") == null);
 
-        assertTrue(JarSigner.Builder.getDefaultDigestAlgorithm().equals("SHA-256"));
+        assertTrue(JarSigner.Builder.getDefaultDigestAlgorithm()
+                .equals("SHA-384"));
 
         // Calculating large DSA and RSA keys are too slow.
         KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
         kpg.initialize(1024);
         assertTrue(JarSigner.Builder
                 .getDefaultSignatureAlgorithm(kpg.generateKeyPair().getPrivate())
-                    .equals("SHA256withRSA"));
+                    .equals("SHA384withRSA"));
 
         kpg = KeyPairGenerator.getInstance("DSA");
         kpg.initialize(1024);
@@ -190,18 +195,26 @@ public class Spec {
                 .equals("SHA256withDSA"));
 
         kpg = KeyPairGenerator.getInstance("EC");
-        kpg.initialize(192);
+        kpg.initialize(256);
         assertTrue(JarSigner.Builder
                 .getDefaultSignatureAlgorithm(kpg.generateKeyPair().getPrivate())
-                .equals("SHA256withECDSA"));
+                .equals("SHA384withECDSA"));
         kpg.initialize(384);
         assertTrue(JarSigner.Builder
                 .getDefaultSignatureAlgorithm(kpg.generateKeyPair().getPrivate())
                 .equals("SHA384withECDSA"));
-        kpg.initialize(571);
+        kpg.initialize(521);
         assertTrue(JarSigner.Builder
                 .getDefaultSignatureAlgorithm(kpg.generateKeyPair().getPrivate())
                 .equals("SHA512withECDSA"));
+
+        // altsigner does not support modern algorithms
+        JarSigner.Builder b4 = new JarSigner.Builder(
+                (PrivateKey)ks.getKey("e", pass),
+                CertificateFactory.getInstance("X.509")
+                        .generateCertPath(Arrays.asList(ks.getCertificateChain("e"))));
+        b4.setProperty("altsigner", "MyContentSigner");
+        iae(() -> b4.build());
     }
 
     interface RunnableWithException {

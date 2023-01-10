@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2002, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -32,6 +32,7 @@
 #include "oops/oop.inline.hpp"
 #include "runtime/deoptimization.hpp"
 #include "runtime/handles.inline.hpp"
+#include "runtime/vmOperations.hpp"
 #include "runtime/vmThread.hpp"
 #include "utilities/vmError.hpp"
 #include "utilities/xmlstream.hpp"
@@ -89,7 +90,7 @@ void xmlStream::write_text(const char* s, size_t len) {
   size_t written = 0;
   // All normally printed material goes inside XML quotes.
   // This leaves the output free to include markup also.
-  // Scan the string looking for inadvertant "<&>" chars
+  // Scan the string looking for inadvertent "<&>" chars
   for (size_t i = 0; i < len; i++) {
     char ch = s[i];
     // Escape special chars.
@@ -385,9 +386,9 @@ void xmlStream::stamp() {
 // ------------------------------------------------------------------
 // Output a method attribute, in the form " method='pkg/cls name sig'".
 // This is used only when there is no ciMethod available.
-void xmlStream::method(const methodHandle& method) {
+void xmlStream::method(Method* method) {
   assert_if_no_error(inside_attrs(), "printing attributes");
-  if (method.is_null())  return;
+  if (method == NULL)  return;
   print_raw(" method='");
   method_text(method);
   print("' bytes='%d'", method->code_size());
@@ -413,10 +414,10 @@ void xmlStream::method(const methodHandle& method) {
   }
 }
 
-void xmlStream::method_text(const methodHandle& method) {
+void xmlStream::method_text(Method* method) {
   ResourceMark rm;
   assert_if_no_error(inside_attrs(), "printing attributes");
-  if (method.is_null())  return;
+  if (method == NULL)  return;
   text()->print("%s", method->method_holder()->external_name());
   print_raw(" ");  // " " is easier for tools to parse than "::"
   method->name()->print_symbol_on(text());

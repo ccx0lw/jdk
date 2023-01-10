@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2001, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2001, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,9 +24,10 @@
 
 #include "precompiled.hpp"
 #include "gc/shared/concurrentGCThread.hpp"
+#include "runtime/atomic.hpp"
 #include "runtime/init.hpp"
+#include "runtime/jniHandles.hpp"
 #include "runtime/mutexLocker.hpp"
-#include "runtime/orderAccess.hpp"
 #include "runtime/os.hpp"
 
 ConcurrentGCThread::ConcurrentGCThread() :
@@ -34,16 +35,13 @@ ConcurrentGCThread::ConcurrentGCThread() :
     _has_terminated(false) {}
 
 void ConcurrentGCThread::create_and_start(ThreadPriority prio) {
-  if (os::create_thread(this, os::cgc_thread)) {
+  if (os::create_thread(this, os::gc_thread)) {
     os::set_priority(this, prio);
     os::start_thread(this);
   }
 }
 
 void ConcurrentGCThread::run() {
-  // Setup handle area
-  set_active_handles(JNIHandleBlock::allocate_block());
-
   // Wait for initialization to complete
   wait_init_completed();
 
@@ -51,7 +49,7 @@ void ConcurrentGCThread::run() {
 
   // Signal thread has terminated
   MonitorLocker ml(Terminator_lock);
-  OrderAccess::release_store(&_has_terminated, true);
+  Atomic::release_store(&_has_terminated, true);
   ml.notify_all();
 }
 
@@ -60,7 +58,7 @@ void ConcurrentGCThread::stop() {
   assert(!has_terminated(), "Invalid state");
 
   // Signal thread to terminate
-  OrderAccess::release_store_fence(&_should_terminate, true);
+  Atomic::release_store_fence(&_should_terminate, true);
 
   stop_service();
 
@@ -72,9 +70,9 @@ void ConcurrentGCThread::stop() {
 }
 
 bool ConcurrentGCThread::should_terminate() const {
-  return OrderAccess::load_acquire(&_should_terminate);
+  return Atomic::load_acquire(&_should_terminate);
 }
 
 bool ConcurrentGCThread::has_terminated() const {
-  return OrderAccess::load_acquire(&_has_terminated);
+  return Atomic::load_acquire(&_has_terminated);
 }

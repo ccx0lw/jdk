@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -29,6 +29,8 @@ import java.util.*;
 import sun.jvm.hotspot.debugger.*;
 import sun.jvm.hotspot.runtime.*;
 import sun.jvm.hotspot.types.*;
+import sun.jvm.hotspot.utilities.Observable;
+import sun.jvm.hotspot.utilities.Observer;
 
 /** A space that supports compaction operations.  This is usually, but
     not necessarily, a space that is normally contiguous.  But, for
@@ -37,7 +39,6 @@ import sun.jvm.hotspot.types.*;
     full GC's. */
 
 public abstract class CompactibleSpace extends Space {
-  private static AddressField compactionTopField;
 
   static {
     VM.registerVMInitializedObserver(new Observer() {
@@ -49,16 +50,9 @@ public abstract class CompactibleSpace extends Space {
 
   private static synchronized void initialize(TypeDataBase db) {
     Type type = db.lookupType("CompactibleSpace");
-
-    compactionTopField = type.getAddressField("_compaction_top");
   }
 
   public CompactibleSpace(Address addr) {
     super(addr);
-  }
-
-  /** May be used temporarily during a compaction phase. */
-  public Address compactionTop() {
-    return compactionTopField.getValue(addr);
   }
 }

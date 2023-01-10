@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2004, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2004, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -39,13 +39,11 @@ class elapsedTimer;
 class AdaptiveSizePolicy : public CHeapObj<mtGC> {
  friend class GCAdaptivePolicyCounters;
  friend class PSGCAdaptivePolicyCounters;
- friend class CMSGCAdaptivePolicyCounters;
  protected:
 
   enum GCPolicyKind {
     _gc_adaptive_size_policy,
-    _gc_ps_adaptive_size_policy,
-    _gc_cms_adaptive_size_policy
+    _gc_ps_adaptive_size_policy
   };
   virtual GCPolicyKind kind() const { return _gc_adaptive_size_policy; }
 
@@ -77,7 +75,7 @@ class AdaptiveSizePolicy : public CHeapObj<mtGC> {
 
   // Last calculated sizes, in bytes, and aligned
   size_t _eden_size;        // calculated eden free space in bytes
-  size_t _promo_size;       // calculated cms gen free space in bytes
+  size_t _promo_size;       // calculated promoted free space in bytes
 
   size_t _survivor_size;    // calculated survivor size in bytes
 
@@ -122,7 +120,7 @@ class AdaptiveSizePolicy : public CHeapObj<mtGC> {
   // Variables for estimating the major and minor collection costs
   //   minor collection time vs. young gen size
   LinearLeastSquareFit* _minor_collection_estimator;
-  //   major collection time vs. cms gen size
+  //   major collection time vs. old gen size
   LinearLeastSquareFit* _major_collection_estimator;
 
   // These record the most recent collection times.  They
@@ -155,7 +153,7 @@ class AdaptiveSizePolicy : public CHeapObj<mtGC> {
   //   increase the tenuring threshold because of the total major GC cost
   //   is greater than the total minor GC cost
   bool _increment_tenuring_threshold_for_gc_cost;
-  //   decrease the tenuring threshold because of the the total minor GC
+  //   decrease the tenuring threshold because of the total minor GC
   //   cost is greater than the total major GC cost
   bool _decrement_tenuring_threshold_for_gc_cost;
   //   decrease due to survivor size limit
@@ -326,9 +324,6 @@ class AdaptiveSizePolicy : public CHeapObj<mtGC> {
                      double gc_pause_goal_sec,
                      uint gc_cost_ratio);
 
-  bool is_gc_cms_adaptive_size_policy() {
-    return kind() == _gc_cms_adaptive_size_policy;
-  }
   bool is_gc_ps_adaptive_size_policy() {
     return kind() == _gc_ps_adaptive_size_policy;
   }

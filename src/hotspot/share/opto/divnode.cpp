@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -34,6 +34,7 @@
 #include "opto/mulnode.hpp"
 #include "opto/phaseX.hpp"
 #include "opto/subnode.hpp"
+#include "utilities/powerOfTwo.hpp"
 
 // Portions of code courtesy of Clifford Click
 
@@ -133,7 +134,7 @@ static Node *transform_int_divide( PhaseGVN *phase, Node *dividend, jint divisor
     }
 
     // Add rounding to the shift to handle the sign bit
-    int l = log2_jint(d-1)+1;
+    int l = log2i_graceful(d - 1) + 1;
     if (needs_rounding) {
       // Divide-by-power-of-2 can be made into a shift, but you have to do
       // more math for the rounding.  You need to add 0 for positive
@@ -325,14 +326,7 @@ static Node* long_by_long_mulhi(PhaseGVN* phase, Node* dividend, jlong magic_con
   Node* temp2 = phase->transform(new RShiftLNode(w1, phase->intcon(N / 2)));
 
   // Remove the bogus extra edges used to keep things alive
-  PhaseIterGVN* igvn = phase->is_IterGVN();
-  if (igvn != NULL) {
-    igvn->remove_dead_node(hook);
-  } else {
-    for (int i = 0; i < 4; i++) {
-      hook->set_req(i, NULL);
-    }
-  }
+  hook->destruct(phase);
 
   return new AddLNode(temp1, temp2);
 }
@@ -359,7 +353,7 @@ static Node *transform_long_divide( PhaseGVN *phase, Node *dividend, jlong divis
       // Just negate the value
       q = new SubLNode(phase->longcon(0), dividend);
     }
-  } else if ( is_power_of_2_long(d) ) {
+  } else if ( is_power_of_2(d) ) {
 
     // division by +/- a power of 2
 
@@ -377,7 +371,7 @@ static Node *transform_long_divide( PhaseGVN *phase, Node *dividend, jlong divis
       const TypeLong *andconl_t = phase->type( dividend->in(2) )->isa_long();
       if( andconl_t && andconl_t->is_con() ) {
         jlong andconl = andconl_t->get_con();
-        if( andconl < 0 && is_power_of_2_long(-andconl) && (-andconl) >= d ) {
+        if( andconl < 0 && is_power_of_2(-andconl) && (-andconl) >= d ) {
           if( (-andconl) == d ) // Remove AND if it clears bits which will be shifted
             dividend = dividend->in(1);
           needs_rounding = false;
@@ -386,7 +380,7 @@ static Node *transform_long_divide( PhaseGVN *phase, Node *dividend, jlong divis
     }
 
     // Add rounding to the shift to handle the sign bit
-    int l = log2_long(d-1)+1;
+    int l = log2i_graceful(d - 1) + 1;
     if (needs_rounding) {
       // Divide-by-power-of-2 can be made into a shift, but you have to do
       // more math for the rounding.  You need to add 0 for positive
@@ -504,8 +498,9 @@ const Type* DivINode::Value(PhaseGVN* phase) const {
   if( t2 == Type::TOP ) return Type::TOP;
 
   // x/x == 1 since we always generate the dynamic divisor check for 0.
-  if( phase->eqv( in(1), in(2) ) )
+  if (in(1) == in(2)) {
     return TypeInt::ONE;
+  }
 
   // Either input is BOTTOM ==> the result is the local BOTTOM
   const Type *bot = bottom_type();
@@ -609,8 +604,9 @@ const Type* DivLNode::Value(PhaseGVN* phase) const {
   if( t2 == Type::TOP ) return Type::TOP;
 
   // x/x == 1 since we always generate the dynamic divisor check for 0.
-  if( phase->eqv( in(1), in(2) ) )
+  if (in(1) == in(2)) {
     return TypeLong::ONE;
+  }
 
   // Either input is BOTTOM ==> the result is the local BOTTOM
   const Type *bot = bottom_type();
@@ -684,9 +680,10 @@ const Type* DivFNode::Value(PhaseGVN* phase) const {
   // x/x == 1, we ignore 0/0.
   // Note: if t1 and t2 are zero then result is NaN (JVMS page 213)
   // Does not work for variables because of NaN's
-  if( phase->eqv( in(1), in(2) ) && t1->base() == Type::FloatCon)
-    if (!g_isnan(t1->getf()) && g_isfinite(t1->getf()) && t1->getf() != 0.0) // could be negative ZERO or NaN
-      return TypeF::ONE;
+  if (in(1) == in(2) && t1->base() == Type::FloatCon &&
+      !g_isnan(t1->getf()) && g_isfinite(t1->getf()) && t1->getf() != 0.0) { // could be negative ZERO or NaN
+    return TypeF::ONE;
+  }
 
   if( t2 == TypeF::ONE )
     return t1;
@@ -772,25 +769,23 @@ const Type* DivDNode::Value(PhaseGVN* phase) const {
   // x/x == 1, we ignore 0/0.
   // Note: if t1 and t2 are zero then result is NaN (JVMS page 213)
   // Does not work for variables because of NaN's
-  if( phase->eqv( in(1), in(2) ) && t1->base() == Type::DoubleCon)
-    if (!g_isnan(t1->getd()) && g_isfinite(t1->getd()) && t1->getd() != 0.0) // could be negative ZERO or NaN
-      return TypeD::ONE;
+  if (in(1) == in(2) && t1->base() == Type::DoubleCon &&
+      !g_isnan(t1->getd()) && g_isfinite(t1->getd()) && t1->getd() != 0.0) { // could be negative ZERO or NaN
+    return TypeD::ONE;
+  }
 
   if( t2 == TypeD::ONE )
     return t1;
 
-#if defined(IA32)
-  if (!phase->C->method()->is_strict())
-    // Can't trust native compilers to properly fold strict double
-    // division with round-to-zero on this platform.
+  // IA32 would only execute this for non-strict FP, which is never the
+  // case now.
+#if ! defined(IA32)
+  // If divisor is a constant and not zero, divide them numbers
+  if( t1->base() == Type::DoubleCon &&
+      t2->base() == Type::DoubleCon &&
+      t2->getd() != 0.0 ) // could be negative zero
+    return TypeD::make( t1->getd()/t2->getd() );
 #endif
-    {
-      // If divisor is a constant and not zero, divide them numbers
-      if( t1->base() == Type::DoubleCon &&
-          t2->base() == Type::DoubleCon &&
-          t2->getd() != 0.0 ) // could be negative zero
-        return TypeD::make( t1->getd()/t2->getd() );
-    }
 
   // If the dividend is a constant zero
   // Note: if t1 and t2 are zero then result is NaN (JVMS page 213)
@@ -845,6 +840,84 @@ Node *DivDNode::Ideal(PhaseGVN *phase, bool can_reshape) {
   // return multiplication by the reciprocal
   return (new MulDNode(in(1), phase->makecon(TypeD::make(reciprocal))));
 }
+
+//=============================================================================
+//------------------------------Identity---------------------------------------
+// If the divisor is 1, we are an identity on the dividend.
+Node* UDivINode::Identity(PhaseGVN* phase) {
+  return (phase->type( in(2) )->higher_equal(TypeInt::ONE)) ? in(1) : this;
+}
+//------------------------------Value------------------------------------------
+// A UDivINode divides its inputs.  The third input is a Control input, used to
+// prevent hoisting the divide above an unsafe test.
+const Type* UDivINode::Value(PhaseGVN* phase) const {
+  // Either input is TOP ==> the result is TOP
+  const Type *t1 = phase->type( in(1) );
+  const Type *t2 = phase->type( in(2) );
+  if( t1 == Type::TOP ) return Type::TOP;
+  if( t2 == Type::TOP ) return Type::TOP;
+
+  // x/x == 1 since we always generate the dynamic divisor check for 0.
+  if (in(1) == in(2)) {
+    return TypeInt::ONE;
+  }
+
+  // Either input is BOTTOM ==> the result is the local BOTTOM
+  const Type *bot = bottom_type();
+  if( (t1 == bot) || (t2 == bot) ||
+      (t1 == Type::BOTTOM) || (t2 == Type::BOTTOM) )
+    return bot;
+
+  // Otherwise we give up all hope
+  return TypeInt::INT;
+}
+
+//------------------------------Idealize---------------------------------------
+Node *UDivINode::Ideal(PhaseGVN *phase, bool can_reshape) {
+  // Check for dead control input
+  if (in(0) && remove_dead_region(phase, can_reshape))  return this;
+  return NULL;
+}
+
+
+//=============================================================================
+//------------------------------Identity---------------------------------------
+// If the divisor is 1, we are an identity on the dividend.
+Node* UDivLNode::Identity(PhaseGVN* phase) {
+  return (phase->type( in(2) )->higher_equal(TypeLong::ONE)) ? in(1) : this;
+}
+//------------------------------Value------------------------------------------
+// A UDivLNode divides its inputs.  The third input is a Control input, used to
+// prevent hoisting the divide above an unsafe test.
+const Type* UDivLNode::Value(PhaseGVN* phase) const {
+  // Either input is TOP ==> the result is TOP
+  const Type *t1 = phase->type( in(1) );
+  const Type *t2 = phase->type( in(2) );
+  if( t1 == Type::TOP ) return Type::TOP;
+  if( t2 == Type::TOP ) return Type::TOP;
+
+  // x/x == 1 since we always generate the dynamic divisor check for 0.
+  if (in(1) == in(2)) {
+    return TypeLong::ONE;
+  }
+
+  // Either input is BOTTOM ==> the result is the local BOTTOM
+  const Type *bot = bottom_type();
+  if( (t1 == bot) || (t2 == bot) ||
+      (t1 == Type::BOTTOM) || (t2 == Type::BOTTOM) )
+    return bot;
+
+  // Otherwise we give up all hope
+  return TypeLong::LONG;
+}
+
+//------------------------------Idealize---------------------------------------
+Node *UDivLNode::Ideal(PhaseGVN *phase, bool can_reshape) {
+  // Check for dead control input
+  if (in(0) && remove_dead_region(phase, can_reshape))  return this;
+  return NULL;
+}
+
 
 //=============================================================================
 //------------------------------Idealize---------------------------------------
@@ -911,11 +984,7 @@ Node *ModINode::Ideal(PhaseGVN *phase, bool can_reshape) {
       // cmov2 is now the mod
 
       // Now remove the bogus extra edges used to keep things alive
-      if (can_reshape) {
-        phase->is_IterGVN()->remove_dead_node(hook);
-      } else {
-        hook->set_req(0, NULL);   // Just yank bogus edge during Parse phase
-      }
+      hook->destruct(phase);
       return cmov2;
     }
   }
@@ -935,8 +1004,8 @@ Node *ModINode::Ideal(PhaseGVN *phase, bool can_reshape) {
   int log2_con = -1;
 
   // If this is a power of two, they maybe we can mask it
-  if( is_power_of_2(pos_con) ) {
-    log2_con = log2_intptr((intptr_t)pos_con);
+  if (is_power_of_2(pos_con)) {
+    log2_con = log2i_exact(pos_con);
 
     const Type *dt = phase->type(in(1));
     const TypeInt *dti = dt->isa_int();
@@ -967,11 +1036,7 @@ Node *ModINode::Ideal(PhaseGVN *phase, bool can_reshape) {
   }
 
   // Now remove the bogus extra edges used to keep things alive
-  if (can_reshape) {
-    phase->is_IterGVN()->remove_dead_node(hook);
-  } else {
-    hook->set_req(0, NULL);       // Just yank bogus edge during Parse phase
-  }
+  hook->destruct(phase);
 
   // return the value
   return result;
@@ -989,7 +1054,9 @@ const Type* ModINode::Value(PhaseGVN* phase) const {
   // 0 MOD X is 0
   if( t1 == TypeInt::ZERO ) return TypeInt::ZERO;
   // X MOD X is 0
-  if( phase->eqv( in(1), in(2) ) ) return TypeInt::ZERO;
+  if (in(1) == in(2)) {
+    return TypeInt::ZERO;
+  }
 
   // Either input is BOTTOM ==> the result is the local BOTTOM
   const Type *bot = bottom_type();
@@ -1016,6 +1083,13 @@ const Type* ModINode::Value(PhaseGVN* phase) const {
   return TypeInt::make( i1->get_con() % i2->get_con() );
 }
 
+//=============================================================================
+//------------------------------Idealize---------------------------------------
+Node *UModINode::Ideal(PhaseGVN *phase, bool can_reshape) {
+  // Check for dead control input
+  if( in(0) && remove_dead_region(phase, can_reshape) )  return this;
+  return NULL;
+}
 
 //=============================================================================
 //------------------------------Idealize---------------------------------------
@@ -1044,8 +1118,8 @@ Node *ModLNode::Ideal(PhaseGVN *phase, bool can_reshape) {
   Node *hook = new Node(1);
 
   // Expand mod
-  if( con >= 0 && con < max_jlong && is_power_of_2_long(con+1) ) {
-    uint k = exact_log2_long(con+1);  // Extract k
+  if(con >= 0 && con < max_jlong && is_power_of_2(con + 1)) {
+    uint k = log2i_exact(con + 1);  // Extract k
 
     // Basic algorithm by David Detlefs.  See fastmod_long.java for gory details.
     // Used to help a popular random number generator which does a long-mod
@@ -1084,11 +1158,7 @@ Node *ModLNode::Ideal(PhaseGVN *phase, bool can_reshape) {
       // cmov2 is now the mod
 
       // Now remove the bogus extra edges used to keep things alive
-      if (can_reshape) {
-        phase->is_IterGVN()->remove_dead_node(hook);
-      } else {
-        hook->set_req(0, NULL);   // Just yank bogus edge during Parse phase
-      }
+      hook->destruct(phase);
       return cmov2;
     }
   }
@@ -1108,8 +1178,8 @@ Node *ModLNode::Ideal(PhaseGVN *phase, bool can_reshape) {
   int log2_con = -1;
 
   // If this is a power of two, then maybe we can mask it
-  if( is_power_of_2_long(pos_con) ) {
-    log2_con = exact_log2_long(pos_con);
+  if (is_power_of_2(pos_con)) {
+    log2_con = log2i_exact(pos_con);
 
     const Type *dt = phase->type(in(1));
     const TypeLong *dtl = dt->isa_long();
@@ -1140,11 +1210,7 @@ Node *ModLNode::Ideal(PhaseGVN *phase, bool can_reshape) {
   }
 
   // Now remove the bogus extra edges used to keep things alive
-  if (can_reshape) {
-    phase->is_IterGVN()->remove_dead_node(hook);
-  } else {
-    hook->set_req(0, NULL);       // Just yank bogus edge during Parse phase
-  }
+  hook->destruct(phase);
 
   // return the value
   return result;
@@ -1162,7 +1228,9 @@ const Type* ModLNode::Value(PhaseGVN* phase) const {
   // 0 MOD X is 0
   if( t1 == TypeLong::ZERO ) return TypeLong::ZERO;
   // X MOD X is 0
-  if( phase->eqv( in(1), in(2) ) ) return TypeLong::ZERO;
+  if (in(1) == in(2)) {
+    return TypeLong::ZERO;
+  }
 
   // Either input is BOTTOM ==> the result is the local BOTTOM
   const Type *bot = bottom_type();
@@ -1231,6 +1299,14 @@ const Type* ModFNode::Value(PhaseGVN* phase) const {
   }
 
   return TypeF::make(jfloat_cast(xr));
+}
+
+//=============================================================================
+//------------------------------Idealize---------------------------------------
+Node *UModLNode::Ideal(PhaseGVN *phase, bool can_reshape) {
+  // Check for dead control input
+  if( in(0) && remove_dead_region(phase, can_reshape) )  return this;
+  return NULL;
 }
 
 
@@ -1327,6 +1403,59 @@ Node *DivModINode::match( const ProjNode *proj, const Matcher *match ) {
 //------------------------------match------------------------------------------
 // return result(s) along with their RegMask info
 Node *DivModLNode::match( const ProjNode *proj, const Matcher *match ) {
+  uint ideal_reg = proj->ideal_reg();
+  RegMask rm;
+  if (proj->_con == div_proj_num) {
+    rm = match->divL_proj_mask();
+  } else {
+    assert(proj->_con == mod_proj_num, "must be div or mod projection");
+    rm = match->modL_proj_mask();
+  }
+  return new MachProjNode(this, proj->_con, rm, ideal_reg);
+}
+
+//------------------------------make------------------------------------------
+UDivModINode* UDivModINode::make(Node* div_or_mod) {
+  Node* n = div_or_mod;
+  assert(n->Opcode() == Op_UDivI || n->Opcode() == Op_UModI,
+         "only div or mod input pattern accepted");
+
+  UDivModINode* divmod = new UDivModINode(n->in(0), n->in(1), n->in(2));
+  Node*        dproj  = new ProjNode(divmod, DivModNode::div_proj_num);
+  Node*        mproj  = new ProjNode(divmod, DivModNode::mod_proj_num);
+  return divmod;
+}
+
+//------------------------------make------------------------------------------
+UDivModLNode* UDivModLNode::make(Node* div_or_mod) {
+  Node* n = div_or_mod;
+  assert(n->Opcode() == Op_UDivL || n->Opcode() == Op_UModL,
+         "only div or mod input pattern accepted");
+
+  UDivModLNode* divmod = new UDivModLNode(n->in(0), n->in(1), n->in(2));
+  Node*        dproj  = new ProjNode(divmod, DivModNode::div_proj_num);
+  Node*        mproj  = new ProjNode(divmod, DivModNode::mod_proj_num);
+  return divmod;
+}
+
+//------------------------------match------------------------------------------
+// return result(s) along with their RegMask info
+Node* UDivModINode::match( const ProjNode *proj, const Matcher *match ) {
+  uint ideal_reg = proj->ideal_reg();
+  RegMask rm;
+  if (proj->_con == div_proj_num) {
+    rm = match->divI_proj_mask();
+  } else {
+    assert(proj->_con == mod_proj_num, "must be div or mod projection");
+    rm = match->modI_proj_mask();
+  }
+  return new MachProjNode(this, proj->_con, rm, ideal_reg);
+}
+
+
+//------------------------------match------------------------------------------
+// return result(s) along with their RegMask info
+Node* UDivModLNode::match( const ProjNode *proj, const Matcher *match ) {
   uint ideal_reg = proj->ideal_reg();
   RegMask rm;
   if (proj->_con == div_proj_num) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2021, Oracle and/or its affiliates. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -74,13 +74,13 @@ import java.awt.print.PrinterJob;
 import java.io.BufferedOutputStream;
 import java.io.FileOutputStream;
 import java.text.AttributedString;
-import java.util.EnumSet;
 import java.util.Vector;
 
 import javax.imageio.*;
 import javax.swing.*;
 
 import static java.awt.RenderingHints.*;
+import static java.nio.charset.StandardCharsets.ISO_8859_1;
 
 /**
  * FontPanel.java
@@ -392,7 +392,7 @@ public final class FontPanel extends JPanel implements AdjustmentListener {
         setTransformG2( g2transform ); // ABP
         setDrawMethod( method );
         setRenderingHints(AAValues.getValue(aa), FMValues.getValue(fm),
-                          new Integer(contrast));
+                          Integer.valueOf(contrast));
     }
 
     /// Writes the current screen to PNG file
@@ -434,7 +434,7 @@ public final class FontPanel extends JPanel implements AdjustmentListener {
         private int canvasInset_X = 5, canvasInset_Y = 5;
 
         /// LineBreak'ed TextLayout vector
-        private Vector lineBreakTLs = null;
+        private Vector<TextLayout> lineBreakTLs = null;
 
         /// Whether the current draw command requested is for printing
         private boolean isPrinting = false;
@@ -644,7 +644,7 @@ public final class FontPanel extends JPanel implements AdjustmentListener {
                 break;
               case DRAW_BYTES:
                 try {
-                    byte[] lineBytes = line.getBytes( "ISO-8859-1" );
+                    byte[] lineBytes = line.getBytes(ISO_8859_1);
                     g2.drawBytes( lineBytes, 0, lineBytes.length, 0, 0 );
                 }
                 catch ( Exception e ) {
@@ -800,7 +800,7 @@ public final class FontPanel extends JPanel implements AdjustmentListener {
                 if ( textToUse == FILE_TEXT ) {
                     if ( !isPrinting )
                       f2dt.fireChangeStatus( "LineBreaking Text... Please Wait", false );
-                    lineBreakTLs = new Vector();
+                    lineBreakTLs = new Vector<>();
                     for ( int i = 0; i < fileText.length; i++ ) {
                         AttributedString as =
                           new AttributedString( fileText[i], g2.getFont().getAttributes() );
@@ -929,7 +929,7 @@ public final class FontPanel extends JPanel implements AdjustmentListener {
                 float xPos, yPos = (float) canvasInset_Y;
                 g2.drawRect( 0, 0, w - 1, h - 1 );
                 for ( int i = drawStart; i <= drawEnd; i++ ) {
-                    TextLayout oneLine = (TextLayout) lineBreakTLs.elementAt( i );
+                    TextLayout oneLine = lineBreakTLs.elementAt( i );
                     xPos =
                       oneLine.isLeftToRight() ?
                       canvasInset_X : ( (float) w - oneLine.getAdvance() - canvasInset_X );
@@ -992,9 +992,9 @@ public final class FontPanel extends JPanel implements AdjustmentListener {
             /// Back up metrics and other drawing info before printing modifies it
             int backupDrawStart = drawStart, backupDrawEnd = drawEnd;
             int backupNumCharAcross = numCharAcross, backupNumCharDown = numCharDown;
-            Vector backupLineBreakTLs = null;
+            Vector<TextLayout> backupLineBreakTLs = null;
             if ( textToUse == FILE_TEXT )
-              backupLineBreakTLs = (Vector) lineBreakTLs.clone();
+              backupLineBreakTLs = new Vector<>(lineBreakTLs);
 
             printPageNumber = pageIndex;
             isPrinting = true;
@@ -1137,7 +1137,7 @@ public final class FontPanel extends JPanel implements AdjustmentListener {
                                   zoomAreaWidth / 2, (int) ( maxAscent * ZOOM ));
             g2.dispose();
             if ( !nowZooming )
-              zoomWindow.show();
+              zoomWindow.setVisible(true);
             /// This is sort of redundant... since there is a paint function
             /// inside zoomWindow definition that does the drawImage.
             /// (I should be able to call just repaint() here)
@@ -1176,7 +1176,7 @@ public final class FontPanel extends JPanel implements AdjustmentListener {
         public void mouseReleased( MouseEvent e ) {
             if ( textToUse == RANGE_TEXT || textToUse == ALL_GLYPHS ) {
                 if ( nowZooming )
-                  zoomWindow.hide();
+                  zoomWindow.setVisible(false);
                 nowZooming = false;
             }
             this.setCursor( Cursor.getDefaultCursor() );
@@ -1246,7 +1246,7 @@ public final class FontPanel extends JPanel implements AdjustmentListener {
        }
        public static Object getValue(int ordinal) {
            if (valArray == null) {
-               valArray = (FMValues[])EnumSet.allOf(FMValues.class).toArray(new FMValues[0]);
+               valArray = FMValues.values();
            }
            for (int i=0;i<valArray.length;i++) {
                if (valArray[i].ordinal() == ordinal) {
@@ -1257,7 +1257,7 @@ public final class FontPanel extends JPanel implements AdjustmentListener {
        }
        private static FMValues[] getArray() {
            if (valArray == null) {
-               valArray = (FMValues[])EnumSet.allOf(FMValues.class).toArray(new FMValues[0]);
+               valArray = FMValues.values();
            }
            return valArray;
        }
@@ -1308,7 +1308,7 @@ public final class FontPanel extends JPanel implements AdjustmentListener {
 
        public static Object getValue(int ordinal) {
            if (valArray == null) {
-               valArray = (AAValues[])EnumSet.allOf(AAValues.class).toArray(new AAValues[0]);
+               valArray = AAValues.values();
            }
            for (int i=0;i<valArray.length;i++) {
                if (valArray[i].ordinal() == ordinal) {
@@ -1320,8 +1320,7 @@ public final class FontPanel extends JPanel implements AdjustmentListener {
 
        private static AAValues[] getArray() {
            if (valArray == null) {
-               Object [] oa = EnumSet.allOf(AAValues.class).toArray(new AAValues[0]);
-               valArray = (AAValues[])(EnumSet.allOf(AAValues.class).toArray(new AAValues[0]));
+               valArray = AAValues.values();
            }
            return valArray;
        }

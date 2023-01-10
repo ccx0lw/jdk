@@ -56,6 +56,7 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 package jdk.internal.org.objectweb.asm.tree.analysis;
 
 import java.util.HashSet;
@@ -82,7 +83,7 @@ public class SourceInterpreter extends Interpreter<SourceValue> implements Opcod
       * version.
       */
     public SourceInterpreter() {
-        super(ASM7);
+        super(/* latest api = */ ASM9);
         if (getClass() != SourceInterpreter.class) {
             throw new IllegalStateException();
         }
@@ -91,9 +92,8 @@ public class SourceInterpreter extends Interpreter<SourceValue> implements Opcod
     /**
       * Constructs a new {@link SourceInterpreter}.
       *
-      * @param api the ASM API version supported by this interpreter. Must be one of {@link
-      *     jdk.internal.org.objectweb.asm.Opcodes#ASM4}, {@link jdk.internal.org.objectweb.asm.Opcodes#ASM5}, {@link
-      *     jdk.internal.org.objectweb.asm.Opcodes#ASM6} or {@link jdk.internal.org.objectweb.asm.Opcodes#ASM7}.
+      * @param api the ASM API version supported by this interpreter. Must be one of the {@code
+      *     ASM}<i>x</i> values in {@link Opcodes}.
       */
     protected SourceInterpreter(final int api) {
         super(api);
@@ -235,7 +235,7 @@ public class SourceInterpreter extends Interpreter<SourceValue> implements Opcod
             }
         }
         if (value1.size != value2.size || !containsAll(value1.insns, value2.insns)) {
-            HashSet<AbstractInsnNode> setUnion = new HashSet<AbstractInsnNode>();
+            HashSet<AbstractInsnNode> setUnion = new HashSet<>();
             setUnion.addAll(value1.insns);
             setUnion.addAll(value2.insns);
             return new SourceValue(Math.min(value1.size, value2.size), setUnion);
@@ -250,3 +250,4 @@ public class SourceInterpreter extends Interpreter<SourceValue> implements Opcod
         return self.containsAll(other);
     }
 }
+

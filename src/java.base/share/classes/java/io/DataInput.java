@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1995, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1995, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -154,8 +154,7 @@ package java.io;
  * @see     java.io.DataOutput
  * @since   1.0
  */
-public
-interface DataInput {
+public interface DataInput {
     /**
      * Reads some bytes from an input
      * stream and stores them into the buffer
@@ -197,7 +196,7 @@ interface DataInput {
      *          all the bytes.
      * @throws  IOException   if an I/O error occurs.
      */
-    void readFully(byte b[]) throws IOException;
+    void readFully(byte[] b) throws IOException;
 
     /**
      *
@@ -247,7 +246,7 @@ interface DataInput {
      *          all the bytes.
      * @throws  IOException   if an I/O error occurs.
      */
-    void readFully(byte b[], int off, int len) throws IOException;
+    void readFully(byte[] b, int off, int len) throws IOException;
 
     /**
      * Makes an attempt to skip over
@@ -494,7 +493,7 @@ interface DataInput {
      * is encountered, it is discarded and reading
      * ceases. If the character {@code '\r'}
      * is encountered, it is discarded and, if
-     * the following byte converts &#32;to the
+     * the following byte converts to the
      * character {@code '\n'}, then that is
      * discarded also; reading then ceases. If
      * end of file is encountered before either

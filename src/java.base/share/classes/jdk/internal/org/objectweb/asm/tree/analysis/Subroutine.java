@@ -56,6 +56,7 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 package jdk.internal.org.objectweb.asm.tree.analysis;
 
 import java.util.ArrayList;
@@ -92,7 +93,7 @@ final class Subroutine {
     Subroutine(final LabelNode start, final int maxLocals, final JumpInsnNode caller) {
         this.start = start;
         this.localsUsed = new boolean[maxLocals];
-        this.callers = new ArrayList<JumpInsnNode>();
+        this.callers = new ArrayList<>();
         callers.add(caller);
     }
 
@@ -103,9 +104,8 @@ final class Subroutine {
       */
     Subroutine(final Subroutine subroutine) {
         this.start = subroutine.start;
-        this.localsUsed = new boolean[subroutine.localsUsed.length];
-        this.callers = new ArrayList<JumpInsnNode>(subroutine.callers);
-        System.arraycopy(subroutine.localsUsed, 0, this.localsUsed, 0, subroutine.localsUsed.length);
+        this.localsUsed = subroutine.localsUsed.clone();
+        this.callers = new ArrayList<>(subroutine.callers);
     }
 
     /**
@@ -136,3 +136,4 @@ final class Subroutine {
         return changed;
     }
 }
+

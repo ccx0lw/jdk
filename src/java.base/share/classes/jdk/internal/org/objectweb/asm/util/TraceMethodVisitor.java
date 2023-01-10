@@ -56,6 +56,7 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 package jdk.internal.org.objectweb.asm.util;
 
 import jdk.internal.org.objectweb.asm.AnnotationVisitor;
@@ -93,7 +94,7 @@ public final class TraceMethodVisitor extends MethodVisitor {
       * @param printer the printer to convert the visited method into text.
       */
     public TraceMethodVisitor(final MethodVisitor methodVisitor, final Printer printer) {
-        super(Opcodes.ASM7, methodVisitor);
+        super(/* latest api = */ Opcodes.ASM9, methodVisitor);
         this.p = printer;
     }
 
@@ -174,9 +175,9 @@ public final class TraceMethodVisitor extends MethodVisitor {
     }
 
     @Override
-    public void visitVarInsn(final int opcode, final int var) {
-        p.visitVarInsn(opcode, var);
-        super.visitVarInsn(opcode, var);
+    public void visitVarInsn(final int opcode, final int varIndex) {
+        p.visitVarInsn(opcode, varIndex);
+        super.visitVarInsn(opcode, varIndex);
     }
 
     @Override
@@ -192,37 +193,27 @@ public final class TraceMethodVisitor extends MethodVisitor {
         super.visitFieldInsn(opcode, owner, name, descriptor);
     }
 
-    /**
-      * Deprecated.
-      *
-      * @deprecated use {@link #visitMethodInsn(int, String, String, String, boolean)} instead.
-      */
-    @Deprecated
     @Override
-    public void visitMethodInsn(
-            final int opcode, final String owner, final String name, final String descriptor) {
-        if (api >= Opcodes.ASM5) {
-            super.visitMethodInsn(opcode, owner, name, descriptor);
-            return;
-        }
-        p.visitMethodInsn(opcode, owner, name, descriptor);
-        if (mv != null) {
-            mv.visitMethodInsn(opcode, owner, name, descriptor);
-        }
-    }
-
-    @Override
+    @SuppressWarnings("deprecation")
     public void visitMethodInsn(
             final int opcode,
             final String owner,
             final String name,
             final String descriptor,
             final boolean isInterface) {
-        if (api < Opcodes.ASM5) {
-            super.visitMethodInsn(opcode, owner, name, descriptor, isInterface);
-            return;
+        // Call the method that p is supposed to implement, depending on its api version.
+        if (p.api < Opcodes.ASM5) {
+            if (isInterface != (opcode == Opcodes.INVOKEINTERFACE)) {
+                throw new IllegalArgumentException("INVOKESPECIAL/STATIC on interfaces require ASM5");
+            }
+            // If p is an ASMifier (resp. Textifier), or a subclass that does not override the old
+            // visitMethodInsn method, the default implementation in Printer will redirect this to the
+            // new method in ASMifier (resp. Textifier). In all other cases, p overrides the old method
+            // and this call executes it.
+            p.visitMethodInsn(opcode, owner, name, descriptor);
+        } else {
+            p.visitMethodInsn(opcode, owner, name, descriptor, isInterface);
         }
-        p.visitMethodInsn(opcode, owner, name, descriptor, isInterface);
         if (mv != null) {
             mv.visitMethodInsn(opcode, owner, name, descriptor, isInterface);
         }
@@ -257,9 +248,9 @@ public final class TraceMethodVisitor extends MethodVisitor {
     }
 
     @Override
-    public void visitIincInsn(final int var, final int increment) {
-        p.visitIincInsn(var, increment);
-        super.visitIincInsn(var, increment);
+    public void visitIincInsn(final int varIndex, final int increment) {
+        p.visitIincInsn(varIndex, increment);
+        super.visitIincInsn(varIndex, increment);
     }
 
     @Override
@@ -351,3 +342,4 @@ public final class TraceMethodVisitor extends MethodVisitor {
         super.visitEnd();
     }
 }
+

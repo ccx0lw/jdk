@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2006, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2006, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,16 +25,21 @@
 #include "precompiled.hpp"
 #include "gc/parallel/mutableNUMASpace.hpp"
 #include "gc/shared/collectedHeap.hpp"
+#include "gc/shared/gc_globals.hpp"
 #include "gc/shared/spaceDecorator.hpp"
+#include "gc/shared/workerThread.hpp"
 #include "memory/allocation.inline.hpp"
 #include "oops/oop.inline.hpp"
+#include "oops/typeArrayOop.hpp"
 #include "runtime/atomic.hpp"
-#include "runtime/thread.inline.hpp"
+#include "runtime/java.hpp"
+#include "runtime/javaThread.hpp"
+#include "runtime/os.inline.hpp"
 #include "runtime/threadSMR.hpp"
 #include "utilities/align.hpp"
 
 MutableNUMASpace::MutableNUMASpace(size_t alignment) : MutableSpace(alignment), _must_use_large_pages(false) {
-  _lgrp_spaces = new (ResourceObj::C_HEAP, mtGC) GrowableArray<LGRPSpace*>(0, true);
+  _lgrp_spaces = new (mtGC) GrowableArray<LGRPSpace*>(0, mtGC);
   _page_size = os::vm_page_size();
   _adaptation_cycles = 0;
   _samples_count = 0;
@@ -309,9 +314,12 @@ void MutableNUMASpace::bias_region(MemRegion mr, int lgrp_id) {
     assert(region().contains(aligned_region), "Sanity");
     // First we tell the OS which page size we want in the given range. The underlying
     // large page can be broken down if we require small pages.
-    os::realign_memory((char*)aligned_region.start(), aligned_region.byte_size(), page_size());
+    const size_t os_align = UseLargePages ? page_size() : os::vm_page_size();
+    os::realign_memory((char*)aligned_region.start(), aligned_region.byte_size(), os_align);
     // Then we uncommit the pages in the range.
-    os::free_memory((char*)aligned_region.start(), aligned_region.byte_size(), page_size());
+    // The alignment_hint argument must be less than or equal to the small page
+    // size if not using large pages or else this function does nothing.
+    os::free_memory((char*)aligned_region.start(), aligned_region.byte_size(), os_align);
     // And make them local/first-touch biased.
     os::numa_make_local((char*)aligned_region.start(), aligned_region.byte_size(), lgrp_id);
   }
@@ -571,7 +579,8 @@ void MutableNUMASpace::merge_regions(MemRegion new_region, MemRegion* intersecti
 void MutableNUMASpace::initialize(MemRegion mr,
                                   bool clear_space,
                                   bool mangle_space,
-                                  bool setup_pages) {
+                                  bool setup_pages,
+                                  WorkerThreads* pretouch_workers) {
   assert(clear_space, "Reallocation will destroy data!");
   assert(lgrp_spaces()->length() > 0, "There should be at least one space");
 
@@ -583,7 +592,7 @@ void MutableNUMASpace::initialize(MemRegion mr,
 
   // Compute chunk sizes
   size_t prev_page_size = page_size();
-  set_page_size(UseLargePages ? alignment() : os::vm_page_size());
+  set_page_size(alignment());
   HeapWord* rounded_bottom = align_up(bottom(), page_size());
   HeapWord* rounded_end = align_down(end(), page_size());
   size_t base_space_size_pages = pointer_delta(rounded_end, rounded_bottom, sizeof(char)) / page_size();
@@ -722,7 +731,7 @@ void MutableNUMASpace::initialize(MemRegion mr,
 }
 
 // Set the top of the whole space.
-// Mark the the holes in chunks below the top() as invalid.
+// Mark the holes in chunks below the top() as invalid.
 void MutableNUMASpace::set_top(HeapWord* value) {
   bool found_top = false;
   for (int i = 0; i < lgrp_spaces()->length();) {
@@ -787,51 +796,6 @@ void MutableNUMASpace::clear(bool mangle_space) {
    objects.
  */
 
-HeapWord* MutableNUMASpace::allocate(size_t size) {
-  Thread* thr = Thread::current();
-  int lgrp_id = thr->lgrp_id();
-  if (lgrp_id == -1 || !os::numa_has_group_homing()) {
-    lgrp_id = os::numa_get_group_id();
-    thr->set_lgrp_id(lgrp_id);
-  }
-
-  int i = lgrp_spaces()->find(&lgrp_id, LGRPSpace::equals);
-
-  // It is possible that a new CPU has been hotplugged and
-  // we haven't reshaped the space accordingly.
-  if (i == -1) {
-    i = os::random() % lgrp_spaces()->length();
-  }
-
-  LGRPSpace* ls = lgrp_spaces()->at(i);
-  MutableSpace *s = ls->space();
-  HeapWord *p = s->allocate(size);
-
-  if (p != NULL) {
-    size_t remainder = s->free_in_words();
-    if (remainder < CollectedHeap::min_fill_size() && remainder > 0) {
-      s->set_top(s->top() - size);
-      p = NULL;
-    }
-  }
-  if (p != NULL) {
-    if (top() < s->top()) { // Keep _top updated.
-      MutableSpace::set_top(s->top());
-    }
-  }
-  // Make the page allocation happen here if there is no static binding..
-  if (p != NULL && !os::numa_has_static_binding()) {
-    for (HeapWord *i = p; i < p + size; i += os::vm_page_size() >> LogHeapWordSize) {
-      *(int*)i = 0;
-    }
-  }
-  if (p == NULL) {
-    ls->set_allocation_failed();
-  }
-  return p;
-}
-
-// This version is lock-free.
 HeapWord* MutableNUMASpace::cas_allocate(size_t size) {
   Thread* thr = Thread::current();
   int lgrp_id = thr->lgrp_id();
@@ -864,7 +828,7 @@ HeapWord* MutableNUMASpace::cas_allocate(size_t size) {
   if (p != NULL) {
     HeapWord* cur_top, *cur_chunk_top = p + size;
     while ((cur_top = top()) < cur_chunk_top) { // Keep _top updated.
-      if (Atomic::cmpxchg(cur_chunk_top, top_addr(), cur_top) == cur_top) {
+      if (Atomic::cmpxchg(top_addr(), cur_top, cur_chunk_top) == cur_top) {
         break;
       }
     }

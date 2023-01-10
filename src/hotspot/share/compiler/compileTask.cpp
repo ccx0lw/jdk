@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,6 +23,7 @@
  */
 
 #include "precompiled.hpp"
+#include "compiler/compilationPolicy.hpp"
 #include "compiler/compileTask.hpp"
 #include "compiler/compileLog.hpp"
 #include "compiler/compileBroker.hpp"
@@ -30,12 +31,12 @@
 #include "logging/log.hpp"
 #include "logging/logStream.hpp"
 #include "memory/resourceArea.hpp"
+#include "oops/klass.inline.hpp"
 #include "runtime/handles.inline.hpp"
+#include "runtime/jniHandles.hpp"
+#include "runtime/mutexLocker.hpp"
 
 CompileTask*  CompileTask::_task_free_list = NULL;
-#ifdef ASSERT
-int CompileTask::_num_allocated_tasks = 0;
-#endif
 
 /**
  * Allocate a CompileTask, from the free list if possible.
@@ -50,8 +51,6 @@ CompileTask* CompileTask::allocate() {
     task->set_next(NULL);
   } else {
     task = new CompileTask();
-    DEBUG_ONLY(_num_allocated_tasks++;)
-    assert (WhiteBoxAPI || JVMCI_ONLY(UseJVMCICompiler ||) _num_allocated_tasks < 10000, "Leaking compilation tasks?");
     task->set_next(NULL);
     task->set_is_free(true);
   }
@@ -66,7 +65,6 @@ CompileTask* CompileTask::allocate() {
 void CompileTask::free(CompileTask* task) {
   MutexLocker locker(CompileTaskAlloc_lock);
   if (!task->is_free()) {
-    task->set_code(NULL);
     assert(!task->lock()->is_locked(), "Should not be locked when freed");
     if ((task->_method_holder != NULL && JNIHandles::is_weak_global_handle(task->_method_holder)) ||
         (task->_hot_method_holder != NULL && JNIHandles::is_weak_global_handle(task->_hot_method_holder))) {
@@ -105,13 +103,12 @@ void CompileTask::initialize(int compile_id,
   _osr_bci = osr_bci;
   _is_blocking = is_blocking;
   JVMCI_ONLY(_has_waiter = CompileBroker::compiler(comp_level)->is_jvmci();)
-  JVMCI_ONLY(_jvmci_compiler_thread = NULL;)
+  JVMCI_ONLY(_blocking_jvmci_compile_state = NULL;)
   _comp_level = comp_level;
   _num_inlined_bytecodes = 0;
 
   _is_complete = false;
   _is_success = false;
-  _code_handle = NULL;
 
   _hot_method = NULL;
   _hot_method_holder = NULL;
@@ -119,6 +116,11 @@ void CompileTask::initialize(int compile_id,
   _time_queued = os::elapsed_counter();
   _time_started = 0;
   _compile_reason = compile_reason;
+  _nm_content_size = 0;
+  AbstractCompiler* comp = compiler();
+  _directive = DirectivesStack::getMatchingDirective(method, comp);
+  _nm_insts_size = 0;
+  _nm_total_size = 0;
   _failure_reason = NULL;
   _failure_reason_on_C_heap = false;
 
@@ -160,25 +162,6 @@ CompileTask* CompileTask::select_for_compilation() {
     _hot_method_holder = JNIHandles::make_global(Handle(thread, _hot_method->method_holder()->klass_holder()));
   }
   return this;
-}
-
-// ------------------------------------------------------------------
-// CompileTask::code/set_code
-//
-nmethod* CompileTask::code() const {
-  if (_code_handle == NULL)  return NULL;
-  CodeBlob *blob = _code_handle->code();
-  if (blob != NULL) {
-    return blob->as_nmethod();
-  }
-  return NULL;
-}
-
-void CompileTask::set_code(nmethod* nm) {
-  if (_code_handle == NULL && nm == NULL)  return;
-  guarantee(_code_handle != NULL, "");
-  _code_handle->set_code(nm);
-  if (nm == NULL)  _code_handle = NULL;  // drop the handle also
 }
 
 void CompileTask::mark_on_stack() {
@@ -242,7 +225,7 @@ void CompileTask::print_impl(outputStream* st, Method* method, int compile_id, i
                              jlong time_queued, jlong time_started) {
   if (!short_form) {
     // Print current time
-    st->print("%7d ", (int)st->time_stamp().milliseconds());
+    st->print("%7d ", (int)tty->time_stamp().milliseconds());
     if (Verbose && time_queued != 0) {
       // Print time in queue and time being processed by compiler thread
       jlong now = os::elapsed_counter();
@@ -258,9 +241,6 @@ void CompileTask::print_impl(outputStream* st, Method* method, int compile_id, i
   }
   st->print("%4d ", compile_id);    // print compilation number
 
-  // For unloaded methods the transition to zombie occurs after the
-  // method is cleared so it's impossible to report accurate
-  // information for that case.
   bool is_synchronized = false;
   bool has_exception_handler = false;
   bool is_native = false;
@@ -340,11 +320,11 @@ void CompileTask::log_task(xmlStream* log) {
   if (_osr_bci != CompileBroker::standard_entry_bci) {
     log->print(" compile_kind='osr'");  // same as nmethod::compile_kind
   } // else compile_kind='c2c'
-  if (!method.is_null())  log->method(method);
+  if (!method.is_null())  log->method(method());
   if (_osr_bci != CompileBroker::standard_entry_bci) {
     log->print(" osr_bci='%d'", _osr_bci);
   }
-  if (_comp_level != CompLevel_highest_tier) {
+  if (_comp_level != CompilationPolicy::highest_compile_level()) {
     log->print(" level='%d'", _comp_level);
   }
   if (_is_blocking) {
@@ -356,21 +336,16 @@ void CompileTask::log_task(xmlStream* log) {
 // ------------------------------------------------------------------
 // CompileTask::log_task_queued
 void CompileTask::log_task_queued() {
-  Thread* thread = Thread::current();
   ttyLocker ttyl;
-  ResourceMark rm(thread);
+  ResourceMark rm;
 
   xtty->begin_elem("task_queued");
   log_task(xtty);
   assert(_compile_reason > CompileTask::Reason_None && _compile_reason < CompileTask::Reason_Count, "Valid values");
   xtty->print(" comment='%s'", reason_name(_compile_reason));
 
-  if (_hot_method != NULL) {
-    methodHandle hot(thread, _hot_method);
-    methodHandle method(thread, _method);
-    if (hot() != method()) {
-      xtty->method(hot);
-    }
+  if (_hot_method != NULL && _hot_method != _method) {
+    xtty->method(_hot_method);
   }
   if (_hot_count != 0) {
     xtty->print(" hot_count='%d'", _hot_count);
@@ -398,13 +373,15 @@ void CompileTask::log_task_done(CompileLog* log) {
   if (!_is_success) {
     assert(_failure_reason != NULL, "missing");
     const char* reason = _failure_reason != NULL ? _failure_reason : "unknown";
-    log->elem("failure reason='%s'", reason);
+    log->begin_elem("failure reason='");
+    log->text("%s", reason);
+    log->print("'");
+    log->end_elem();
   }
 
   // <task_done ... stamp='1.234'>  </task>
-  nmethod* nm = code();
   log->begin_elem("task_done success='%d' nmsize='%d' count='%d'",
-                  _is_success, nm == NULL ? 0 : nm->content_size(),
+                  _is_success, _nm_content_size,
                   method->invocation_count());
   int bec = method->backedge_count();
   if (bec != 0)  log->print(" backedge_count='%d'", bec);

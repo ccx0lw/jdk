@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -34,11 +34,6 @@
 // ----------------------------------------------------
 // functions for symbol lookups
 // ----------------------------------------------------
-
-struct elf_section {
-  ELF_SHDR   *c_shdr;
-  void       *c_data;
-};
 
 struct elf_symbol {
   char *name;
@@ -156,37 +151,6 @@ open_debug_file (const char *pathname, unsigned int crc)
     close(fd);
     return -1;
   }
-}
-
-/* Find an ELF section.  */
-static struct elf_section *find_section_by_name(char *name,
-                                                int fd,
-                                                ELF_EHDR *ehdr,
-                                                struct elf_section *scn_cache)
-{
-  char *strtab;
-  int cnt;
-  int strtab_size;
-
-  // Section cache have to already contain data for e_shstrndx section.
-  // If it's not true - elf file is broken, so just bail out
-  if (scn_cache[ehdr->e_shstrndx].c_data == NULL) {
-    return NULL;
-  }
-
-  strtab = scn_cache[ehdr->e_shstrndx].c_data;
-  strtab_size = scn_cache[ehdr->e_shstrndx].c_shdr->sh_size;
-
-  for (cnt = 0; cnt < ehdr->e_shnum; ++cnt) {
-    if (scn_cache[cnt].c_shdr->sh_name < strtab_size) {
-      if (strcmp(scn_cache[cnt].c_shdr->sh_name + strtab, name) == 0) {
-        scn_cache[cnt].c_data = read_section_data(fd, ehdr, scn_cache[cnt].c_shdr);
-        return &scn_cache[cnt];
-      }
-    }
-  }
-
-  return NULL;
 }
 
 /* Look for a ".gnu_debuglink" section.  If one exists, try to open a
@@ -328,7 +292,6 @@ static struct symtab* build_symtab_from_build_id(Elf64_Nhdr *note)
 // try to open an associated debuginfo file
 static struct symtab* build_symtab_internal(int fd, const char *filename, bool try_debuginfo) {
   ELF_EHDR ehdr;
-  char *names = NULL;
   struct symtab* symtab = NULL;
 
   // Reading of elf header
@@ -342,8 +305,6 @@ static struct symtab* build_symtab_internal(int fd, const char *filename, bool t
   int cnt = 0;
   ELF_SHDR* shbuf = NULL;
   ELF_SHDR* cursct = NULL;
-  ELF_PHDR* phbuf = NULL;
-  ELF_PHDR* phdr = NULL;
   int sym_section = SHT_DYNSYM;
 
   uintptr_t baseaddr = (uintptr_t)-1;
@@ -429,7 +390,7 @@ static struct symtab* build_symtab_internal(int fd, const char *filename, bool t
         goto bad;
       }
 
-      rslt = hcreate_r(n, symtab->hash_table);
+      rslt = hcreate_r(htab_sz, symtab->hash_table);
       // guarantee(rslt, "unexpected failure: hcreate_r");
 
       // shdr->sh_link points to the section that contains the actual strings
@@ -538,7 +499,6 @@ bad:
 
 quit:
   if (shbuf) free(shbuf);
-  if (phbuf) free(phbuf);
   if (scn_cache) {
     for (cnt = 0; cnt < ehdr.e_shnum; cnt++) {
       if (scn_cache[cnt].c_data != NULL) {
@@ -586,7 +546,6 @@ uintptr_t search_symbol(struct symtab* symtab, uintptr_t base,
     return rslt;
   }
 
-quit:
   free(item.key);
   return (uintptr_t) NULL;
 }

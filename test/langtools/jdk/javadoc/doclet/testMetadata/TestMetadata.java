@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2019, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,7 +23,7 @@
 
 /*
  * @test
- * @bug 8218998 8219946 8219060
+ * @bug 8218998 8219946 8219060 8241190 8242056 8254627
  * @summary Add metadata to generated API documentation files
  * @library /tools/lib ../../lib
  * @modules jdk.javadoc/jdk.javadoc.internal.tool
@@ -53,7 +53,7 @@ import javadoc.tester.JavadocTester;
 
 public class TestMetadata extends JavadocTester {
     public static void main(String... args) throws Exception {
-        TestMetadata tester = new TestMetadata();
+        var tester = new TestMetadata();
         tester.runTests();
     }
 
@@ -96,18 +96,23 @@ public class TestMetadata extends JavadocTester {
                      switch (s) {
                          case PACKAGES:
                              checkOutput("pA/package-summary.html", true,
-                                     "<meta name=\"description\" content=\"declaration: package: pA\">");
+                                     """
+                                         <meta name="description" content="declaration: package: pA">""");
                              checkOutput("pA/CA.html", true,
-                                     "<meta name=\"description\" content=\"declaration: package: pA, class: CA\">");
+                                     """
+                                         <meta name="description" content="declaration: package: pA, class: CA">""");
                              break;
 
                          case MODULES:
                              checkOutput("mA/module-summary.html", true,
-                                     "<meta name=\"description\" content=\"declaration: module: mA\">");
+                                     """
+                                         <meta name="description" content="declaration: module: mA">""");
                              checkOutput("mA/pA/package-summary.html", true,
-                                     "<meta name=\"description\" content=\"declaration: module: mA, package: pA\">");
+                                     """
+                                         <meta name="description" content="declaration: module: mA, package: pA">""");
                              checkOutput("mA/pA/CA.html", true,
-                                     "<meta name=\"description\" content=\"declaration: module: mA, package: pA, class: CA\">");
+                                     """
+                                         <meta name="description" content="declaration: module: mA, package: pA, class: CA">""");
                              break;
                      }
                  }
@@ -124,7 +129,7 @@ public class TestMetadata extends JavadocTester {
 
         checking ("all body classes");
         if (allBodyClassesFound.equals(allBodyClasses)) {
-            passed("all gbody classes found");
+            passed("all body classes found");
         } else {
             Set<String> notFound = new TreeSet<>(allBodyClasses);
             notFound.removeAll(allBodyClassesFound);
@@ -137,32 +142,33 @@ public class TestMetadata extends JavadocTester {
     final Pattern nl = Pattern.compile("[\\r\\n]+");
     final Pattern bodyPattern = Pattern.compile("<body [^>]*class=\"([^\"]+)\"");
     final Set<String> allBodyClasses = Set.of(
-        "all-classes-index",
-        "all-packages-index",
-        "class-declaration",
-        "class-use",
-        "constants-summary",
-        "deprecated-list",
-        "doc-file",
-        "help",
-        "index-redirect",
-        "module-declaration",
-        "module-index",
-        "package-declaration",
-        "package-index",
-        "package-tree",
-        "package-use",
-        "serialized-form",
-        "single-index",
-        "source",
-        "split-index",
-        "tree"
+        "all-classes-index-page",
+        "all-packages-index-page",
+        "class-declaration-page",
+        "class-use-page",
+        "constants-summary-page",
+        "deprecated-list-page",
+        "doc-file-page",
+        "external-specs-page",
+        "help-page",
+        "index-page",
+        "index-redirect-page",
+        "module-declaration-page",
+        "module-index-page",
+        "package-declaration-page",
+        "package-index-page",
+        "package-tree-page",
+        "package-use-page",
+        "search-page",
+        "serialized-form-page",
+        "source-page",
+        "system-properties-page",
+        "tree-page"
     );
 
     void checkBodyClasses() throws IOException {
-        Path outputDirPath = outputDir.toPath();
-        for (Path p : tb.findFiles(".html", outputDirPath)) {
-            checkBodyClass(outputDirPath.relativize(p));
+        for (Path p : tb.findFiles(".html", outputDir)) {
+            checkBodyClass(outputDir.relativize(p));
         }
     }
 
@@ -205,31 +211,31 @@ public class TestMetadata extends JavadocTester {
     final Set<String> allGenerators = Set.of(
             "AllClassesIndexWriter",
             "AllPackagesIndexWriter",
-            "AnnotationTypeWriterImpl",
             "ClassUseWriter",
             "ClassWriterImpl",
             "ConstantsSummaryWriterImpl",
             "DeprecatedListWriter",
             "DocFileWriter",
+            "ExternalSpecsWriter",
             "HelpWriter",
             "IndexRedirectWriter",
+            "IndexWriter",
             "ModuleIndexWriter",
             "ModuleWriterImpl",
             "PackageIndexWriter",
             "PackageTreeWriter",
             "PackageUseWriter",
             "PackageWriterImpl",
+            "SearchWriter",
             "SerializedFormWriterImpl",
-            "SingleIndexWriter",
             "SourceToHTMLConverter",
-            "SplitIndexWriter",
+            "SystemPropertiesWriter",
             "TreeWriter"
             );
 
     void checkMetadata() throws IOException {
-        Path outputDirPath = outputDir.toPath();
-        for (Path p : tb.findFiles(".html", outputDirPath)) {
-            checkMetadata(outputDirPath.relativize(p));
+        for (Path p : tb.findFiles(".html", outputDir)) {
+            checkMetadata(outputDir.relativize(p));
         }
     }
 
@@ -243,13 +249,15 @@ public class TestMetadata extends JavadocTester {
         String generator;
         switch (generators.size()) {
             case 0:
-                 failed("Not found: <meta name=\"generator\"");
+                 failed("""
+                     Not found: <meta name="generator\"""");
                  return;
             case 1:
                  generator = generators.get(0);
                  break;
             default:
-                 failed("Multiple found: <meta name=\"generator\"");
+                 failed("""
+                     Multiple found: <meta name="generator\"""");
                  return;
         }
 
@@ -282,14 +290,16 @@ public class TestMetadata extends JavadocTester {
                 if (generator.equals("DocFileWriter")) {
                     passed("Not found, as expected");
                 } else {
-                    failed("Not found: <meta name=\"description\"");
+                    failed("""
+                        Not found: <meta name="description\"""");
                 }
                 return;
             case 1:
                 description = descriptions.get(0);
                 break;
             default:
-                failed("Multiple found: <meta name=\"description\"");
+                failed("""
+                    Multiple found: <meta name="description\"""");
                 return;
         }
 
@@ -335,6 +345,10 @@ public class TestMetadata extends JavadocTester {
                 passed("no constraint for user-provided doc-files");
                 break;
 
+            case "ExternalSpecsWriter":
+                check(generator, content, content.startsWith("external specifications"));
+                break;
+
             case "HelpWriter":
                 check(generator, content, content.contains("help"));
                 break;
@@ -343,22 +357,29 @@ public class TestMetadata extends JavadocTester {
                 check(generator, content, content.contains("redirect"));
                 break;
 
+            case "IndexWriter":
+                check(generator, content, content.startsWith("index"));
+                break;
+
             case "PackageTreeWriter":
             case "TreeWriter":
                 check(generator, content, content.contains("tree"));
+                break;
+
+            case "SearchWriter":
+                check(generator, content, content.contains("search"));
                 break;
 
             case "SerializedFormWriterImpl":
                 check(generator, content, content.contains("serialized"));
                 break;
 
-            case "SingleIndexWriter":
-            case "SplitIndexWriter":
-                check(generator, content, content.startsWith("index"));
-                break;
-
             case "SourceToHTMLConverter":
                 check(generator, content, content.startsWith("source:"));
+                break;
+
+            case "SystemPropertiesWriter":
+                check(generator, content, content.contains("system properties"));
                 break;
 
             default:
@@ -380,21 +401,42 @@ public class TestMetadata extends JavadocTester {
         switch (s) {
             case PACKAGES:
                 tb.writeJavaFiles(src,
-                    "/** Package pA. */ package pA;",
-                    "/** Class pA.CA. */ package pA; public class CA { }",
+                    "/** Package pA. {@systemProperty exampleProperty} */ package pA;",
+                    """
+                        /** Class pA.CA. */
+                        package pA; public class CA {
+                            /**
+                             * First sentence.
+                             * @spec http://example.com example reference
+                             */
+                            @Deprecated public static final int ZERO = 0;
+                        }
+                        """,
                     "/** Anno pA.Anno, */ package pA; public @interface Anno { }",
                     "/** Serializable pA.Ser, */ package pA; public class Ser implements java.io.Serializable { }",
                     "/** Package pB. */ package pB;",
                     "/** Class pB.CB. */ package pB; public class CB { }");
                 tb.writeFile(src.resolve("pA").resolve("doc-files").resolve("extra.html"),
-                        "<!doctype html>\n<html><head></head><body>Extra</body></html>");
+                        """
+                            <!doctype html>
+                            <html><head></head><body>Extra</body></html>""");
                 break;
 
             case MODULES:
                 new ModuleBuilder(tb, "mA")
                         .exports("pA")
                         .classes("/** Package mA/pA. */ package pA;")
-                        .classes("/** Class mA/pA.CA. */ package pA; public class CA { }")
+                        .classes("""
+                            /** Class mA/pA.CA. */
+                            package pA;
+                            public class CA {
+                                /**
+                                 * First sentence.
+                                 * @spec http://example.com example reference
+                                 */
+                                @Deprecated public static int ZERO = 0;
+                            }
+                        """)
                         .write(src);
                 new ModuleBuilder(tb, "mB")
                         .exports("pB")
@@ -407,4 +449,3 @@ public class TestMetadata extends JavadocTester {
         return src;
     }
 }
-

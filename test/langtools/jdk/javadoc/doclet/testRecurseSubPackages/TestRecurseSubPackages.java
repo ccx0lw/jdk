@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2002, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,7 +25,6 @@
  * @test
  * @bug 4074234 8196202
  * @summary Make Javadoc capable of traversing/recursing all of given subpackages.
- * @author jamieh
  * @library ../../lib
  * @modules jdk.javadoc/jdk.javadoc.internal.tool
  * @build javadoc.tester.*
@@ -37,7 +36,7 @@ import javadoc.tester.JavadocTester;
 public class TestRecurseSubPackages extends JavadocTester {
 
     public static void main(String... args) throws Exception {
-        TestRecurseSubPackages tester = new TestRecurseSubPackages();
+        var tester = new TestRecurseSubPackages();
         tester.runTests();
     }
 

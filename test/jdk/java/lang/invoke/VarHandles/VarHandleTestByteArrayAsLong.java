@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,9 +24,9 @@
 /*
  * @test
  * @bug 8154556
- * @run testng/othervm -Diters=20000 -XX:TieredStopAtLevel=1 VarHandleTestByteArrayAsLong
- * @run testng/othervm -Diters=20000                         VarHandleTestByteArrayAsLong
- * @run testng/othervm -Diters=20000 -XX:-TieredCompilation  VarHandleTestByteArrayAsLong
+ * @run testng/othervm/timeout=360 -Diters=20000 -XX:TieredStopAtLevel=1 VarHandleTestByteArrayAsLong
+ * @run testng/othervm/timeout=360 -Diters=20000                         VarHandleTestByteArrayAsLong
+ * @run testng/othervm/timeout=360 -Diters=20000 -XX:-TieredCompilation  VarHandleTestByteArrayAsLong
  */
 
 import org.testng.annotations.DataProvider;
@@ -629,127 +629,127 @@ public class VarHandleTestByteArrayAsLong extends VarHandleBaseByteArrayTest {
         for (int i : new int[]{-1, Integer.MIN_VALUE, length, length + 1, Integer.MAX_VALUE}) {
             final int ci = i;
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long x = (long) vh.get(array, ci);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 vh.set(array, ci, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long x = (long) vh.getVolatile(array, ci);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long x = (long) vh.getAcquire(array, ci);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long x = (long) vh.getOpaque(array, ci);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 vh.setVolatile(array, ci, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 vh.setRelease(array, ci, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 vh.setOpaque(array, ci, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 boolean r = vh.compareAndSet(array, ci, VALUE_1, VALUE_2);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long r = (long) vh.compareAndExchange(array, ci, VALUE_2, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long r = (long) vh.compareAndExchangeAcquire(array, ci, VALUE_2, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long r = (long) vh.compareAndExchangeRelease(array, ci, VALUE_2, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 boolean r = vh.weakCompareAndSetPlain(array, ci, VALUE_1, VALUE_2);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 boolean r = vh.weakCompareAndSet(array, ci, VALUE_1, VALUE_2);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 boolean r = vh.weakCompareAndSetAcquire(array, ci, VALUE_1, VALUE_2);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 boolean r = vh.weakCompareAndSetRelease(array, ci, VALUE_1, VALUE_2);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long o = (long) vh.getAndSet(array, ci, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long o = (long) vh.getAndSetAcquire(array, ci, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long o = (long) vh.getAndSetRelease(array, ci, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long o = (long) vh.getAndAdd(array, ci, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long o = (long) vh.getAndAddAcquire(array, ci, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long o = (long) vh.getAndAddRelease(array, ci, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long o = (long) vh.getAndBitwiseOr(array, ci, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long o = (long) vh.getAndBitwiseOrAcquire(array, ci, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long o = (long) vh.getAndBitwiseOrRelease(array, ci, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long o = (long) vh.getAndBitwiseAnd(array, ci, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long o = (long) vh.getAndBitwiseAndAcquire(array, ci, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long o = (long) vh.getAndBitwiseAndRelease(array, ci, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long o = (long) vh.getAndBitwiseXor(array, ci, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long o = (long) vh.getAndBitwiseXorAcquire(array, ci, VALUE_1);
             });
 
-            checkIOOBE(() -> {
+            checkAIOOBE(() -> {
                 long o = (long) vh.getAndBitwiseXorRelease(array, ci, VALUE_1);
             });
 
@@ -1265,40 +1265,72 @@ public class VarHandleTestByteArrayAsLong extends VarHandleBaseByteArrayTest {
                     boolean success = false;
                     for (int c = 0; c < WEAK_ATTEMPTS && !success; c++) {
                         success = vh.weakCompareAndSetPlain(array, i, VALUE_1, VALUE_2);
+                        if (!success) weakDelay();
                     }
-                    assertEquals(success, true, "weakCompareAndSetPlain long");
+                    assertEquals(success, true, "success weakCompareAndSetPlain long");
                     long x = (long) vh.get(array, i);
-                    assertEquals(x, VALUE_2, "weakCompareAndSetPlain long value");
+                    assertEquals(x, VALUE_2, "success weakCompareAndSetPlain long value");
+                }
+
+                {
+                    boolean success = vh.weakCompareAndSetPlain(array, i, VALUE_1, VALUE_3);
+                    assertEquals(success, false, "failing weakCompareAndSetPlain long");
+                    long x = (long) vh.get(array, i);
+                    assertEquals(x, VALUE_2, "failing weakCompareAndSetPlain long value");
                 }
 
                 {
                     boolean success = false;
                     for (int c = 0; c < WEAK_ATTEMPTS && !success; c++) {
                         success = vh.weakCompareAndSetAcquire(array, i, VALUE_2, VALUE_1);
+                        if (!success) weakDelay();
                     }
-                    assertEquals(success, true, "weakCompareAndSetAcquire long");
+                    assertEquals(success, true, "success weakCompareAndSetAcquire long");
                     long x = (long) vh.get(array, i);
-                    assertEquals(x, VALUE_1, "weakCompareAndSetAcquire long");
+                    assertEquals(x, VALUE_1, "success weakCompareAndSetAcquire long");
+                }
+
+                {
+                    boolean success = vh.weakCompareAndSetAcquire(array, i, VALUE_2, VALUE_3);
+                    assertEquals(success, false, "failing weakCompareAndSetAcquire long");
+                    long x = (long) vh.get(array, i);
+                    assertEquals(x, VALUE_1, "failing weakCompareAndSetAcquire long value");
                 }
 
                 {
                     boolean success = false;
                     for (int c = 0; c < WEAK_ATTEMPTS && !success; c++) {
                         success = vh.weakCompareAndSetRelease(array, i, VALUE_1, VALUE_2);
+                        if (!success) weakDelay();
                     }
-                    assertEquals(success, true, "weakCompareAndSetRelease long");
+                    assertEquals(success, true, "success weakCompareAndSetRelease long");
                     long x = (long) vh.get(array, i);
-                    assertEquals(x, VALUE_2, "weakCompareAndSetRelease long");
+                    assertEquals(x, VALUE_2, "success weakCompareAndSetRelease long");
+                }
+
+                {
+                    boolean success = vh.weakCompareAndSetRelease(array, i, VALUE_1, VALUE_3);
+                    assertEquals(success, false, "failing weakCompareAndSetRelease long");
+                    long x = (long) vh.get(array, i);
+                    assertEquals(x, VALUE_2, "failing weakCompareAndSetRelease long value");
                 }
 
                 {
                     boolean success = false;
                     for (int c = 0; c < WEAK_ATTEMPTS && !success; c++) {
                         success = vh.weakCompareAndSet(array, i, VALUE_2, VALUE_1);
+                        if (!success) weakDelay();
                     }
-                    assertEquals(success, true, "weakCompareAndSet long");
+                    assertEquals(success, true, "success weakCompareAndSet long");
                     long x = (long) vh.get(array, i);
-                    assertEquals(x, VALUE_1, "weakCompareAndSet long");
+                    assertEquals(x, VALUE_1, "success weakCompareAndSet long");
+                }
+
+                {
+                    boolean success = vh.weakCompareAndSet(array, i, VALUE_2, VALUE_3);
+                    assertEquals(success, false, "failing weakCompareAndSet long");
+                    long x = (long) vh.get(array, i);
+                    assertEquals(x, VALUE_1, "failing weakCompareAndSet long value");
                 }
 
                 // Compare set and get
@@ -1548,40 +1580,72 @@ public class VarHandleTestByteArrayAsLong extends VarHandleBaseByteArrayTest {
                     boolean success = false;
                     for (int c = 0; c < WEAK_ATTEMPTS && !success; c++) {
                         success = vh.weakCompareAndSetPlain(array, i, VALUE_1, VALUE_2);
+                        if (!success) weakDelay();
                     }
-                    assertEquals(success, true, "weakCompareAndSetPlain long");
+                    assertEquals(success, true, "success weakCompareAndSetPlain long");
                     long x = (long) vh.get(array, i);
-                    assertEquals(x, VALUE_2, "weakCompareAndSetPlain long value");
+                    assertEquals(x, VALUE_2, "success weakCompareAndSetPlain long value");
+                }
+
+                {
+                    boolean success = vh.weakCompareAndSetPlain(array, i, VALUE_1, VALUE_3);
+                    assertEquals(success, false, "failing weakCompareAndSetPlain long");
+                    long x = (long) vh.get(array, i);
+                    assertEquals(x, VALUE_2, "failing weakCompareAndSetPlain long value");
                 }
 
                 {
                     boolean success = false;
                     for (int c = 0; c < WEAK_ATTEMPTS && !success; c++) {
                         success = vh.weakCompareAndSetAcquire(array, i, VALUE_2, VALUE_1);
+                        if (!success) weakDelay();
                     }
-                    assertEquals(success, true, "weakCompareAndSetAcquire long");
+                    assertEquals(success, true, "success weakCompareAndSetAcquire long");
                     long x = (long) vh.get(array, i);
-                    assertEquals(x, VALUE_1, "weakCompareAndSetAcquire long");
+                    assertEquals(x, VALUE_1, "success weakCompareAndSetAcquire long");
+                }
+
+                {
+                    boolean success = vh.weakCompareAndSetAcquire(array, i, VALUE_2, VALUE_3);
+                    assertEquals(success, false, "failing weakCompareAndSetAcquire long");
+                    long x = (long) vh.get(array, i);
+                    assertEquals(x, VALUE_1, "failing weakCompareAndSetAcquire long value");
                 }
 
                 {
                     boolean success = false;
                     for (int c = 0; c < WEAK_ATTEMPTS && !success; c++) {
                         success = vh.weakCompareAndSetRelease(array, i, VALUE_1, VALUE_2);
+                        if (!success) weakDelay();
                     }
-                    assertEquals(success, true, "weakCompareAndSetRelease long");
+                    assertEquals(success, true, "success weakCompareAndSetRelease long");
                     long x = (long) vh.get(array, i);
-                    assertEquals(x, VALUE_2, "weakCompareAndSetRelease long");
+                    assertEquals(x, VALUE_2, "success weakCompareAndSetRelease long");
+                }
+
+                {
+                    boolean success = vh.weakCompareAndSetRelease(array, i, VALUE_1, VALUE_3);
+                    assertEquals(success, false, "failing weakCompareAndSetRelease long");
+                    long x = (long) vh.get(array, i);
+                    assertEquals(x, VALUE_2, "failing weakCompareAndSetRelease long value");
                 }
 
                 {
                     boolean success = false;
                     for (int c = 0; c < WEAK_ATTEMPTS && !success; c++) {
                         success = vh.weakCompareAndSet(array, i, VALUE_2, VALUE_1);
+                        if (!success) weakDelay();
                     }
-                    assertEquals(success, true, "weakCompareAndSet long");
+                    assertEquals(success, true, "success weakCompareAndSet long");
                     long x = (long) vh.get(array, i);
-                    assertEquals(x, VALUE_1, "weakCompareAndSet long");
+                    assertEquals(x, VALUE_1, "success weakCompareAndSet long");
+                }
+
+                {
+                    boolean success = vh.weakCompareAndSet(array, i, VALUE_2, VALUE_3);
+                    assertEquals(success, false, "failing weakCompareAndSet long");
+                    long x = (long) vh.get(array, i);
+                    assertEquals(x, VALUE_1, "failing weakCompareAndSet long value");
                 }
 
                 // Compare set and get

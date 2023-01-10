@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -33,8 +33,10 @@ import java.util.Map;
 import java.util.Queue;
 import java.util.stream.Collectors;
 
+import com.sun.source.tree.EnhancedForLoopTree;
 import com.sun.source.tree.LambdaExpressionTree;
 import com.sun.source.tree.NewClassTree;
+import com.sun.source.tree.VariableTree;
 import com.sun.tools.javac.code.Flags;
 import com.sun.tools.javac.code.Kinds.Kind;
 import com.sun.tools.javac.code.Source;
@@ -139,13 +141,17 @@ public class Analyzer {
      * the {@code -XDfind} option.
      */
     enum AnalyzerMode {
-        DIAMOND("diamond", Feature.DIAMOND),
-        LAMBDA("lambda", Feature.LAMBDA),
-        METHOD("method", Feature.GRAPH_INFERENCE),
+        DIAMOND("diamond"),
+        LAMBDA("lambda"),
+        METHOD("method"),
         LOCAL("local", Feature.LOCAL_VARIABLE_TYPE_INFERENCE);
 
         final String opt;
         final Feature feature;
+
+        AnalyzerMode(String opt) {
+            this(opt, null);
+        }
 
         AnalyzerMode(String opt, Feature feature) {
             this.opt = opt;
@@ -168,7 +174,7 @@ public class Analyzer {
                 res = EnumSet.allOf(AnalyzerMode.class);
             }
             for (AnalyzerMode mode : values()) {
-                if (modes.contains("-" + mode.opt) || !mode.feature.allowedInSource(source)) {
+                if (modes.contains("-" + mode.opt) || (mode.feature != null && !mode.feature.allowedInSource(source))) {
                     res.remove(mode);
                 } else if (modes.contains(mode.opt)) {
                     res.add(mode);
@@ -419,18 +425,24 @@ public class Analyzer {
 
         @Override
         boolean match(JCEnhancedForLoop tree){
-            return !isImplicitlyTyped(tree.var);
+            return tree.getDeclarationKind() == EnhancedForLoopTree.DeclarationKind.VARIABLE &&
+                    !isImplicitlyTyped((JCVariableDecl) tree.varOrRecordPattern);
         }
         @Override
         List<JCEnhancedForLoop> rewrite(JCEnhancedForLoop oldTree) {
+            Assert.check(oldTree.getDeclarationKind() == EnhancedForLoopTree.DeclarationKind.VARIABLE);
+
             JCEnhancedForLoop newTree = copier.copy(oldTree);
-            newTree.var = rewriteVarType(oldTree.var);
+            newTree.varOrRecordPattern = rewriteVarType((JCVariableDecl) oldTree.varOrRecordPattern);
             newTree.body = make.at(oldTree.body).Block(0, List.nil());
             return List.of(newTree);
         }
         @Override
         void process(JCEnhancedForLoop oldTree, JCEnhancedForLoop newTree, boolean hasErrors){
-            processVar(oldTree.var, newTree.var, hasErrors);
+            Assert.check(oldTree.getDeclarationKind() == EnhancedForLoopTree.DeclarationKind.VARIABLE);
+
+            processVar((JCVariableDecl) oldTree.varOrRecordPattern,
+                           (JCVariableDecl) newTree.varOrRecordPattern, hasErrors);
         }
     }
 
@@ -556,15 +568,18 @@ public class Analyzer {
             log.useSource(rewriting.env.toplevel.getSourceFile());
 
             JCStatement treeToAnalyze = (JCStatement)rewriting.originalTree;
+            JCTree wrappedTree = null;
+
             if (rewriting.env.info.scope.owner.kind == Kind.TYP) {
                 //add a block to hoist potential dangling variable declarations
                 treeToAnalyze = make.at(Position.NOPOS)
                                     .Block(Flags.SYNTHETIC, List.of((JCStatement)rewriting.originalTree));
+                wrappedTree = rewriting.originalTree;
             }
 
             //TODO: to further refine the analysis, try all rewriting combinations
-            deferredAttr.attribSpeculative(treeToAnalyze, rewriting.env, attr.statInfo, new TreeRewriter(rewriting),
-                    t -> rewriting.diagHandler(), AttributionMode.ANALYZER, argumentAttr.withLocalCacheContext());
+            deferredAttr.attribSpeculative(treeToAnalyze, rewriting.env, attr.statInfo, new TreeRewriter(rewriting, wrappedTree),
+                    () -> rewriting.diagHandler(), AttributionMode.ANALYZER, argumentAttr.withLocalCacheContext());
             rewriting.analyzer.process(rewriting.oldTree, rewriting.replacement, rewriting.erroneous);
         } catch (Throwable ex) {
             Assert.error("Analyzer error when processing: " +
@@ -768,9 +783,11 @@ public class Analyzer {
    class TreeRewriter extends AnalyzerCopier {
 
         RewritingContext rewriting;
+        JCTree wrappedTree;
 
-        TreeRewriter(RewritingContext rewriting) {
+        TreeRewriter(RewritingContext rewriting, JCTree wrappedTree) {
             this.rewriting = rewriting;
+            this.wrappedTree = wrappedTree;
         }
 
         @Override
@@ -783,5 +800,19 @@ public class Analyzer {
             }
             return newTree;
         }
+
+        @Override
+        public JCTree visitVariable(VariableTree node, Void p) {
+            JCTree result = super.visitVariable(node, p);
+            if (node == wrappedTree) {
+                //The current tree is a field and has been wrapped by a block, so it effectivelly
+                //became local variable. If it has some modifiers (except for final), an error
+                //would be reported, causing the whole rewrite to fail. Removing the non-final
+                //modifiers from the variable here:
+                ((JCVariableDecl) result).mods.flags &= Flags.FINAL;
+            }
+            return result;
+        }
+
     }
 }

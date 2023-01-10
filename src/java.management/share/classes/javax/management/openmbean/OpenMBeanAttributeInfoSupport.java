@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2000, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,8 +27,6 @@
 package javax.management.openmbean;
 
 
-// java import
-//
 import java.lang.reflect.Array;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
@@ -44,7 +42,6 @@ import javax.management.Descriptor;
 import javax.management.DescriptorRead;
 import javax.management.ImmutableDescriptor;
 import javax.management.MBeanAttributeInfo;
-import com.sun.jmx.remote.util.EnvHelp;
 import sun.reflect.misc.MethodUtil;
 import sun.reflect.misc.ReflectUtil;
 
@@ -64,27 +61,32 @@ public class OpenMBeanAttributeInfoSupport
     /**
      * @serial The open mbean attribute's <i>open type</i>
      */
+    @SuppressWarnings("serial") // Not statically typed as Serializable
     private OpenType<?> openType;
 
     /**
      * @serial The open mbean attribute's default value
      */
+    @SuppressWarnings("serial") // Not statically typed as Serializable
     private final Object defaultValue;
 
     /**
      * @serial The open mbean attribute's legal values. This {@link
      * Set} is unmodifiable
      */
+    @SuppressWarnings("serial") // Conditionally serializable
     private final Set<?> legalValues;  // to be constructed unmodifiable
 
     /**
      * @serial The open mbean attribute's min value
      */
+    @SuppressWarnings("serial") // Conditionally serializable
     private final Comparable<?> minValue;
 
     /**
      * @serial The open mbean attribute's max value
      */
+    @SuppressWarnings("serial") // Conditionally serializable
     private final Comparable<?> maxValue;
 
 
@@ -573,11 +575,11 @@ public class OpenMBeanAttributeInfoSupport
                                          T[] legalValues,
                                          Comparable<T> minValue,
                                          Comparable<T> maxValue) {
-        Map<String, Object> map = new HashMap<String, Object>();
+        Map<String, Object> map = new HashMap<>();
         if (defaultValue != null)
             map.put("defaultValue", defaultValue);
         if (legalValues != null) {
-            Set<T> set = new HashSet<T>();
+            Set<T> set = new HashSet<>();
             for (T v : legalValues)
                 set.add(v);
             set = Collections.unmodifiableSet(set);
@@ -621,7 +623,7 @@ public class OpenMBeanAttributeInfoSupport
             final String msg =
                 "Cannot convert descriptor field " + name + "  to " +
                 openType.getTypeName();
-            throw EnvHelp.initCause(new IllegalArgumentException(msg), e);
+            throw new IllegalArgumentException(msg, e);
         }
     }
 
@@ -652,7 +654,7 @@ public class OpenMBeanAttributeInfoSupport
             throw new IllegalArgumentException(msg);
         }
 
-        Set<T> result = new HashSet<T>();
+        Set<T> result = new HashSet<>();
         for (Object element : coll)
             result.add(convertFrom(element, openType));
         return result;

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -98,7 +98,7 @@ void ArchDesc::buildMachRegisterNumbers(FILE *fp_hpp) {
   }
 
   fprintf(fp_hpp, "\n// Size of register-mask in ints\n");
-  fprintf(fp_hpp, "#define RM_SIZE %d\n",RegisterForm::RegMask_Size());
+  fprintf(fp_hpp, "#define RM_SIZE %d\n", RegisterForm::RegMask_Size());
   fprintf(fp_hpp, "// Unroll factor for loops over the data in a RegMask\n");
   fprintf(fp_hpp, "#define FORALL_BODY ");
   int len = RegisterForm::RegMask_Size();
@@ -417,7 +417,7 @@ static uint dump_spec_constant(FILE *fp, const char *ideal_type, uint i, Operand
   }
   else if (!strcmp(ideal_type, "ConL")) {
     fprintf(fp,"    st->print(\"#\" INT64_FORMAT, (int64_t)_c%d);\n", i);
-    fprintf(fp,"    st->print(\"/\" PTR64_FORMAT, (uint64_t)_c%d);\n", i);
+    fprintf(fp,"    st->print(\"/\" UINT64_FORMAT_X_0, (uint64_t)_c%d);\n", i);
     ++i;
   }
   else if (!strcmp(ideal_type, "ConF")) {
@@ -429,7 +429,7 @@ static uint dump_spec_constant(FILE *fp, const char *ideal_type, uint i, Operand
   else if (!strcmp(ideal_type, "ConD")) {
     fprintf(fp,"    st->print(\"#%%f\", _c%d);\n", i);
     fprintf(fp,"    jlong _c%dl = JavaValue(_c%d).get_jlong();\n", i, i);
-    fprintf(fp,"    st->print(\"/\" PTR64_FORMAT, (uint64_t)_c%dl);\n", i);
+    fprintf(fp,"    st->print(\"/\" UINT64_FORMAT_X_0, (uint64_t)_c%dl);\n", i);
     ++i;
   }
   else if (!strcmp(ideal_type, "Bool")) {
@@ -741,13 +741,7 @@ void ArchDesc::declare_pipe_classes(FILE *fp_hpp) {
   fprintf(fp_hpp, "// Pipeline_Use_Cycle_Mask Class\n");
   fprintf(fp_hpp, "class Pipeline_Use_Cycle_Mask {\n");
 
-  if (_pipeline->_maxcycleused <=
-#ifdef SPARC
-    64
-#else
-    32
-#endif
-      ) {
+  if (_pipeline->_maxcycleused <= 32) {
     fprintf(fp_hpp, "protected:\n");
     fprintf(fp_hpp, "  %s _mask;\n\n", _pipeline->_maxcycleused <= 32 ? "uint" : "uint64_t" );
     fprintf(fp_hpp, "public:\n");
@@ -758,10 +752,6 @@ void ArchDesc::declare_pipe_classes(FILE *fp_hpp) {
       fprintf(fp_hpp, "  Pipeline_Use_Cycle_Mask(uint mask1, uint mask2) : _mask((((uint64_t)mask1) << 32) | mask2) {}\n\n");
       fprintf(fp_hpp, "  Pipeline_Use_Cycle_Mask(uint64_t mask) : _mask(mask) {}\n\n");
     }
-    fprintf(fp_hpp, "  Pipeline_Use_Cycle_Mask& operator=(const Pipeline_Use_Cycle_Mask &in) {\n");
-    fprintf(fp_hpp, "    _mask = in._mask;\n");
-    fprintf(fp_hpp, "    return *this;\n");
-    fprintf(fp_hpp, "  }\n\n");
     fprintf(fp_hpp, "  bool overlaps(const Pipeline_Use_Cycle_Mask &in2) const {\n");
     fprintf(fp_hpp, "    return ((_mask & in2._mask) != 0);\n");
     fprintf(fp_hpp, "  }\n\n");
@@ -792,11 +782,6 @@ void ArchDesc::declare_pipe_classes(FILE *fp_hpp) {
     for (l = 1; l <= masklen; l++)
       fprintf(fp_hpp, "_mask%d(mask%d)%s", l, l, l < masklen ? ", " : " {}\n\n");
 
-    fprintf(fp_hpp, "  Pipeline_Use_Cycle_Mask& operator=(const Pipeline_Use_Cycle_Mask &in) {\n");
-    for (l = 1; l <= masklen; l++)
-      fprintf(fp_hpp, "    _mask%d = in._mask%d;\n", l, l);
-    fprintf(fp_hpp, "    return *this;\n");
-    fprintf(fp_hpp, "  }\n\n");
     fprintf(fp_hpp, "  Pipeline_Use_Cycle_Mask intersect(const Pipeline_Use_Cycle_Mask &in2) {\n");
     fprintf(fp_hpp, "    Pipeline_Use_Cycle_Mask out;\n");
     for (l = 1; l <= masklen; l++)
@@ -1459,7 +1444,7 @@ void ArchDesc::declareClasses(FILE *fp) {
       }
       else if (oper->_interface->is_RegInterface() != NULL) {
         // make sure that a fixed format string isn't used for an
-        // operand which might be assiged to multiple registers.
+        // operand which might be assigned to multiple registers.
         // Otherwise the opto assembly output could be misleading.
         if (oper->_format->_strings.count() != 0 && !oper->is_bound_register()) {
           syntax_err(oper->_linenum,
@@ -1577,6 +1562,8 @@ void ArchDesc::declareClasses(FILE *fp) {
     fprintf(fp,"    assert(operand_index < _num_opnds, \"invalid _opnd_array index\");\n");
     fprintf(fp,"    _opnd_array[operand_index] = operand;\n");
     fprintf(fp,"  }\n");
+    fprintf(fp,"  virtual uint           rule() const { return %s_rule; }\n",
+            instr->_ident);
     fprintf(fp,"private:\n");
     if ( instr->is_ideal_jump() ) {
       fprintf(fp,"  virtual void           add_case_label(int index_num, Label* blockLabel) {\n");
@@ -1588,8 +1575,6 @@ void ArchDesc::declareClasses(FILE *fp) {
     }
 
     out_RegMask(fp);                      // output register mask
-    fprintf(fp,"  virtual uint           rule() const { return %s_rule; }\n",
-            instr->_ident);
 
     // If this instruction contains a labelOper
     // Declare Node::methods that set operand Label's contents
@@ -1663,7 +1648,7 @@ void ArchDesc::declareClasses(FILE *fp) {
     }
 
     if (instr->needs_constant_base() &&
-        !instr->is_mach_constant()) {  // These inherit the funcion from MachConstantNode.
+        !instr->is_mach_constant()) {  // These inherit the function from MachConstantNode.
       fprintf(fp,"  virtual uint           mach_constant_base_node_input() const { ");
       if (instr->is_ideal_call() != Form::invalid_type &&
           instr->is_ideal_call() != Form::JAVA_LEAF) {
@@ -1718,7 +1703,7 @@ void ArchDesc::declareClasses(FILE *fp) {
 
     // If there is an explicit peephole rule, build it
     if ( instr->peepholes() != NULL ) {
-      fprintf(fp,"  virtual MachNode      *peephole(Block *block, int block_index, PhaseRegAlloc *ra_, int &deleted);\n");
+      fprintf(fp,"  virtual int            peephole(Block* block, int block_index, PhaseCFG* cfg_, PhaseRegAlloc* ra_);\n");
     }
 
     // Output the declaration for number of relocation entries
@@ -1955,31 +1940,20 @@ void ArchDesc::declareClasses(FILE *fp) {
       // it doesn't understand what that might alias.
       fprintf(fp,"  const Type            *bottom_type() const { return TypeRawPtr::BOTTOM; } // Box?\n");
     }
-    else if( instr->_matrule && instr->_matrule->_rChild && !strcmp(instr->_matrule->_rChild->_opType,"CMoveP") ) {
+    else if (instr->_matrule && instr->_matrule->_rChild &&
+              (!strcmp(instr->_matrule->_rChild->_opType,"CMoveP") || !strcmp(instr->_matrule->_rChild->_opType,"CMoveN")) ) {
       int offset = 1;
       // Special special hack to see if the Cmp? has been incorporated in the conditional move
       MatchNode *rl = instr->_matrule->_rChild->_lChild;
-      if( rl && !strcmp(rl->_opType, "Binary") ) {
-          MatchNode *rlr = rl->_rChild;
-          if (rlr && strncmp(rlr->_opType, "Cmp", 3) == 0)
-            offset = 2;
+      if (rl && !strcmp(rl->_opType, "Binary") && rl->_rChild && strncmp(rl->_rChild->_opType, "Cmp", 3) == 0) {
+        offset = 2;
+        fprintf(fp,"  const Type            *bottom_type() const { if (req() == 3) return in(2)->bottom_type();\n\tconst Type *t = in(oper_input_base()+%d)->bottom_type(); return (req() <= oper_input_base()+%d) ? t : t->meet(in(oper_input_base()+%d)->bottom_type()); } // %s\n",
+        offset, offset+1, offset+1, instr->_matrule->_rChild->_opType);
+      } else {
+        // Special hack for ideal CMove; ideal type depends on inputs
+        fprintf(fp,"  const Type            *bottom_type() const { const Type *t = in(oper_input_base()+%d)->bottom_type(); return (req() <= oper_input_base()+%d) ? t : t->meet(in(oper_input_base()+%d)->bottom_type()); } // %s\n",
+        offset, offset+1, offset+1, instr->_matrule->_rChild->_opType);
       }
-      // Special hack for ideal CMoveP; ideal type depends on inputs
-      fprintf(fp,"  const Type            *bottom_type() const { const Type *t = in(oper_input_base()+%d)->bottom_type(); return (req() <= oper_input_base()+%d) ? t : t->meet(in(oper_input_base()+%d)->bottom_type()); } // CMoveP\n",
-        offset, offset+1, offset+1);
-    }
-    else if( instr->_matrule && instr->_matrule->_rChild && !strcmp(instr->_matrule->_rChild->_opType,"CMoveN") ) {
-      int offset = 1;
-      // Special special hack to see if the Cmp? has been incorporated in the conditional move
-      MatchNode *rl = instr->_matrule->_rChild->_lChild;
-      if( rl && !strcmp(rl->_opType, "Binary") ) {
-          MatchNode *rlr = rl->_rChild;
-          if (rlr && strncmp(rlr->_opType, "Cmp", 3) == 0)
-            offset = 2;
-      }
-      // Special hack for ideal CMoveN; ideal type depends on inputs
-      fprintf(fp,"  const Type            *bottom_type() const { const Type *t = in(oper_input_base()+%d)->bottom_type(); return (req() <= oper_input_base()+%d) ? t : t->meet(in(oper_input_base()+%d)->bottom_type()); } // CMoveN\n",
-        offset, offset+1, offset+1);
     }
     else if (instr->is_tls_instruction()) {
       // Special hack for tlsLoadP
@@ -2027,25 +2001,16 @@ void ArchDesc::declareClasses(FILE *fp) {
 }
 
 void ArchDesc::defineStateClass(FILE *fp) {
-  static const char *state__valid    = "_valid[((uint)index) >> 5] &  (0x1 << (((uint)index) & 0x0001F))";
-  static const char *state__set_valid= "_valid[((uint)index) >> 5] |= (0x1 << (((uint)index) & 0x0001F))";
+  static const char *state__valid    = "_rule[index] & 0x1";
 
   fprintf(fp,"\n");
   fprintf(fp,"// MACROS to inline and constant fold State::valid(index)...\n");
   fprintf(fp,"// when given a constant 'index' in dfa_<arch>.cpp\n");
-  fprintf(fp,"//   uint word   = index >> 5;       // Shift out bit position\n");
-  fprintf(fp,"//   uint bitpos = index & 0x0001F;  // Mask off word bits\n");
-  fprintf(fp,"#define STATE__VALID(index) ");
-  fprintf(fp,"    (%s)\n", state__valid);
-  fprintf(fp,"\n");
   fprintf(fp,"#define STATE__NOT_YET_VALID(index) ");
   fprintf(fp,"  ( (%s) == 0 )\n", state__valid);
   fprintf(fp,"\n");
   fprintf(fp,"#define STATE__VALID_CHILD(state,index) ");
   fprintf(fp,"  ( state && (state->%s) )\n", state__valid);
-  fprintf(fp,"\n");
-  fprintf(fp,"#define STATE__SET_VALID(index) ");
-  fprintf(fp,"  (%s)\n", state__set_valid);
   fprintf(fp,"\n");
   fprintf(fp,
           "//---------------------------State-------------------------------------------\n");
@@ -2054,17 +2019,19 @@ void ArchDesc::defineStateClass(FILE *fp) {
   fprintf(fp,"// indexed by machine operand opcodes, pointers to the children in the label\n");
   fprintf(fp,"// tree generated by the Label routines in ideal nodes (currently limited to\n");
   fprintf(fp,"// two for convenience, but this could change).\n");
-  fprintf(fp,"class State : public ResourceObj {\n");
+  fprintf(fp,"class State : public ArenaObj {\n");
+  fprintf(fp,"private:\n");
+  fprintf(fp,"  unsigned int _cost[_LAST_MACH_OPER];  // Costs, indexed by operand opcodes\n");
+  fprintf(fp,"  uint16_t     _rule[_LAST_MACH_OPER];  // Rule and validity, indexed by operand opcodes\n");
+  fprintf(fp,"                                        // Lowest bit encodes validity\n");
+
   fprintf(fp,"public:\n");
-  fprintf(fp,"  int    _id;         // State identifier\n");
-  fprintf(fp,"  Node  *_leaf;       // Ideal (non-machine-node) leaf of match tree\n");
-  fprintf(fp,"  State *_kids[2];       // Children of state node in label tree\n");
-  fprintf(fp,"  unsigned int _cost[_LAST_MACH_OPER];  // Cost vector, indexed by operand opcodes\n");
-  fprintf(fp,"  unsigned int _rule[_LAST_MACH_OPER];  // Rule vector, indexed by operand opcodes\n");
-  fprintf(fp,"  unsigned int _valid[(_LAST_MACH_OPER/32)+1]; // Bit Map of valid Cost/Rule entries\n");
+  fprintf(fp,"  int    _id;                           // State identifier\n");
+  fprintf(fp,"  Node  *_leaf;                         // Ideal (non-machine-node) leaf of match tree\n");
+  fprintf(fp,"  State *_kids[2];                      // Children of state node in label tree\n");
   fprintf(fp,"\n");
-  fprintf(fp,"  State(void);                      // Constructor\n");
-  fprintf(fp,"  DEBUG_ONLY( ~State(void); )       // Destructor\n");
+  fprintf(fp,"  State(void);\n");
+  fprintf(fp,"  DEBUG_ONLY( ~State(void); )\n");
   fprintf(fp,"\n");
   fprintf(fp,"  // Methods created by ADLC and invoked by Reduce\n");
   fprintf(fp,"  MachOper *MachOperGenerator(int opcode);\n");
@@ -2073,14 +2040,14 @@ void ArchDesc::defineStateClass(FILE *fp) {
   fprintf(fp,"  // Assign a state to a node, definition of method produced by ADLC\n");
   fprintf(fp,"  bool DFA( int opcode, const Node *ideal );\n");
   fprintf(fp,"\n");
-  fprintf(fp,"  // Access function for _valid bit vector\n");
   fprintf(fp,"  bool valid(uint index) {\n");
-  fprintf(fp,"    return( STATE__VALID(index) != 0 );\n");
+  fprintf(fp,"    return %s;\n", state__valid);
   fprintf(fp,"  }\n");
-  fprintf(fp,"\n");
-  fprintf(fp,"  // Set function for _valid bit vector\n");
-  fprintf(fp,"  void set_valid(uint index) {\n");
-  fprintf(fp,"    STATE__SET_VALID(index);\n");
+  fprintf(fp,"  unsigned int rule(uint index) {\n");
+  fprintf(fp,"    return _rule[index] >> 1;\n");
+  fprintf(fp,"  }\n");
+  fprintf(fp,"  unsigned int cost(uint index) {\n");
+  fprintf(fp,"    return _cost[index];\n");
   fprintf(fp,"  }\n");
   fprintf(fp,"\n");
   fprintf(fp,"#ifndef PRODUCT\n");
@@ -2104,7 +2071,7 @@ void ArchDesc::defineStateClass(FILE *fp) {
 //---------------------------buildMachOperEnum---------------------------------
 // Build enumeration for densely packed operands.
 // This enumeration is used to index into the arrays in the State objects
-// that indicate cost and a successfull rule match.
+// that indicate cost and a successful rule match.
 
 // Information needed to generate the ReduceOp mapping for the DFA
 class OutputMachOperands : public OutputMap {
@@ -2158,7 +2125,9 @@ class OutputMachOpcodes : public OutputMap {
 public:
   OutputMachOpcodes(FILE *hpp, FILE *cpp, FormDict &globals, ArchDesc &AD)
     : OutputMap(hpp, cpp, globals, AD, "MachOpcodes"),
-      begin_inst_chain_rule(-1), end_inst_chain_rule(-1), end_instructions(-1)
+      begin_inst_chain_rule(-1), end_inst_chain_rule(-1),
+      begin_rematerialize(-1), end_rematerialize(-1),
+      end_instructions(-1)
   {};
 
   void declaration() { }

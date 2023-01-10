@@ -26,6 +26,7 @@
  * @library /test/lib
  * @summary Test that a New Session Ticket will be generated when a
  * SSLSessionBindingListener is set (boundValues)
+ * @key intermittent
  * @run main/othervm ResumptionUpdateBoundValues
  */
 
@@ -189,7 +190,7 @@ public class ResumptionUpdateBoundValues {
             System.out.println("test.java.opts: " +
                     System.getProperty("test.java.opts"));
 
-            ProcessBuilder pb = ProcessTools.createJavaProcessBuilder(true,
+            ProcessBuilder pb = ProcessTools.createTestJvm(
                     Utils.addTestJavaOpts("ResumptionUpdateBoundValues", "p"));
 
             OutputAnalyzer output = ProcessTools.executeProcess(pb);

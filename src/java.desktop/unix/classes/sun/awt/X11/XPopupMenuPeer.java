@@ -79,6 +79,7 @@ public class XPopupMenuPeer extends XMenuWindow implements PopupMenuPeer {
     /*
      * From MenuComponentPeer
      */
+    @Override
     public void setFont(Font f) {
         resetMapping();
         setItemsFont(f);
@@ -88,33 +89,22 @@ public class XPopupMenuPeer extends XMenuWindow implements PopupMenuPeer {
     /*
      * From MenuItemPeer
      */
+    @Override
     public void setLabel(String label) {
         resetMapping();
         postPaintEvent();
     }
 
 
+    @Override
     public void setEnabled(boolean enabled) {
         postPaintEvent();
     }
 
     /*
-     * From MenuPeer
-     */
-    /**
-     * addSeparator routines are not used
-     * in peers. Shared code invokes addItem("-")
-     * for adding separators
-     */
-    public void addSeparator() {
-        if (log.isLoggable(PlatformLogger.Level.FINER)) {
-            log.finer("addSeparator is not implemented");
-        }
-    }
-
-    /*
      * From PopupMenuPeer
      */
+    @Override
     @SuppressWarnings("deprecation")
     public void show(Event e) {
         target = (Component)e.target;
@@ -173,6 +163,7 @@ public class XPopupMenuPeer extends XMenuWindow implements PopupMenuPeer {
         return AWTAccessor.getMenuItemAccessor().isEnabled(popupMenuTarget);
     }
 
+    @Override
     Vector<MenuItem> getMenuTargetItems() {
         if (popupMenuTarget == null) {
             return null;
@@ -223,14 +214,15 @@ public class XPopupMenuPeer extends XMenuWindow implements PopupMenuPeer {
 
     /************************************************
      *
-     * Overriden XMenuWindow caption-painting functions
+     * Overridden XMenuWindow caption-painting functions
      * Necessary to fix 6267144: PIT: Popup menu label is not shown, XToolkit
      *
      ************************************************/
     /**
      * Returns height of menu window's caption.
-     * Can be overriden for popup menus and tear-off menus
+     * Can be overridden for popup menus and tear-off menus
      */
+    @Override
     protected Dimension getCaptionSize() {
         String s = getTargetLabel();
         if (s.isEmpty()) {
@@ -255,9 +247,10 @@ public class XPopupMenuPeer extends XMenuWindow implements PopupMenuPeer {
 
     /**
      * Paints menu window's caption.
-     * Can be overriden for popup menus and tear-off menus.
+     * Can be overridden for popup menus and tear-off menus.
      * Default implementation does nothing
      */
+    @Override
     protected void paintCaption(Graphics g, Rectangle rect) {
         String s = getTargetLabel();
         if (s.isEmpty()) {
@@ -277,14 +270,16 @@ public class XPopupMenuPeer extends XMenuWindow implements PopupMenuPeer {
 
     /************************************************
      *
-     * Overriden XBaseMenuWindow functions
+     * Overridden XBaseMenuWindow functions
      *
      ************************************************/
+    @Override
     protected void doDispose() {
         super.doDispose();
         XToolkit.targetDisposedPeer(popupMenuTarget, this);
     }
 
+    @Override
     protected void handleEvent(AWTEvent event) {
         switch(event.getID()) {
         case MouseEvent.MOUSE_PRESSED:
@@ -308,16 +303,17 @@ public class XPopupMenuPeer extends XMenuWindow implements PopupMenuPeer {
 
     /************************************************
      *
-     * Overriden XWindow general-purpose functions
+     * Overridden XWindow general-purpose functions
      *
      ************************************************/
+    @Override
     void ungrabInputImpl() {
         hide();
     }
 
     /************************************************
      *
-     * Overriden XWindow keyboard processing
+     * Overridden XWindow keyboard processing
      *
      ************************************************/
 
@@ -326,6 +322,7 @@ public class XPopupMenuPeer extends XMenuWindow implements PopupMenuPeer {
      * Now we override this function do disable F10 explicit
      * processing. All processing is done using KeyEvent.
      */
+    @Override
     public void handleKeyPress(XEvent xev) {
         XKeyEvent xkey = xev.get_xkey();
         if (log.isLoggable(PlatformLogger.Level.FINE)) {

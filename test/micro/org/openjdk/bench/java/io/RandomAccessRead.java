@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -30,13 +30,16 @@ import java.util.concurrent.TimeUnit;
 
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
+import org.openjdk.jmh.annotations.Fork;
 import org.openjdk.jmh.annotations.Level;
+import org.openjdk.jmh.annotations.Measurement;
 import org.openjdk.jmh.annotations.Mode;
 import org.openjdk.jmh.annotations.OutputTimeUnit;
 import org.openjdk.jmh.annotations.Param;
 import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
+import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.annotations.TearDown;
 
 /**
@@ -45,17 +48,24 @@ import org.openjdk.jmh.annotations.TearDown;
  */
 @BenchmarkMode(Mode.Throughput)
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
+@Fork(2)
+@Warmup(iterations = 4, time = 2, timeUnit = TimeUnit.SECONDS)
+@Measurement(iterations = 4, time = 2, timeUnit = TimeUnit.SECONDS)
 @State(Scope.Thread)
 public class RandomAccessRead {
 
     @Param("1000000")
     private int fileSize;
 
+    @Param("8192")
+    private int buffer;
+
     private RandomAccessFile raf;
     private long offset;
     private int deltaIndex;
     private int[] deltas;
     private File f;
+    private byte[] buf;
 
     @Setup(Level.Trial)
     public void beforeRun() throws IOException {
@@ -66,6 +76,7 @@ public class RandomAccessRead {
             }
         }
         deltas = new int[]{1, 2, 3, 5, 7, 11, 13, 17, 19, 23};
+        buf = new byte[buffer];
     }
 
     @TearDown(Level.Trial)
@@ -86,6 +97,20 @@ public class RandomAccessRead {
     }
 
     @Benchmark
+    public int testBuffer() throws IOException {
+        offset = offset + deltas[deltaIndex];
+        if (offset >= fileSize) {
+            offset = 0;
+        }
+        deltaIndex++;
+        if (deltaIndex >= deltas.length) {
+            deltaIndex = 0;
+        }
+        raf.seek(offset);
+        return raf.read(buf);
+    }
+
+    @Benchmark
     public int test() throws IOException {
         offset = offset + deltas[deltaIndex];
         if (offset >= fileSize) {
@@ -98,5 +123,4 @@ public class RandomAccessRead {
         raf.seek(offset);
         return raf.read();
     }
-
 }

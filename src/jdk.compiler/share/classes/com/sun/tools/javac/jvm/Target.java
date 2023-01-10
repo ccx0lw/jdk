@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2002, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2002, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -76,7 +76,28 @@ public enum Target {
     JDK1_13("13", 57, 0),
 
     /** JDK 14. */
-    JDK1_14("14", 58, 0);
+    JDK1_14("14", 58, 0),
+
+    /** JDK 15. */
+    JDK1_15("15", 59, 0),
+
+    /** JDK 16. */
+    JDK1_16("16", 60, 0),
+
+    /** JDK 17. */
+    JDK1_17("17", 61, 0),
+
+    /** JDK 18. */
+    JDK1_18("18", 62, 0),
+
+    /** JDK 19. */
+    JDK1_19("19", 63, 0),
+
+    /** JDK 20. */
+    JDK1_20("20", 64, 0),
+
+    /** JDK 21. */
+    JDK1_21("21", 65, 0);
 
     private static final Context.Key<Target> targetKey = new Context.Key<>();
 
@@ -92,9 +113,11 @@ public enum Target {
         return instance;
     }
 
-    public static final Target MIN = Target.JDK1_7;
+    public static final Target MIN = Target.JDK1_8;
 
     private static final Target MAX = values()[values().length - 1];
+
+    public static final Target DEFAULT = MAX;
 
     private static final Map<String,Target> tab = new HashMap<>();
     static {
@@ -117,8 +140,6 @@ public enum Target {
         this.majorVersion = majorVersion;
         this.minorVersion = minorVersion;
     }
-
-    public static final Target DEFAULT = values()[values().length - 1];
 
     public static Target lookup(String name) {
         return tab.get(name);
@@ -166,10 +187,36 @@ public enum Target {
         return compareTo(JDK1_11) >= 0;
     }
 
+    /** language runtime uses nest-based access.
+     *  e.g. lambda and string concat spin dynamic proxy class as a nestmate
+     *  of the target class
+     */
+    public boolean runtimeUseNestAccess() {
+        return compareTo(JDK1_15) >= 0;
+    }
+
     /** Does the target VM support virtual private invocations?
      */
     public boolean hasVirtualPrivateInvoke() {
         return compareTo(JDK1_11) >= 0;
     }
 
+    /** Does the target VM support sealed types
+     */
+    public boolean hasSealedClasses() {
+        return compareTo(JDK1_15) >= 0;
+    }
+
+    /** Is the ACC_STRICT bit redundant and obsolete
+     */
+    public boolean obsoleteAccStrict() {
+        return compareTo(JDK1_17) >= 0;
+    }
+
+    /** Omit unused enclosing instance fields from inner classes that don't access enclosing
+     * instance state.
+     */
+    public boolean optimizeOuterThis() {
+        return compareTo(JDK1_18) >= 0;
+    }
 }

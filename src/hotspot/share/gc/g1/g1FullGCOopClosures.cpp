@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,6 +24,7 @@
 
 #include "precompiled.hpp"
 #include "gc/g1/g1CollectedHeap.hpp"
+#include "gc/g1/g1FullCollector.hpp"
 #include "gc/g1/g1FullGCMarker.inline.hpp"
 #include "gc/g1/g1FullGCOopClosures.inline.hpp"
 #include "logging/logStream.hpp"
@@ -32,7 +33,10 @@
 #include "oops/compressedOops.inline.hpp"
 #include "oops/oop.inline.hpp"
 
-void G1FollowStackClosure::do_void() { _marker->drain_stack(); }
+G1IsAliveClosure::G1IsAliveClosure(G1FullCollector* collector) :
+  G1IsAliveClosure(collector, collector->mark_bitmap()) { }
+
+void G1FollowStackClosure::do_void() { _marker->follow_marking_stacks(); }
 
 void G1FullKeepAliveClosure::do_oop(oop* p) { do_oop_work(p); }
 void G1FullKeepAliveClosure::do_oop(narrowOop* p) { do_oop_work(p); }
@@ -69,15 +73,15 @@ template <class T> void G1VerifyOopClosure::do_oop_work(T* p) {
         yy.print_cr("----------");
       }
       if (!_g1h->is_in(obj)) {
-        HeapRegion* from = _g1h->heap_region_containing((HeapWord*)p);
+        HeapRegion* from = _g1h->heap_region_containing(p);
         yy.print_cr("Field " PTR_FORMAT " of live obj " PTR_FORMAT " in region " HR_FORMAT,
                     p2i(p), p2i(_containing_obj), HR_FORMAT_PARAMS(from));
         print_object(&yy, _containing_obj);
         yy.print_cr("points to obj " PTR_FORMAT " not in the heap",
                     p2i(obj));
       } else {
-        HeapRegion* from = _g1h->heap_region_containing((HeapWord*)p);
-        HeapRegion* to   = _g1h->heap_region_containing((HeapWord*)obj);
+        HeapRegion* from = _g1h->heap_region_containing(p);
+        HeapRegion* to   = _g1h->heap_region_containing(obj);
         yy.print_cr("Field " PTR_FORMAT " of live obj " PTR_FORMAT " in region " HR_FORMAT,
                     p2i(p), p2i(_containing_obj), HR_FORMAT_PARAMS(from));
         print_object(&yy, _containing_obj);

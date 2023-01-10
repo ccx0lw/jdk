@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1999, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -271,9 +271,11 @@ public class NumberFormatProviderImpl extends NumberFormatProvider implements Av
         DecimalFormatSymbols symbols = DecimalFormatSymbols.getInstance(override);
         String[] cnPatterns = resource.getCNPatterns(formatStyle);
 
-        CompactNumberFormat format = new CompactNumberFormat(numberPatterns[0],
-                symbols, cnPatterns);
-        return format;
+        // plural rules
+        String[] rules = resource.getRules();
+
+        return new CompactNumberFormat(numberPatterns[0],
+                symbols, cnPatterns, rules[0]);
     }
 
     @Override

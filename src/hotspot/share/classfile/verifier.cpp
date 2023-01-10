@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1998, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1998, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,7 +23,6 @@
  */
 
 #include "precompiled.hpp"
-#include "jvm.h"
 #include "classfile/classFileStream.hpp"
 #include "classfile/classLoader.hpp"
 #include "classfile/javaClasses.hpp"
@@ -33,27 +32,30 @@
 #include "classfile/symbolTable.hpp"
 #include "classfile/systemDictionary.hpp"
 #include "classfile/verifier.hpp"
+#include "classfile/vmClasses.hpp"
 #include "classfile/vmSymbols.hpp"
 #include "interpreter/bytecodes.hpp"
 #include "interpreter/bytecodeStream.hpp"
+#include "jvm.h"
 #include "logging/log.hpp"
 #include "logging/logStream.hpp"
 #include "memory/oopFactory.hpp"
 #include "memory/resourceArea.hpp"
 #include "memory/universe.hpp"
 #include "oops/constantPool.inline.hpp"
-#include "oops/instanceKlass.hpp"
+#include "oops/instanceKlass.inline.hpp"
+#include "oops/klass.inline.hpp"
 #include "oops/oop.inline.hpp"
 #include "oops/typeArrayOop.hpp"
+#include "runtime/arguments.hpp"
 #include "runtime/fieldDescriptor.hpp"
 #include "runtime/handles.inline.hpp"
 #include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/javaCalls.hpp"
+#include "runtime/javaThread.hpp"
 #include "runtime/jniHandles.inline.hpp"
-#include "runtime/orderAccess.hpp"
 #include "runtime/os.hpp"
 #include "runtime/safepointVerifiers.hpp"
-#include "runtime/thread.hpp"
 #include "services/threadService.hpp"
 #include "utilities/align.hpp"
 #include "utilities/bytes.hpp"
@@ -132,11 +134,18 @@ void Verifier::trace_class_resolution(Klass* resolve_class, InstanceKlass* verif
 }
 
 // Prints the end-verification message to the appropriate output.
-void Verifier::log_end_verification(outputStream* st, const char* klassName, Symbol* exception_name, TRAPS) {
-  if (HAS_PENDING_EXCEPTION) {
+void Verifier::log_end_verification(outputStream* st, const char* klassName, Symbol* exception_name, oop pending_exception) {
+  if (pending_exception != NULL) {
     st->print("Verification for %s has", klassName);
-    st->print_cr(" exception pending %s ",
-                 PENDING_EXCEPTION->klass()->external_name());
+    oop message = java_lang_Throwable::message(pending_exception);
+    if (message != NULL) {
+      char* ex_msg = java_lang_String::as_utf8_string(message);
+      st->print_cr(" exception pending '%s %s'",
+                   pending_exception->klass()->external_name(), ex_msg);
+    } else {
+      st->print_cr(" exception pending %s ",
+                   pending_exception->klass()->external_name());
+    }
   } else if (exception_name != NULL) {
     st->print_cr("Verification for %s failed", klassName);
   }
@@ -166,7 +175,7 @@ bool Verifier::verify(InstanceKlass* klass, bool should_verify_class, TRAPS) {
 
   // Timer includes any side effects of class verification (resolution,
   // etc), but not recursive calls to Verifier::verify().
-  JavaThread* jt = (JavaThread*)THREAD;
+  JavaThread* jt = THREAD;
   PerfClassTraceTime timer(ClassLoader::perf_class_verify_time(),
                            ClassLoader::perf_class_verify_selftime(),
                            ClassLoader::perf_classes_verified(),
@@ -184,7 +193,8 @@ bool Verifier::verify(InstanceKlass* klass, bool should_verify_class, TRAPS) {
 
   log_info(class, init)("Start class verification for: %s", klass->external_name());
   if (klass->major_version() >= STACKMAP_ATTRIBUTE_MAJOR_VERSION) {
-    ClassVerifier split_verifier(klass, THREAD);
+    ClassVerifier split_verifier(jt, klass);
+    // We don't use CHECK here, or on inference_verify below, so that we can log any exception.
     split_verifier.verify_class(THREAD);
     exception_name = split_verifier.result();
 
@@ -219,12 +229,12 @@ bool Verifier::verify(InstanceKlass* klass, bool should_verify_class, TRAPS) {
   LogTarget(Info, class, init) lt1;
   if (lt1.is_enabled()) {
     LogStream ls(lt1);
-    log_end_verification(&ls, klass->external_name(), exception_name, THREAD);
+    log_end_verification(&ls, klass->external_name(), exception_name, PENDING_EXCEPTION);
   }
   LogTarget(Info, verification) lt2;
   if (lt2.is_enabled()) {
     LogStream ls(lt2);
-    log_end_verification(&ls, klass->external_name(), exception_name, THREAD);
+    log_end_verification(&ls, klass->external_name(), exception_name, PENDING_EXCEPTION);
   }
 
   if (HAS_PENDING_EXCEPTION) {
@@ -258,7 +268,7 @@ bool Verifier::verify(InstanceKlass* klass, bool should_verify_class, TRAPS) {
 
 bool Verifier::is_eligible_for_verification(InstanceKlass* klass, bool should_verify_class) {
   Symbol* name = klass->name();
-  Klass* refl_magic_klass = SystemDictionary::reflect_MagicAccessorImpl_klass();
+  Klass* refl_magic_klass = vmClasses::reflect_MagicAccessorImpl_klass();
 
   bool is_reflect = refl_magic_klass != NULL && klass->is_subtype_of(refl_magic_klass);
 
@@ -275,7 +285,9 @@ bool Verifier::is_eligible_for_verification(InstanceKlass* klass, bool should_ve
     // already been rewritten to contain constant pool cache indices,
     // which the verifier can't understand.
     // Shared classes shouldn't have stackmaps either.
-    !klass->is_shared() &&
+    // However, bytecodes for shared old classes can be verified because
+    // they have not been rewritten.
+    !(klass->is_shared() && klass->is_rewritten()) &&
 
     // As of the fix for 4486457 we disable verification for all of the
     // dynamically-generated bytecodes associated with the 1.4
@@ -289,8 +301,7 @@ bool Verifier::is_eligible_for_verification(InstanceKlass* klass, bool should_ve
 
 Symbol* Verifier::inference_verify(
     InstanceKlass* klass, char* message, size_t message_len, TRAPS) {
-  JavaThread* thread = (JavaThread*)THREAD;
-  JNIEnv *env = thread->jni_environment();
+  JavaThread* thread = THREAD;
 
   verify_byte_codes_fn_t verify_func = verify_byte_codes_fn();
 
@@ -299,10 +310,10 @@ Symbol* Verifier::inference_verify(
     return vmSymbols::java_lang_VerifyError();
   }
 
-  ResourceMark rm(THREAD);
+  ResourceMark rm(thread);
   log_info(verification)("Verifying class %s with old format", klass->external_name());
 
-  jclass cls = (jclass) JNIHandles::make_local(env, klass->java_mirror());
+  jclass cls = (jclass) JNIHandles::make_local(thread, klass->java_mirror());
   jint result;
 
   {
@@ -310,7 +321,7 @@ Symbol* Verifier::inference_verify(
     ThreadToNativeFromVM ttn(thread);
     // ThreadToNativeFromVM takes care of changing thread_state, so safepoint
     // code knows that we have left the VM
-
+    JNIEnv *env = thread->jni_environment();
     result = (*verify_func)(env, cls, message, (int)message_len, klass->major_version());
   }
 
@@ -581,10 +592,9 @@ void ErrorContext::stackmap_details(outputStream* ss, const Method* method) cons
 
 // Methods in ClassVerifier
 
-ClassVerifier::ClassVerifier(
-    InstanceKlass* klass, TRAPS)
-    : _thread(THREAD), _previous_symbol(NULL), _symbols(NULL), _exception_type(NULL),
-      _message(NULL), _method_signatures_table(NULL), _klass(klass) {
+ClassVerifier::ClassVerifier(JavaThread* current, InstanceKlass* klass)
+    : _thread(current), _previous_symbol(NULL), _symbols(NULL), _exception_type(NULL),
+      _message(NULL), _klass(klass) {
   _this_type = VerificationType::reference_type(klass->name());
 }
 
@@ -608,22 +618,19 @@ TypeOrigin ClassVerifier::ref_ctx(const char* sig) {
   return TypeOrigin::implicit(vt);
 }
 
+
 void ClassVerifier::verify_class(TRAPS) {
   log_info(verification)("Verifying class %s with new format", _klass->external_name());
 
   // Either verifying both local and remote classes or just remote classes.
   assert(BytecodeVerificationRemote, "Should not be here");
 
-  // Create hash table containing method signatures.
-  method_signatures_table_type method_signatures_table;
-  set_method_signatures_table(&method_signatures_table);
-
   Array<Method*>* methods = _klass->methods();
   int num_methods = methods->length();
 
   for (int index = 0; index < num_methods; index++) {
     // Check for recursive re-verification before each method.
-    if (was_recursively_verified())  return;
+    if (was_recursively_verified()) return;
 
     Method* m = methods->at(index);
     if (m->is_native() || m->is_abstract() || m->is_overpass()) {
@@ -645,8 +652,7 @@ void ClassVerifier::verify_class(TRAPS) {
 // Translate the signature entries into verification types and save them in
 // the growable array.  Also, save the count of arguments.
 void ClassVerifier::translate_signature(Symbol* const method_sig,
-                                        sig_as_verification_types* sig_verif_types,
-                                        TRAPS) {
+                                        sig_as_verification_types* sig_verif_types) {
   SignatureStream sig_stream(method_sig);
   VerificationType sig_type[2];
   int sig_i = 0;
@@ -680,11 +686,11 @@ void ClassVerifier::translate_signature(Symbol* const method_sig,
 }
 
 void ClassVerifier::create_method_sig_entry(sig_as_verification_types* sig_verif_types,
-                                            int sig_index, TRAPS) {
+                                            int sig_index) {
   // Translate the signature into verification types.
   ConstantPool* cp = _klass->constants();
   Symbol* const method_sig = cp->symbol_at(sig_index);
-  translate_signature(method_sig, sig_verif_types, CHECK_VERIFY(this));
+  translate_signature(method_sig, sig_verif_types);
 
   // Add the list of this signature's verification types to the table.
   bool is_unique = method_signatures_table()->put(sig_index, sig_verif_types);
@@ -710,8 +716,7 @@ void ClassVerifier::verify_method(const methodHandle& m, TRAPS) {
   // Initial stack map frame: offset is 0, stack is initially empty.
   StackMapFrame current_frame(max_locals, max_stack, this);
   // Set initial locals
-  VerificationType return_type = current_frame.set_locals_from_arg(
-    m, current_type(), CHECK_VERIFY(this));
+  VerificationType return_type = current_frame.set_locals_from_arg( m, current_type());
 
   int32_t stackmap_index = 0; // index to the stackmap array
 
@@ -740,7 +745,7 @@ void ClassVerifier::verify_method(const methodHandle& m, TRAPS) {
   StackMapTable stackmap_table(&reader, &current_frame, max_locals, max_stack,
                                code_data, code_length, CHECK_VERIFY(this));
 
-  LogTarget(Info, verification) lt;
+  LogTarget(Debug, verification) lt;
   if (lt.is_enabled()) {
     ResourceMark rm(THREAD);
     LogStream ls(lt);
@@ -784,7 +789,7 @@ void ClassVerifier::verify_method(const methodHandle& m, TRAPS) {
       VerificationType type, type2;
       VerificationType atype;
 
-      LogTarget(Info, verification) lt;
+      LogTarget(Debug, verification) lt;
       if (lt.is_enabled()) {
         ResourceMark rm(THREAD);
         LogStream ls(lt);
@@ -1041,8 +1046,7 @@ void ClassVerifier::verify_method(const methodHandle& m, TRAPS) {
             current_frame.push_stack(
               VerificationType::null_type(), CHECK_VERIFY(this));
           } else {
-            VerificationType component =
-              atype.get_component(this, CHECK_VERIFY(this));
+            VerificationType component = atype.get_component(this);
             current_frame.push_stack(component, CHECK_VERIFY(this));
           }
           no_control_flow = false; break;
@@ -1211,7 +1215,7 @@ void ClassVerifier::verify_method(const methodHandle& m, TRAPS) {
                 bad_type_msg, "aastore");
             return;
           }
-          // 4938384: relaxed constraint in JVMS 3nd edition.
+          // 4938384: relaxed constraint in JVMS 3rd edition.
           no_control_flow = false; break;
         case Bytecodes::_pop :
           current_frame.pop_stack(
@@ -1797,7 +1801,7 @@ void ClassVerifier::verify_method(const methodHandle& m, TRAPS) {
           no_control_flow = true; break;
         default:
           // We only need to check the valid bytecodes in class file.
-          // And jsr and ret are not in the new class file format in JDK1.5.
+          // And jsr and ret are not in the new class file format in JDK1.6.
           verify_error(ErrorContext::bad_code(bci),
               "Bad instruction: %02x", opcode);
           no_control_flow = false;
@@ -1882,6 +1886,12 @@ void ClassVerifier::verify_exception_handler_table(u4 code_length, char* code_da
         catch_type_index, cp, CHECK_VERIFY(this));
       VerificationType throwable =
         VerificationType::reference_type(vmSymbols::java_lang_Throwable());
+      // If the catch type is Throwable pre-resolve it now as the assignable check won't
+      // do that, and we need to avoid a runtime resolution in case we are trying to
+      // catch OutOfMemoryError.
+      if (cp->klass_name_at(catch_type_index) == vmSymbols::java_lang_Throwable()) {
+        cp->klass_at(catch_type_index, CHECK);
+      }
       bool is_subclass = throwable.is_assignable_from(
         catch_type, this, false, CHECK_VERIFY(this));
       if (!is_subclass) {
@@ -2082,6 +2092,8 @@ Klass* ClassVerifier::load_class(Symbol* name, TRAPS) {
   oop loader = current_class()->class_loader();
   oop protection_domain = current_class()->protection_domain();
 
+  assert(name_in_supers(name, current_class()), "name should be a super class");
+
   Klass* kls = SystemDictionary::resolve_or_fail(
     name, Handle(THREAD, loader), Handle(THREAD, protection_domain),
     true, THREAD);
@@ -2109,7 +2121,7 @@ bool ClassVerifier::is_protected_access(InstanceKlass* this_class,
   InstanceKlass* target_instance = InstanceKlass::cast(target_class);
   fieldDescriptor fd;
   if (is_method) {
-    Method* m = target_instance->uncached_lookup_method(field_name, field_sig, Klass::find_overpass);
+    Method* m = target_instance->uncached_lookup_method(field_name, field_sig, Klass::OverpassLookupMode::find);
     if (m != NULL && m->is_protected()) {
       if (!this_class->is_same_class_package(m->method_holder())) {
         return true;
@@ -2148,9 +2160,7 @@ void ClassVerifier::verify_ldc(
           | (1 << JVM_CONSTANT_Dynamic);
     verify_cp_type(bci, index, cp, types, CHECK_VERIFY(this));
   }
-  if (tag.is_string() && cp->is_pseudo_string_at(index)) {
-    current_frame->push_stack(object_type(), CHECK_VERIFY(this));
-  } else if (tag.is_string()) {
+  if (tag.is_string()) {
     current_frame->push_stack(
       VerificationType::reference_type(
         vmSymbols::java_lang_String()), CHECK_VERIFY(this));
@@ -2302,6 +2312,7 @@ void ClassVerifier::verify_field_instructions(RawBytecodeStream* bcs,
   // Get field name and signature
   Symbol* field_name = cp->name_ref_at(index);
   Symbol* field_sig = cp->signature_ref_at(index);
+  bool is_getfield = false;
 
   // Field signature was checked in ClassFileParser.
   assert(SignatureVerifier::is_valid_type_signature(field_sig),
@@ -2348,11 +2359,9 @@ void ClassVerifier::verify_field_instructions(RawBytecodeStream* bcs,
       break;
     }
     case Bytecodes::_getfield: {
+      is_getfield = true;
       stack_object_type = current_frame->pop_stack(
         target_class_type, CHECK_VERIFY(this));
-      for (int i = 0; i < n; i++) {
-        current_frame->push_stack(field_type[i], CHECK_VERIFY(this));
-      }
       goto check_protected;
     }
     case Bytecodes::_putfield: {
@@ -2382,7 +2391,15 @@ void ClassVerifier::verify_field_instructions(RawBytecodeStream* bcs,
     check_protected: {
       if (_this_type == stack_object_type)
         break; // stack_object_type must be assignable to _current_class_type
-      if (was_recursively_verified()) return;
+      if (was_recursively_verified()) {
+        if (is_getfield) {
+          // Push field type for getfield.
+          for (int i = 0; i < n; i++) {
+            current_frame->push_stack(field_type[i], CHECK_VERIFY(this));
+          }
+        }
+        return;
+      }
       Symbol* ref_class_name =
         cp->klass_name_at(cp->klass_ref_index_at(index));
       if (!name_in_supers(ref_class_name, current_class()))
@@ -2403,13 +2420,20 @@ void ClassVerifier::verify_field_instructions(RawBytecodeStream* bcs,
           verify_error(ErrorContext::bad_type(bci,
               current_frame->stack_top_ctx(),
               TypeOrigin::implicit(current_type())),
-              "Bad access to protected data in getfield");
+              "Bad access to protected data in %s",
+              is_getfield ? "getfield" : "putfield");
           return;
         }
       }
       break;
     }
     default: ShouldNotReachHere();
+  }
+  if (is_getfield) {
+    // Push field type for getfield after doing protection check.
+    for (int i = 0; i < n; i++) {
+      current_frame->push_stack(field_type[i], CHECK_VERIFY(this));
+    }
   }
 }
 
@@ -2649,9 +2673,9 @@ void ClassVerifier::verify_invoke_init(
             verify_error(ErrorContext::bad_code(bci),
               "Bad <init> method call from after the start of a try block");
             return;
-          } else if (log_is_enabled(Info, verification)) {
+          } else if (log_is_enabled(Debug, verification)) {
             ResourceMark rm(THREAD);
-            log_info(verification)("Survived call to ends_in_athrow(): %s",
+            log_debug(verification)("Survived call to ends_in_athrow(): %s",
                                           current_class()->name()->as_C_string());
           }
         }
@@ -2702,7 +2726,7 @@ void ClassVerifier::verify_invoke_init(
       Method* m = InstanceKlass::cast(ref_klass)->uncached_lookup_method(
         vmSymbols::object_initializer_name(),
         cp->signature_ref_at(bcs->get_index_u2()),
-        Klass::find_overpass);
+        Klass::OverpassLookupMode::find);
       // Do nothing if method is not found.  Let resolution detect the error.
       if (m != NULL) {
         InstanceKlass* mh = m->method_holder();
@@ -2817,7 +2841,7 @@ void ClassVerifier::verify_invoke_instructions(
     // Not found, add the entry to the table.
     GrowableArray<VerificationType>* verif_types = new GrowableArray<VerificationType>(10);
     mth_sig_verif_types = new sig_as_verification_types(verif_types);
-    create_method_sig_entry(mth_sig_verif_types, sig_index, CHECK_VERIFY(this));
+    create_method_sig_entry(mth_sig_verif_types, sig_index);
   }
 
   // Get the number of arguments for this signature.
@@ -2852,7 +2876,7 @@ void ClassVerifier::verify_invoke_instructions(
     }
   }
 
-  if (method_name->char_at(0) == '<') {
+  if (method_name->char_at(0) == JVM_SIGNATURE_SPECIAL) {
     // Make sure <init> can only be invoked by invokespecial
     if (opcode != Bytecodes::_invokespecial ||
         method_name != vmSymbols::object_initializer_name()) {
@@ -2866,21 +2890,8 @@ void ClassVerifier::verify_invoke_instructions(
                   current_class()->super()->name()))) {
     bool subtype = false;
     bool have_imr_indirect = cp->tag_at(index).value() == JVM_CONSTANT_InterfaceMethodref;
-    if (!current_class()->is_unsafe_anonymous()) {
-      subtype = ref_class_type.is_assignable_from(
-                 current_type(), this, false, CHECK_VERIFY(this));
-    } else {
-      VerificationType unsafe_anonymous_host_type =
-                        VerificationType::reference_type(current_class()->unsafe_anonymous_host()->name());
-      subtype = ref_class_type.is_assignable_from(unsafe_anonymous_host_type, this, false, CHECK_VERIFY(this));
-
-      // If invokespecial of IMR, need to recheck for same or
-      // direct interface relative to the host class
-      have_imr_indirect = (have_imr_indirect &&
-                           !is_same_or_direct_interface(
-                             current_class()->unsafe_anonymous_host(),
-                             unsafe_anonymous_host_type, ref_class_type));
-    }
+    subtype = ref_class_type.is_assignable_from(
+               current_type(), this, false, CHECK_VERIFY(this));
     if (!subtype) {
       verify_error(ErrorContext::bad_code(bci),
           "Bad invokespecial instruction: "
@@ -2915,24 +2926,7 @@ void ClassVerifier::verify_invoke_instructions(
     } else {   // other methods
       // Ensures that target class is assignable to method class.
       if (opcode == Bytecodes::_invokespecial) {
-        if (!current_class()->is_unsafe_anonymous()) {
-          current_frame->pop_stack(current_type(), CHECK_VERIFY(this));
-        } else {
-          // anonymous class invokespecial calls: check if the
-          // objectref is a subtype of the unsafe_anonymous_host of the current class
-          // to allow an anonymous class to reference methods in the unsafe_anonymous_host
-          VerificationType top = current_frame->pop_stack(CHECK_VERIFY(this));
-          VerificationType hosttype =
-            VerificationType::reference_type(current_class()->unsafe_anonymous_host()->name());
-          bool subtype = hosttype.is_assignable_from(top, this, false, CHECK_VERIFY(this));
-          if (!subtype) {
-            verify_error( ErrorContext::bad_type(current_frame->offset(),
-              current_frame->stack_top_ctx(),
-              TypeOrigin::implicit(top)),
-              "Bad type on operand stack");
-            return;
-          }
-        }
+        current_frame->pop_stack(current_type(), CHECK_VERIFY(this));
       } else if (opcode == Bytecodes::_invokevirtual) {
         VerificationType stack_object_type =
           current_frame->pop_stack(ref_class_type, CHECK_VERIFY(this));
@@ -2949,15 +2943,15 @@ void ClassVerifier::verify_invoke_instructions(
                   _klass, ref_class, method_name, method_sig, true)) {
               // It's protected access, check if stack object is
               // assignable to current class.
-              bool is_assignable = current_type().is_assignable_from(
-                stack_object_type, this, true, CHECK_VERIFY(this));
-              if (!is_assignable) {
-                if (ref_class_type.name() == vmSymbols::java_lang_Object()
-                    && stack_object_type.is_array()
-                    && method_name == vmSymbols::clone_name()) {
-                  // Special case: arrays pretend to implement public Object
-                  // clone().
-                } else {
+              if (ref_class_type.name() == vmSymbols::java_lang_Object()
+                  && stack_object_type.is_array()
+                  && method_name == vmSymbols::clone_name()) {
+                // Special case: arrays pretend to implement public Object
+                // clone().
+              } else {
+                bool is_assignable = current_type().is_assignable_from(
+                  stack_object_type, this, true, CHECK_VERIFY(this));
+                if (!is_assignable) {
                   verify_error(ErrorContext::bad_type(bci,
                       current_frame->stack_top_ctx(),
                       TypeOrigin::implicit(current_type())),
@@ -3028,21 +3022,23 @@ void ClassVerifier::verify_anewarray(
     // Check for more than MAX_ARRAY_DIMENSIONS
     length = (int)strlen(component_name);
     if (length > MAX_ARRAY_DIMENSIONS &&
-        component_name[MAX_ARRAY_DIMENSIONS - 1] == '[') {
+        component_name[MAX_ARRAY_DIMENSIONS - 1] == JVM_SIGNATURE_ARRAY) {
       verify_error(ErrorContext::bad_code(bci),
         "Illegal anewarray instruction, array has more than 255 dimensions");
     }
     // add one dimension to component
     length++;
     arr_sig_str = NEW_RESOURCE_ARRAY_IN_THREAD(THREAD, char, length + 1);
-    int n = os::snprintf(arr_sig_str, length + 1, "[%s", component_name);
+    int n = os::snprintf(arr_sig_str, length + 1, "%c%s",
+                         JVM_SIGNATURE_ARRAY, component_name);
     assert(n == length, "Unexpected number of characters in string");
   } else {         // it's an object or interface
     const char* component_name = component_type.name()->as_utf8();
     // add one dimension to component with 'L' prepended and ';' postpended.
     length = (int)strlen(component_name) + 3;
     arr_sig_str = NEW_RESOURCE_ARRAY_IN_THREAD(THREAD, char, length + 1);
-    int n = os::snprintf(arr_sig_str, length + 1, "[L%s;", component_name);
+    int n = os::snprintf(arr_sig_str, length + 1, "%c%c%s;",
+                         JVM_SIGNATURE_ARRAY, JVM_SIGNATURE_CLASS, component_name);
     assert(n == length, "Unexpected number of characters in string");
   }
   Symbol* arr_sig = create_temporary_symbol(arr_sig_str, length);
@@ -3137,7 +3133,7 @@ void ClassVerifier::verify_return_value(
   if (return_type == VerificationType::bogus_type()) {
     verify_error(ErrorContext::bad_type(bci,
         current_frame->stack_top_ctx(), TypeOrigin::signature(return_type)),
-        "Method expects a return value");
+        "Method does not expect a return value");
     return;
   }
   bool match = return_type.is_assignable_from(type, this, false, CHECK_VERIFY(this));
@@ -3152,13 +3148,6 @@ void ClassVerifier::verify_return_value(
 // The verifier creates symbols which are substrings of Symbols.
 // These are stored in the verifier until the end of verification so that
 // they can be reference counted.
-Symbol* ClassVerifier::create_temporary_symbol(const Symbol *s, int begin,
-                                               int end) {
-  const char* name = (const char*)s->base() + begin;
-  int length = end - begin;
-  return create_temporary_symbol(name, length);
-}
-
 Symbol* ClassVerifier::create_temporary_symbol(const char *name, int length) {
   // Quick deduplication check
   if (_previous_symbol != NULL && _previous_symbol->equals(name, length)) {

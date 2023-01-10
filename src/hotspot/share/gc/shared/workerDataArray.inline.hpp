@@ -26,13 +26,15 @@
 #define SHARE_GC_SHARED_WORKERDATAARRAY_INLINE_HPP
 
 #include "gc/shared/workerDataArray.hpp"
+
 #include "memory/allocation.inline.hpp"
 #include "utilities/ostream.hpp"
 
 template <typename T>
-WorkerDataArray<T>::WorkerDataArray(uint length, const char* title) :
+WorkerDataArray<T>::WorkerDataArray(const char* short_name, const char* title, uint length) :
  _data(NULL),
  _length(length),
+ _short_name(short_name),
  _title(title) {
   assert(length > 0, "Must have some workers to store data for");
   _data = NEW_C_HEAP_ARRAY(T, _length, mtGC);
@@ -50,6 +52,16 @@ void WorkerDataArray<T>::set(uint worker_i, T value) {
 }
 
 template <typename T>
+void WorkerDataArray<T>::set_or_add(uint worker_i, T value) {
+  assert(worker_i < _length, "Worker %d is greater than max: %d", worker_i, _length);
+  if (_data[worker_i] == uninitialized()) {
+    _data[worker_i] = value;
+  } else {
+    _data[worker_i] += value;
+  }
+}
+
+template <typename T>
 T WorkerDataArray<T>::get(uint worker_i) const {
   assert(worker_i < _length, "Worker %d is greater than max: %d", worker_i, _length);
   return _data[worker_i];
@@ -57,13 +69,18 @@ T WorkerDataArray<T>::get(uint worker_i) const {
 
 template <typename T>
 WorkerDataArray<T>::~WorkerDataArray() {
+  for (uint i = 0; i < MaxThreadWorkItems; i++) {
+    delete _thread_work_items[i];
+  }
   FREE_C_HEAP_ARRAY(T, _data);
 }
 
 template <typename T>
-void WorkerDataArray<T>::link_thread_work_items(WorkerDataArray<size_t>* thread_work_items, uint index) {
+void WorkerDataArray<T>::create_thread_work_items(const char* title, uint index, uint length_override) {
   assert(index < MaxThreadWorkItems, "Tried to access thread work item %u (max %u)", index, MaxThreadWorkItems);
-  _thread_work_items[index] = thread_work_items;
+  assert(_thread_work_items[index] == NULL, "Tried to overwrite existing thread work item");
+  uint length = length_override != 0 ? length_override : _length;
+  _thread_work_items[index] = new WorkerDataArray<size_t>(NULL, title, length);
 }
 
 template <typename T>
@@ -139,7 +156,8 @@ void WorkerDataArray<T>::set_all(T value) {
 
 template <class T>
 void WorkerDataArray<T>::print_summary_on(outputStream* out, bool print_sum) const {
-  out->print("%-25s", title());
+  out->print("%-30s", title());
+
   uint start = 0;
   while (start < _length && get(start) == uninitialized()) {
     start++;

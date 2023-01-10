@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,9 +25,10 @@
 #ifndef SHARE_METAPROGRAMMING_DECAY_HPP
 #define SHARE_METAPROGRAMMING_DECAY_HPP
 
-#include "memory/allocation.hpp"
-#include "metaprogramming/removeCV.hpp"
+#include "memory/allStatic.hpp"
 #include "metaprogramming/removeReference.hpp"
+
+#include <type_traits>
 
 // This trait trims the type from CV qualifiers and references.
 // This trait provides a subset of the functionality of std::decay;
@@ -35,7 +36,7 @@
 
 template <typename T>
 struct Decay: AllStatic {
-  typedef typename RemoveCV<typename RemoveReference<T>::type>::type type;
+  using type = std::remove_cv_t<typename RemoveReference<T>::type>;
 };
 
 #endif // SHARE_METAPROGRAMMING_DECAY_HPP

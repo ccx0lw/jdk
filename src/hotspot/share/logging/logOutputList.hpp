@@ -63,7 +63,6 @@ class LogOutputList {
   // Bookkeeping functions to keep track of number of active readers/iterators for the list.
   jint increase_readers();
   jint decrease_readers();
-  void wait_until_no_readers() const;
 
  public:
   LogOutputList() : _active_readers(0) {
@@ -88,6 +87,11 @@ class LogOutputList {
   // Set (add/update/remove) the output to the specified level.
   void set_output_level(LogOutput* output, LogLevelType level);
 
+  // Removes all outputs. Equivalent of set_output_level(out, Off)
+  // for all outputs.
+  void clear();
+  void wait_until_no_readers() const;
+
   class Iterator {
     friend class LogOutputList;
    private:
@@ -97,6 +101,20 @@ class LogOutputList {
     }
 
    public:
+    Iterator(const Iterator &itr) : _current(itr._current), _list(itr._list){
+      itr._list->increase_readers();
+    }
+
+    Iterator& operator=(const Iterator& rhs) {
+      _current = rhs._current;
+      if (_list != rhs._list) {
+        rhs._list->increase_readers();
+        _list->decrease_readers();
+        _list = rhs._list;
+      }
+      return *this;
+    }
+
     ~Iterator() {
       _list->decrease_readers();
     }

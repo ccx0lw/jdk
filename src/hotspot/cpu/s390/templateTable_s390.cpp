@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2016, 2018 SAP SE. All rights reserved.
+ * Copyright (c) 2016, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2020 SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,19 +26,25 @@
 #include "precompiled.hpp"
 #include "asm/macroAssembler.inline.hpp"
 #include "gc/shared/barrierSetAssembler.hpp"
+#include "gc/shared/tlab_globals.hpp"
 #include "interpreter/interpreter.hpp"
 #include "interpreter/interpreterRuntime.hpp"
 #include "interpreter/interp_masm.hpp"
 #include "interpreter/templateTable.hpp"
 #include "memory/universe.hpp"
+#include "oops/klass.inline.hpp"
+#include "oops/methodData.hpp"
 #include "oops/objArrayKlass.hpp"
 #include "oops/oop.inline.hpp"
+#include "prims/jvmtiExport.hpp"
 #include "prims/methodHandles.hpp"
 #include "runtime/frame.inline.hpp"
 #include "runtime/safepointMechanism.hpp"
 #include "runtime/sharedRuntime.hpp"
 #include "runtime/stubRoutines.hpp"
 #include "runtime/synchronizer.hpp"
+#include "utilities/macros.hpp"
+#include "utilities/powerOfTwo.hpp"
 
 #ifdef PRODUCT
 #define __ _masm->
@@ -107,12 +113,6 @@
     guarantee(len == e_addr-b_addr, "block len mismatch");                     \
   }
 #endif // ASSERT
-
-// Platform-dependent initialization.
-
-void TemplateTable::pd_initialize() {
-  // No specific initialization.
-}
 
 // Address computation: local variables
 
@@ -378,13 +378,13 @@ void TemplateTable::sipush() {
 }
 
 
-void TemplateTable::ldc(bool wide) {
+void TemplateTable::ldc(LdcType type) {
   transition(vtos, vtos);
   Label call_ldc, notFloat, notClass, notInt, Done;
   const Register RcpIndex = Z_tmp_1;
   const Register Rtags = Z_ARG2;
 
-  if (wide) {
+  if (is_ldc_wide(type)) {
     __ get_2_byte_integer_at_bcp(RcpIndex, 1, InterpreterMacroAssembler::Unsigned);
   } else {
     __ z_llgc(RcpIndex, at_bcp(1));
@@ -412,7 +412,7 @@ void TemplateTable::ldc(bool wide) {
 
   // We deal with a class. Call vm to do the appropriate.
   __ bind(call_ldc);
-  __ load_const_optimized(Z_ARG2, wide);
+  __ load_const_optimized(Z_ARG2, is_ldc_wide(type) ? 1 : 0);
   call_VM(Z_RET, CAST_FROM_FN_PTR(address, InterpreterRuntime::ldc), Z_ARG2);
   __ push_ptr(Z_RET);
   __ z_bru(Done);
@@ -448,11 +448,11 @@ void TemplateTable::ldc(bool wide) {
 // Fast path for caching oop constants.
 // %%% We should use this to handle Class and String constants also.
 // %%% It will simplify the ldc/primitive path considerably.
-void TemplateTable::fast_aldc(bool wide) {
+void TemplateTable::fast_aldc(LdcType type) {
   transition(vtos, atos);
 
   const Register index = Z_tmp_2;
-  int            index_size = wide ? sizeof(u2) : sizeof(u1);
+  int            index_size = is_ldc_wide(type) ? sizeof(u2) : sizeof(u1);
   Label          L_do_resolve, L_resolved;
 
   // We are resolved if the resolved reference cache entry contains a
@@ -464,6 +464,7 @@ void TemplateTable::fast_aldc(bool wide) {
 
   // Convert null sentinel to NULL.
   __ load_const_optimized(Z_R1_scratch, (intptr_t)Universe::the_null_sentinel_addr());
+  __ resolve_oop_handle(Z_R1_scratch);
   __ z_cg(Z_tos, Address(Z_R1_scratch));
   __ z_brne(L_resolved);
   __ clear_reg(Z_tos);
@@ -1911,7 +1912,6 @@ void TemplateTable::branch(bool is_jsr, bool is_wide) {
          "on-stack-replacement requires loop counters");
 
   NearLabel backedge_counter_overflow;
-  NearLabel profile_method;
   NearLabel dispatch;
   int       increment = InvocationCounter::count_increment;
 
@@ -1924,78 +1924,32 @@ void TemplateTable::branch(bool is_jsr, bool is_wide) {
     // Count only if backward branch.
     __ compare32_and_branch(disp, (intptr_t)0, Assembler::bcondHigh, dispatch);
 
-    if (TieredCompilation) {
-      Label noCounters;
 
-      if (ProfileInterpreter) {
-        NearLabel   no_mdo;
+    if (ProfileInterpreter) {
+      NearLabel   no_mdo;
 
-        // Are we profiling?
-        __ load_and_test_long(mdo, Address(method, Method::method_data_offset()));
-        __ branch_optimized(Assembler::bcondZero, no_mdo);
+      // Are we profiling?
+      __ load_and_test_long(mdo, Address(method, Method::method_data_offset()));
+      __ branch_optimized(Assembler::bcondZero, no_mdo);
 
-        // Increment the MDO backedge counter.
-        const Address mdo_backedge_counter(mdo, MethodData::backedge_counter_offset() + InvocationCounter::counter_offset());
+      // Increment the MDO backedge counter.
+      const Address mdo_backedge_counter(mdo, MethodData::backedge_counter_offset() + InvocationCounter::counter_offset());
 
-        const Address mask(mdo, MethodData::backedge_mask_offset());
-        __ increment_mask_and_jump(mdo_backedge_counter, increment, mask,
-                                   Z_ARG2, false, Assembler::bcondZero,
-                                   UseOnStackReplacement ? &backedge_counter_overflow : NULL);
-        __ z_bru(dispatch);
-        __ bind(no_mdo);
-      }
-
-      // Increment backedge counter in MethodCounters*.
-      __ get_method_counters(method, m_counters, noCounters);
-      const Address mask(m_counters, MethodCounters::backedge_mask_offset());
-      __ increment_mask_and_jump(Address(m_counters, be_offset),
-                                 increment, mask,
+      const Address mask(mdo, MethodData::backedge_mask_offset());
+      __ increment_mask_and_jump(mdo_backedge_counter, increment, mask,
                                  Z_ARG2, false, Assembler::bcondZero,
                                  UseOnStackReplacement ? &backedge_counter_overflow : NULL);
-      __ bind(noCounters);
-    } else {
-      Register counter = Z_tos;
-      Label    noCounters;
-      // Get address of MethodCounters object.
-      __ get_method_counters(method, m_counters, noCounters);
-      // Increment backedge counter.
-      __ increment_backedge_counter(m_counters, counter);
-
-      if (ProfileInterpreter) {
-        // Test to see if we should create a method data obj.
-        __ z_cl(counter, Address(m_counters, MethodCounters::interpreter_profile_limit_offset()));
-        __ z_brl(dispatch);
-
-        // If no method data exists, go to profile method.
-        __ test_method_data_pointer(Z_ARG4/*result unused*/, profile_method);
-
-        if (UseOnStackReplacement) {
-          // Check for overflow against 'bumped_count' which is the MDO taken count.
-          __ z_cl(bumped_count, Address(m_counters, MethodCounters::interpreter_backward_branch_limit_offset()));
-          __ z_brl(dispatch);
-
-          // When ProfileInterpreter is on, the backedge_count comes
-          // from the methodDataOop, which value does not get reset on
-          // the call to frequency_counter_overflow(). To avoid
-          // excessive calls to the overflow routine while the method is
-          // being compiled, add a second test to make sure the overflow
-          // function is called only once every overflow_frequency.
-          const int overflow_frequency = 1024;
-          __ and_imm(bumped_count, overflow_frequency - 1);
-          __ z_brz(backedge_counter_overflow);
-
-        }
-      } else {
-        if (UseOnStackReplacement) {
-          // Check for overflow against 'counter', which is the sum of the
-          // counters.
-          __ z_cl(counter, Address(m_counters, MethodCounters::interpreter_backward_branch_limit_offset()));
-          __ z_brh(backedge_counter_overflow);
-        }
-      }
-      __ bind(noCounters);
+      __ z_bru(dispatch);
+      __ bind(no_mdo);
     }
 
+    // Increment backedge counter in MethodCounters*.
+    __ get_method_counters(method, m_counters, dispatch);
+    const Address mask(m_counters, MethodCounters::backedge_mask_offset());
+    __ increment_mask_and_jump(Address(m_counters, be_offset),
+                               increment, mask,
+                               Z_ARG2, false, Assembler::bcondZero,
+                               UseOnStackReplacement ? &backedge_counter_overflow : NULL);
     __ bind(dispatch);
   }
 
@@ -2009,53 +1963,39 @@ void TemplateTable::branch(bool is_jsr, bool is_wide) {
   __ dispatch_only(vtos, true);
 
   // Out-of-line code runtime calls.
-  if (UseLoopCounter) {
-    if (ProfileInterpreter) {
-      // Out-of-line code to allocate method data oop.
-      __ bind(profile_method);
+  if (UseLoopCounter && UseOnStackReplacement) {
+    // invocation counter overflow
+    __ bind(backedge_counter_overflow);
 
-      __ call_VM(noreg,
-                 CAST_FROM_FN_PTR(address, InterpreterRuntime::profile_method));
-      __ z_llgc(Z_bytecode, Address(Z_bcp, (intptr_t) 0));  // Restore target bytecode.
-      __ set_method_data_pointer_for_bcp();
-      __ z_bru(dispatch);
-    }
+    __ z_lcgr(Z_ARG2, disp); // Z_ARG2 := -disp
+    __ z_agr(Z_ARG2, Z_bcp); // Z_ARG2 := branch target bcp - disp == branch bcp
+    __ call_VM(noreg,
+               CAST_FROM_FN_PTR(address, InterpreterRuntime::frequency_counter_overflow),
+               Z_ARG2);
 
-    if (UseOnStackReplacement) {
+    // Z_RET: osr nmethod (osr ok) or NULL (osr not possible).
+    __ compare64_and_branch(Z_RET, (intptr_t) 0, Assembler::bcondEqual, dispatch);
 
-      // invocation counter overflow
-      __ bind(backedge_counter_overflow);
+    // Nmethod may have been invalidated (VM may block upon call_VM return).
+    __ z_cliy(nmethod::state_offset(), Z_RET, nmethod::in_use);
+    __ z_brne(dispatch);
 
-      __ z_lcgr(Z_ARG2, disp); // Z_ARG2 := -disp
-      __ z_agr(Z_ARG2, Z_bcp); // Z_ARG2 := branch target bcp - disp == branch bcp
-      __ call_VM(noreg,
-                 CAST_FROM_FN_PTR(address, InterpreterRuntime::frequency_counter_overflow),
-                 Z_ARG2);
+    // Migrate the interpreter frame off of the stack.
 
-      // Z_RET: osr nmethod (osr ok) or NULL (osr not possible).
-      __ compare64_and_branch(Z_RET, (intptr_t) 0, Assembler::bcondEqual, dispatch);
+    __ z_lgr(Z_tmp_1, Z_RET); // Save the nmethod.
 
-      // Nmethod may have been invalidated (VM may block upon call_VM return).
-      __ z_cliy(nmethod::state_offset(), Z_RET, nmethod::in_use);
-      __ z_brne(dispatch);
+    call_VM(noreg,
+            CAST_FROM_FN_PTR(address, SharedRuntime::OSR_migration_begin));
 
-      // Migrate the interpreter frame off of the stack.
+    // Z_RET is OSR buffer, move it to expected parameter location.
+    __ lgr_if_needed(Z_ARG1, Z_RET);
 
-      __ z_lgr(Z_tmp_1, Z_RET); // Save the nmethod.
+    // Pop the interpreter frame ...
+    __ pop_interpreter_frame(Z_R14, Z_ARG2/*tmp1*/, Z_ARG3/*tmp2*/);
 
-      call_VM(noreg,
-              CAST_FROM_FN_PTR(address, SharedRuntime::OSR_migration_begin));
-
-      // Z_RET is OSR buffer, move it to expected parameter location.
-      __ lgr_if_needed(Z_ARG1, Z_RET);
-
-      // Pop the interpreter frame ...
-      __ pop_interpreter_frame(Z_R14, Z_ARG2/*tmp1*/, Z_ARG3/*tmp2*/);
-
-      // ... and begin the OSR nmethod.
-      __ z_lg(Z_R1_scratch, Address(Z_tmp_1, nmethod::osr_entry_point_offset()));
-      __ z_br(Z_R1_scratch);
-    }
+    // ... and begin the OSR nmethod.
+    __ z_lg(Z_R1_scratch, Address(Z_tmp_1, nmethod::osr_entry_point_offset()));
+    __ z_br(Z_R1_scratch);
   }
   BLOCK_COMMENT("} TemplateTable::branch");
 }
@@ -2378,9 +2318,9 @@ void TemplateTable::_return(TosState state) {
     __ bind(skip_register_finalizer);
   }
 
-  if (SafepointMechanism::uses_thread_local_poll() && _desc->bytecode() != Bytecodes::_return_register_finalizer) {
+  if (_desc->bytecode() != Bytecodes::_return_register_finalizer) {
     Label no_safepoint;
-    const Address poll_byte_addr(Z_thread, in_bytes(Thread::polling_page_offset()) + 7 /* Big Endian */);
+    const Address poll_byte_addr(Z_thread, in_bytes(JavaThread::polling_word_offset()) + 7 /* Big Endian */);
     __ z_tm(poll_byte_addr, SafepointMechanism::poll_bit());
     __ z_braz(no_safepoint);
     __ push(state);
@@ -3829,9 +3769,8 @@ void TemplateTable::_new() {
 
   // Get instance_size in InstanceKlass (scaled to a count of bytes).
   Register Rsize = offset;
-  const int mask = 1 << Klass::_lh_instance_slow_path_bit;
   __ z_llgf(Rsize, Address(iklass, Klass::layout_helper_offset()));
-  __ z_tmll(Rsize, mask);
+  __ z_tmll(Rsize, Klass::_lh_instance_slow_path_bit);
   __ z_btrue(slow_case);
 
   // Allocate the instance
@@ -3874,14 +3813,8 @@ void TemplateTable::_new() {
 
     // Initialize object header only.
     __ bind(initialize_header);
-    if (UseBiasedLocking) {
-      Register prototype = RobjectFields;
-      __ z_lg(prototype, Address(iklass, Klass::prototype_header_offset()));
-      __ z_stg(prototype, Address(RallocatedObject, oopDesc::mark_offset_in_bytes()));
-    } else {
-      __ store_const(Address(RallocatedObject, oopDesc::mark_offset_in_bytes()),
-                     (long)markWord::prototype().value());
-    }
+    __ store_const(Address(RallocatedObject, oopDesc::mark_offset_in_bytes()),
+                   (long)markWord::prototype().value());
 
     __ store_klass_gap(Rzero, RallocatedObject);  // Zero klass gap for compressed oops.
     __ store_klass(iklass, RallocatedObject);     // Store klass last.
@@ -3890,7 +3823,7 @@ void TemplateTable::_new() {
       SkipIfEqual skip(_masm, &DTraceAllocProbes, false, Z_ARG5 /*scratch*/);
       // Trigger dtrace event for fastpath.
       __ push(atos); // Save the return value.
-      __ call_VM_leaf(CAST_FROM_FN_PTR(address, SharedRuntime::dtrace_object_alloc), RallocatedObject);
+      __ call_VM_leaf(CAST_FROM_FN_PTR(address, static_cast<int (*)(oopDesc*)>(SharedRuntime::dtrace_object_alloc)), RallocatedObject);
       __ pop(atos); // Restore the return value.
     }
     __ z_bru(done);
@@ -4219,7 +4152,7 @@ void TemplateTable::monitorenter() {
 
   // Increment bcp to point to the next bytecode, so exception
   // handling for async. exceptions work correctly.
-  // The object has already been poped from the stack, so the
+  // The object has already been popped from the stack, so the
   // expression stack looks correct.
   __ add2reg(Z_bcp, 1, Z_bcp);
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -25,8 +25,7 @@
 #include "precompiled.hpp"
 #include "logging/logSelectionList.hpp"
 #include "logging/logTagSet.hpp"
-#include "runtime/arguments.hpp"
-#include "runtime/os.inline.hpp"
+#include "runtime/os.hpp"
 
 static const char* DefaultExpressionString = "all";
 
@@ -43,9 +42,9 @@ bool LogSelectionList::verify_selections(outputStream* out) const {
       out->print("No tag set matches selection:");
       valid = false;
 
-      char buf[256];
-      _selections[i].describe_tags(buf, sizeof(buf));
-      out->print(" %s. ", buf);
+      out->print(" ");
+      _selections[i].describe_tags_on(out);
+      out->print(". ");
 
       _selections[i].suggest_similar_matching(out);
       out->cr();

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -40,8 +40,8 @@ import javadoc.tester.JavadocTester;
 
 public class TestSerialTag extends JavadocTester {
     public static void main(String... args) throws Exception {
-        TestSerialTag tester = new TestSerialTag();
-        tester.runTests(m -> new Object[] { Path.of(m.getName()) });
+        var tester = new TestSerialTag();
+        tester.runTests();
     }
 
     private final ToolBox tb;
@@ -112,12 +112,18 @@ public class TestSerialTag extends JavadocTester {
         tb.writeJavaFiles(dir,
             "/** This is package p;\n * " + tag + "\n */\n"
             + "package p;",
-            "/** This is class p.C1;\n */\n"
-            + "package p; public class C1 implements java.io.Serializable { }",
-            "/** This is package q;\n */\n"
-            + "package q;",
-            "/** This is class q.C2;\n */\n"
-            + "package q; public class C2 implements java.io.Serializable { }"
+            """
+                /** This is class p.C1;
+                 */
+                package p; public class C1 implements java.io.Serializable { }""",
+            """
+                /** This is package q;
+                 */
+                package q;""",
+            """
+                /** This is class q.C2;
+                 */
+                package q; public class C2 implements java.io.Serializable { }"""
         );
 
         return srcDir;

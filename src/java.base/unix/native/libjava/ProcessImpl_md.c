@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1995, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1995, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -106,7 +106,7 @@
  * Note that when using posix_spawn(3), we exec twice: first a tiny binary called
  * the jspawnhelper, then in the jspawnhelper we do the pre-exec work and exec a
  * second time, this time the target binary (similar to the "exec-twice-technique"
- * described in http://mail.openjdk.java.net/pipermail/core-libs-dev/2018-September/055333.html).
+ * described in http://mail.openjdk.org/pipermail/core-libs-dev/2018-September/055333.html).
  *
  * This is a JDK-specific implementation detail which just happens to be
  * implemented for jdk.lang.Process.launchMechanism=POSIX_SPAWN.
@@ -230,14 +230,7 @@ xmalloc(JNIEnv *env, size_t size)
 static const char*
 defaultPath(void)
 {
-#ifdef __solaris__
-    /* These really are the Solaris defaults! */
-    return (geteuid() == 0 || getuid() == 0) ?
-        "/usr/xpg4/bin:/usr/bin:/opt/SUNWspro/bin:/usr/sbin" :
-        "/usr/xpg4/bin:/usr/bin:/opt/SUNWspro/bin:";
-#else
-    return ":/bin:/usr/bin";    /* glibc */
-#endif
+    return ":/bin:/usr/bin";
 }
 
 static const char*
@@ -406,10 +399,8 @@ copyPipe(int from[2], int to[2])
  */
 static void arraysize(const char * const *arg, int *nelems, int *nbytes)
 {
-    int i, bytes, count;
+    int bytes, count;
     const char * const *a = arg;
-    char *p;
-    int *q;
     if (arg == 0) {
         *nelems = 0;
         *nbytes = 0;
@@ -451,8 +442,8 @@ static int copystrings(char *buf, int offset, const char * const *arg) {
 __attribute_noinline__
 #endif
 
-/* vfork(2) is deprecated on Solaris */
-#ifndef __solaris__
+/* vfork(2) is deprecated on Darwin */
+#ifndef __APPLE__
 static pid_t
 vforkChild(ChildStuff *c) {
     volatile pid_t resultPid;
@@ -495,7 +486,6 @@ forkChild(ChildStuff *c) {
 static pid_t
 spawnChild(JNIEnv *env, jobject process, ChildStuff *c, const char *helperpath) {
     pid_t resultPid;
-    jboolean isCopy;
     int i, offset, rval, bufsize, magic;
     char *buf, buf1[16];
     char *hlpargs[2];
@@ -582,11 +572,11 @@ spawnChild(JNIEnv *env, jobject process, ChildStuff *c, const char *helperpath) 
 static pid_t
 startChild(JNIEnv *env, jobject process, ChildStuff *c, const char *helperpath) {
     switch (c->mode) {
-/* vfork(2) is deprecated on Solaris */
-#ifndef __solaris__
+/* vfork(2) is deprecated on Darwin*/
+      #ifndef __APPLE__
       case MODE_VFORK:
         return vforkChild(c);
-#endif
+      #endif
       case MODE_FORK:
         return forkChild(c);
       case MODE_POSIX_SPAWN:
@@ -783,4 +773,3 @@ Java_java_lang_ProcessImpl_forkAndExec(JNIEnv *env,
     closeSafely(err[0]); err[0] = -1;
     goto Finally;
 }
-

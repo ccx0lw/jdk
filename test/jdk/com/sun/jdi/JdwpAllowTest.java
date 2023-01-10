@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -34,16 +34,14 @@ import java.net.InetAddress;
 import java.net.Socket;
 import java.net.SocketException;
 
+import jdk.test.lib.JDWP;
 import jdk.test.lib.Utils;
 import jdk.test.lib.apps.LingeredApp;
 
-import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 
 public class JdwpAllowTest {
@@ -69,26 +67,21 @@ public class JdwpAllowTest {
         return res;
     }
 
-    public static ArrayList<String> prepareCmd(String allowOpt) {
-         ArrayList<String> cmd = new ArrayList<>();
-
+    public static String[] prepareCmd(String allowOpt) {
          String jdwpArgs = "-agentlib:jdwp=transport=dt_socket,server=y," +
                            "suspend=n,address=*:0"
                             + (allowOpt == null ? "" : ",allow=" + allowOpt);
-         cmd.add(jdwpArgs);
-         return cmd;
+         return new String[] { jdwpArgs };
     }
 
-    private static Pattern listenRegexp = Pattern.compile("Listening for transport \\b(.+)\\b at address: \\b(\\d+)\\b");
     private static int detectPort(LingeredApp app) {
         long maxWaitTime = System.currentTimeMillis()
                 + Utils.adjustTimeout(10000);  // 10 seconds adjusted for TIMEOUT_FACTOR
         while (true) {
             String s = app.getProcessStdout();
-            Matcher m = listenRegexp.matcher(s);
-            if (m.find()) {
-                // m.group(1) is transport, m.group(2) is port
-                return Integer.parseInt(m.group(2));
+            JDWP.ListenAddress addr = JDWP.parseListenAddress(s);
+            if (addr != null) {
+                return Integer.parseInt(addr.address());
             }
             if (System.currentTimeMillis() > maxWaitTime) {
                 throw new RuntimeException("Could not detect port from '" + s + "' (timeout)");
@@ -106,7 +99,7 @@ public class JdwpAllowTest {
     public static void positiveTest(String testName, String allowOpt)
         throws InterruptedException, IOException {
         System.err.println("\nStarting " + testName);
-        ArrayList<String> cmd = prepareCmd(allowOpt);
+        String[] cmd = prepareCmd(allowOpt);
 
         LingeredApp a = LingeredApp.startApp(cmd);
         int res;
@@ -124,7 +117,7 @@ public class JdwpAllowTest {
     public static void negativeTest(String testName, String allowOpt)
         throws InterruptedException, IOException {
         System.err.println("\nStarting " + testName);
-        ArrayList<String> cmd = prepareCmd(allowOpt);
+        String[] cmd = prepareCmd(allowOpt);
 
         LingeredApp a = LingeredApp.startApp(cmd);
         int res;
@@ -144,7 +137,7 @@ public class JdwpAllowTest {
     public static void badAllowOptionTest(String testName, String allowOpt)
         throws InterruptedException, IOException {
         System.err.println("\nStarting " + testName);
-        ArrayList<String> cmd = prepareCmd(allowOpt);
+        String[] cmd = prepareCmd(allowOpt);
 
         LingeredApp a;
         try {

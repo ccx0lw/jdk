@@ -47,8 +47,6 @@ class ChangeItem : public ResourceObj {
    virtual bool handle_code_change(Relocator *r) = 0;
 
    // type info
-   virtual bool is_widen()      { return false; }
-   virtual bool is_jump_widen() { return false; }
    virtual bool is_switch_pad() { return false; }
 
    // accessors
@@ -73,8 +71,6 @@ class ChangeWiden : public ChangeItem {
   // Callback to do instruction
   bool handle_code_change(Relocator *r) { return r->handle_widen(bci(), _new_ilen, _inst_buffer); };
 
-  bool is_widen()              { return true; }
-
   void print()                 { tty->print_cr("ChangeWiden. bci: %d   New_ilen: %d", bci(), _new_ilen); }
 };
 
@@ -85,8 +81,6 @@ class ChangeJumpWiden : public ChangeItem {
 
   // Callback to do instruction
   bool handle_code_change(Relocator *r) { return r->handle_jump_widen(bci(), _delta); };
-
-  bool is_jump_widen()         { return true; }
 
   // If the bci matches, adjust the delta in the change jump request.
   bool adjust(int jump_bci, int delta) {
@@ -453,7 +447,7 @@ void Relocator::adjust_local_var_table(int bci, int delta) {
 // the specified location
 static Array<u1>* insert_hole_at(ClassLoaderData* loader_data,
     size_t where, int hole_sz, Array<u1>* src) {
-  Thread* THREAD = Thread::current();
+  JavaThread* THREAD = JavaThread::current(); // For exception macros.
   Array<u1>* dst =
       MetadataFactory::new_array<u1>(loader_data, src->length() + hole_sz, 0, CHECK_NULL);
 

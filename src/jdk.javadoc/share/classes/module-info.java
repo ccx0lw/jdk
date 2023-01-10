@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,7 +26,7 @@
 /**
  * Defines the implementation of the
  * {@linkplain javax.tools.ToolProvider#getSystemDocumentationTool system documentation tool}
- * and its command line equivalent, <em>{@index javadoc javadoc tool}</em>.
+ * and its command-line equivalent, <em>{@index javadoc javadoc tool}</em>.
  *
  * <h2 style="font-family:'DejaVu Sans Mono', monospace; font-style:italic">javadoc</h2>
  *
@@ -45,6 +45,9 @@
  * @toolGuide javadoc
  *
  * @provides java.util.spi.ToolProvider
+ *     Use {@link java.util.spi.ToolProvider#findFirst ToolProvider.findFirst("javadoc")}
+ *     to obtain an instance of a {@code ToolProvider} that provides the equivalent
+ *     of command-line access to the {@code javadoc} tool.
  * @provides javax.tools.DocumentationTool
  * @provides javax.tools.Tool
  *
@@ -70,5 +73,7 @@ module jdk.javadoc {
 
     provides javax.tools.Tool with
         jdk.javadoc.internal.api.JavadocTool;
-}
 
+    provides com.sun.tools.doclint.DocLint with
+            jdk.javadoc.internal.doclint.DocLint;
+}

@@ -40,10 +40,10 @@ class BasicLock {
   }
 
   void set_displaced_header(markWord header) {
-    Atomic::store(header, &_displaced_header);
+    Atomic::store(&_displaced_header, header);
   }
 
-  void print_on(outputStream* st) const;
+  void print_on(outputStream* st, oop owner) const;
 
   // move a basic lock (used during deoptimization
   void move_to(oop obj, BasicLock* dest);

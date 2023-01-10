@@ -56,6 +56,7 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 package jdk.internal.org.objectweb.asm.commons;
 
 import jdk.internal.org.objectweb.asm.ConstantDynamic;
@@ -78,7 +79,7 @@ public class CodeSizeEvaluator extends MethodVisitor implements Opcodes {
     private int maxSize;
 
     public CodeSizeEvaluator(final MethodVisitor methodVisitor) {
-        this(Opcodes.ASM7, methodVisitor);
+        this(/* latest api = */ Opcodes.ASM9, methodVisitor);
     }
 
     protected CodeSizeEvaluator(final int api, final MethodVisitor methodVisitor) {
@@ -113,18 +114,18 @@ public class CodeSizeEvaluator extends MethodVisitor implements Opcodes {
     }
 
     @Override
-    public void visitVarInsn(final int opcode, final int var) {
-        if (var < 4 && opcode != RET) {
+    public void visitVarInsn(final int opcode, final int varIndex) {
+        if (varIndex < 4 && opcode != RET) {
             minSize += 1;
             maxSize += 1;
-        } else if (var >= 256) {
+        } else if (varIndex >= 256) {
             minSize += 4;
             maxSize += 4;
         } else {
             minSize += 2;
             maxSize += 2;
         }
-        super.visitVarInsn(opcode, var);
+        super.visitVarInsn(opcode, varIndex);
     }
 
     @Override
@@ -142,42 +143,20 @@ public class CodeSizeEvaluator extends MethodVisitor implements Opcodes {
         super.visitFieldInsn(opcode, owner, name, descriptor);
     }
 
-    /**
-      * Deprecated.
-      *
-      * @deprecated use {@link #visitMethodInsn(int, String, String, String, boolean)} instead.
-      */
-    @Deprecated
     @Override
     public void visitMethodInsn(
-            final int opcode, final String owner, final String name, final String descriptor) {
-        if (api >= Opcodes.ASM5) {
-            super.visitMethodInsn(opcode, owner, name, descriptor);
-            return;
-        }
-        doVisitMethodInsn(opcode, owner, name, descriptor, opcode == Opcodes.INVOKEINTERFACE);
-    }
-
-    @Override
-    public void visitMethodInsn(
-            final int opcode,
+            final int opcodeAndSource,
             final String owner,
             final String name,
             final String descriptor,
             final boolean isInterface) {
-        if (api < Opcodes.ASM5) {
-            super.visitMethodInsn(opcode, owner, name, descriptor, isInterface);
+        if (api < Opcodes.ASM5 && (opcodeAndSource & Opcodes.SOURCE_DEPRECATED) == 0) {
+            // Redirect the call to the deprecated version of this method.
+            super.visitMethodInsn(opcodeAndSource, owner, name, descriptor, isInterface);
             return;
         }
-        doVisitMethodInsn(opcode, owner, name, descriptor, isInterface);
-    }
+        int opcode = opcodeAndSource & ~Opcodes.SOURCE_MASK;
 
-    private void doVisitMethodInsn(
-            final int opcode,
-            final String owner,
-            final String name,
-            final String descriptor,
-            final boolean isInterface) {
         if (opcode == INVOKEINTERFACE) {
             minSize += 5;
             maxSize += 5;
@@ -185,9 +164,7 @@ public class CodeSizeEvaluator extends MethodVisitor implements Opcodes {
             minSize += 3;
             maxSize += 3;
         }
-        if (mv != null) {
-            mv.visitMethodInsn(opcode, owner, name, descriptor, isInterface);
-        }
+        super.visitMethodInsn(opcodeAndSource, owner, name, descriptor, isInterface);
     }
 
     @Override
@@ -227,15 +204,15 @@ public class CodeSizeEvaluator extends MethodVisitor implements Opcodes {
     }
 
     @Override
-    public void visitIincInsn(final int var, final int increment) {
-        if (var > 255 || increment > 127 || increment < -128) {
+    public void visitIincInsn(final int varIndex, final int increment) {
+        if (varIndex > 255 || increment > 127 || increment < -128) {
             minSize += 6;
             maxSize += 6;
         } else {
             minSize += 3;
             maxSize += 3;
         }
-        super.visitIincInsn(var, increment);
+        super.visitIincInsn(varIndex, increment);
     }
 
     @Override
@@ -260,3 +237,4 @@ public class CodeSizeEvaluator extends MethodVisitor implements Opcodes {
         super.visitMultiANewArrayInsn(descriptor, numDimensions);
     }
 }
+

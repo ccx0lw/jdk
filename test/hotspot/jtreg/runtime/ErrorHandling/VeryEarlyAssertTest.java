@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2013, 2018, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2018, SAP. All rights reserved.
+ * Copyright (c) 2013, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2022 SAP. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -31,6 +31,7 @@
  * @modules java.base/jdk.internal.misc
  * @requires (vm.debug == true)
  * @requires os.family == "linux"
+ * @run driver VeryEarlyAssertTest
  */
 
 import java.io.BufferedReader;
@@ -49,8 +50,6 @@ public class VeryEarlyAssertTest {
 
 
     ProcessBuilder pb = ProcessTools.createJavaProcessBuilder(
-            "-Xmx64M",
-            "-XX:-CreateCoredumpOnCrash",
             "-version");
     Map<String, String> env = pb.environment();
     env.put("HOTSPOT_FATAL_ERROR_DURING_DYNAMIC_INITIALIZATION", "1");
@@ -62,57 +61,21 @@ public class VeryEarlyAssertTest {
     output_detail.shouldMatch("#.*HOTSPOT_FATAL_ERROR_DURING_DYNAMIC_INITIALIZATION.*");
 
     // extract hs-err file
-    String hs_err_file = output_detail.firstMatch("# *(\\S*hs_err_pid\\d+\\.log)", 1);
-    if (hs_err_file == null) {
-      throw new RuntimeException("Did not find hs-err file in output.\n");
-    }
+    File hs_err_file = HsErrFileUtils.openHsErrFileFromOutput(output_detail);
 
     // scan hs-err file: File should contain the same assertion message. Other than that,
     // do not expect too much: file will be littered with secondary errors. The test
     // should test that we get a hs-err file at all.
-    File f = new File(hs_err_file);
-    if (!f.exists()) {
-      throw new RuntimeException("hs-err file missing at "
-              + f.getAbsolutePath() + ".\n");
-    }
+    // It is highly likely that we miss the END marker, too, since its likely we hit the
+    // secondary error recursion limit.
 
-    System.out.println("Found hs_err file. Scanning...");
-
-    FileInputStream fis = new FileInputStream(f);
-    BufferedReader br = new BufferedReader(new InputStreamReader(fis));
-    String line = null;
-
-    Pattern[] pattern = new Pattern[]{
+    Pattern[] pattern = new Pattern[] {
             Pattern.compile(".*HOTSPOT_FATAL_ERROR_DURING_DYNAMIC_INITIALIZATION.*")
     };
-    int currentPattern = 0;
-
-    String lastLine = null;
-    while ((line = br.readLine()) != null) {
-      if (currentPattern < pattern.length) {
-        if (pattern[currentPattern].matcher(line).matches()) {
-          System.out.println("Found: " + line + ".");
-          currentPattern++;
-        }
-      }
-      lastLine = line;
-    }
-    br.close();
-
-    if (currentPattern < pattern.length) {
-      throw new RuntimeException("hs-err file incomplete (first missing pattern: " + currentPattern + ")");
-    }
-
-    if (!lastLine.equals("END.")) {
-      throw new RuntimeException("hs-err file incomplete (missing END marker.)");
-    } else {
-      System.out.println("End marker found.");
-    }
+    HsErrFileUtils.checkHsErrFileContent(hs_err_file, pattern, null, false /* check end marker */, true /* verbose */);
 
     System.out.println("OK.");
 
   }
 
 }
-
-

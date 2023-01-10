@@ -31,7 +31,7 @@
 // ciExceptionHandler
 //
 // This class represents an exception handler for a method.
-class ciExceptionHandler : public ResourceObj {
+class ciExceptionHandler : public AnyObj {
 private:
   friend class ciMethod;
 
@@ -71,9 +71,6 @@ public:
   bool      is_catch_all() { return catch_klass_index() == 0; }
   bool      is_in_range(int bci) {
     return start() <= bci && bci < limit();
-  }
-  bool      catches(ciInstanceKlass *exc) {
-    return is_catch_all() || exc->is_subtype_of(catch_klass());
   }
   bool      is_rethrow() { return handler_bci() == -1; }
 

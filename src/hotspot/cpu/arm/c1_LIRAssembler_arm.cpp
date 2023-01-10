@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2008, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2008, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -31,14 +31,14 @@
 #include "c1/c1_ValueStack.hpp"
 #include "ci/ciArrayKlass.hpp"
 #include "ci/ciInstance.hpp"
-#include "gc/shared/barrierSet.hpp"
-#include "gc/shared/cardTableBarrierSet.hpp"
 #include "gc/shared/collectedHeap.hpp"
 #include "memory/universe.hpp"
 #include "nativeInst_arm.hpp"
 #include "oops/objArrayKlass.hpp"
 #include "runtime/frame.inline.hpp"
 #include "runtime/sharedRuntime.hpp"
+#include "runtime/stubRoutines.hpp"
+#include "utilities/powerOfTwo.hpp"
 #include "vmreg_arm.inline.hpp"
 
 #define __ _masm->
@@ -87,30 +87,6 @@ void LIR_Assembler::store_parameter(Metadata* m, int offset_from_sp_in_words) {
 
 //--------------fpu register translations-----------------------
 
-
-void LIR_Assembler::set_24bit_FPU() {
-  ShouldNotReachHere();
-}
-
-void LIR_Assembler::reset_FPU() {
-  ShouldNotReachHere();
-}
-
-void LIR_Assembler::fpop() {
-  Unimplemented();
-}
-
-void LIR_Assembler::fxch(int i) {
-  Unimplemented();
-}
-
-void LIR_Assembler::fld(int i) {
-  Unimplemented();
-}
-
-void LIR_Assembler::ffree(int i) {
-  Unimplemented();
-}
 
 void LIR_Assembler::breakpoint() {
   __ breakpoint();
@@ -223,9 +199,6 @@ int LIR_Assembler::initial_frame_size_in_bytes() const {
 
 
 int LIR_Assembler::emit_exception_handler() {
-  // TODO: ARM
-  __ nop(); // See comments in other ports
-
   address handler_base = __ start_a_stub(exception_handler_size());
   if (handler_base == NULL) {
     bailout("exception handler overflow");
@@ -266,12 +239,12 @@ int LIR_Assembler::emit_unwind_handler() {
   __ bind(_unwind_handler_entry);
   __ verify_not_null_oop(Rexception_obj);
 
-  // Preform needed unlocking
+  // Perform needed unlocking
   MonitorExitStub* stub = NULL;
   if (method()->is_synchronized()) {
     monitor_address(0, FrameMap::R0_opr);
     stub = new MonitorExitStub(FrameMap::R0_opr, true, 0);
-    __ unlock_object(R2, R1, R0, Rtemp, *stub->entry());
+    __ unlock_object(R2, R1, R0, *stub->entry());
     __ bind(*stub->continuation());
   }
 
@@ -308,26 +281,21 @@ int LIR_Assembler::emit_deopt_handler() {
 }
 
 
-void LIR_Assembler::return_op(LIR_Opr result) {
+void LIR_Assembler::return_op(LIR_Opr result, C1SafepointPollStub* code_stub) {
   // Pop the frame before safepoint polling
   __ remove_frame(initial_frame_size_in_bytes());
-
-  // mov_slow here is usually one or two instruction
-  __ mov_address(Rtemp, os::get_polling_page());
-  __ relocate(relocInfo::poll_return_type);
-  __ ldr(Rtemp, Address(Rtemp));
+  __ read_polling_page(Rtemp, relocInfo::poll_return_type);
   __ ret();
 }
 
-
 int LIR_Assembler::safepoint_poll(LIR_Opr tmp, CodeEmitInfo* info) {
-  __ mov_address(Rtemp, os::get_polling_page());
-  if (info != NULL) {
-    add_debug_info_for_branch(info);
-  }
+
   int offset = __ offset();
+  __ get_polling_page(Rtemp);
   __ relocate(relocInfo::poll_type);
+  add_debug_info_for_branch(info); // help pc_desc_at to find correct scope for current PC
   __ ldr(Rtemp, Address(Rtemp));
+
   return offset;
 }
 
@@ -523,8 +491,7 @@ void LIR_Assembler::reg2stack(LIR_Opr src, LIR_Opr dest, BasicType type, bool po
 
 void LIR_Assembler::reg2mem(LIR_Opr src, LIR_Opr dest, BasicType type,
                             LIR_PatchCode patch_code, CodeEmitInfo* info,
-                            bool pop_fpu_stack, bool wide,
-                            bool unaligned) {
+                            bool pop_fpu_stack, bool wide) {
   LIR_Address* to_addr = dest->as_address_ptr();
   Register base_reg = to_addr->base()->as_pointer_register();
   const bool needs_patching = (patch_code != lir_patch_none);
@@ -581,6 +548,7 @@ void LIR_Assembler::reg2mem(LIR_Opr src, LIR_Opr dest, BasicType type,
         base_reg = Rtemp;
         __ str(from_lo, Address(Rtemp));
         if (patch != NULL) {
+          __ nop(); // see comment before patching_epilog for 2nd str
           patching_epilog(patch, lir_patch_low, base_reg, info);
           patch = new PatchingStub(_masm, PatchingStub::access_field_id);
           patch_code = lir_patch_high;
@@ -589,6 +557,7 @@ void LIR_Assembler::reg2mem(LIR_Opr src, LIR_Opr dest, BasicType type,
       } else if (base_reg == from_lo) {
         __ str(from_hi, as_Address_hi(to_addr));
         if (patch != NULL) {
+          __ nop(); // see comment before patching_epilog for 2nd str
           patching_epilog(patch, lir_patch_high, base_reg, info);
           patch = new PatchingStub(_masm, PatchingStub::access_field_id);
           patch_code = lir_patch_low;
@@ -597,6 +566,7 @@ void LIR_Assembler::reg2mem(LIR_Opr src, LIR_Opr dest, BasicType type,
       } else {
         __ str(from_lo, as_Address_lo(to_addr));
         if (patch != NULL) {
+          __ nop(); // see comment before patching_epilog for 2nd str
           patching_epilog(patch, lir_patch_low, base_reg, info);
           patch = new PatchingStub(_masm, PatchingStub::access_field_id);
           patch_code = lir_patch_high;
@@ -640,7 +610,7 @@ void LIR_Assembler::reg2mem(LIR_Opr src, LIR_Opr dest, BasicType type,
   }
 
   if (patch != NULL) {
-    // Offset embeedded into LDR/STR instruction may appear not enough
+    // Offset embedded into LDR/STR instruction may appear not enough
     // to address a field. So, provide a space for one more instruction
     // that will deal with larger offsets.
     __ nop();
@@ -668,7 +638,7 @@ void LIR_Assembler::stack2reg(LIR_Opr src, LIR_Opr dest, BasicType type) {
       case T_ARRAY:
       case T_ADDRESS:
       case T_METADATA: __ ldr(dest->as_register(), addr); break;
-      case T_FLOAT:    // used in floatToRawIntBits intrinsic implemenation
+      case T_FLOAT:    // used in floatToRawIntBits intrinsic implementation
       case T_INT:      __ ldr_u32(dest->as_register(), addr); break;
       default:
         ShouldNotReachHere();
@@ -721,7 +691,7 @@ void LIR_Assembler::stack2stack(LIR_Opr src, LIR_Opr dest, BasicType type) {
 
 void LIR_Assembler::mem2reg(LIR_Opr src, LIR_Opr dest, BasicType type,
                             LIR_PatchCode patch_code, CodeEmitInfo* info,
-                            bool wide, bool unaligned) {
+                            bool wide) {
   assert(src->is_address(), "should not call otherwise");
   assert(dest->is_register(), "should not call otherwise");
   LIR_Address* addr = src->as_address_ptr();
@@ -747,11 +717,7 @@ void LIR_Assembler::mem2reg(LIR_Opr src, LIR_Opr dest, BasicType type,
       break;
 
     case T_ADDRESS:
-      if (UseCompressedClassPointers && addr->disp() == oopDesc::klass_offset_in_bytes()) {
-        __ ldr_u32(dest->as_pointer_register(), as_Address(addr));
-      } else {
-        __ ldr(dest->as_pointer_register(), as_Address(addr));
-      }
+      __ ldr(dest->as_pointer_register(), as_Address(addr));
       break;
 
     case T_INT:
@@ -791,6 +757,7 @@ void LIR_Assembler::mem2reg(LIR_Opr src, LIR_Opr dest, BasicType type,
         base_reg = Rtemp;
         __ ldr(to_lo, Address(Rtemp));
         if (patch != NULL) {
+          __ nop(); // see comment before patching_epilog for 2nd ldr
           patching_epilog(patch, lir_patch_low, base_reg, info);
           patch = new PatchingStub(_masm, PatchingStub::access_field_id);
           patch_code = lir_patch_high;
@@ -799,6 +766,7 @@ void LIR_Assembler::mem2reg(LIR_Opr src, LIR_Opr dest, BasicType type,
       } else if (base_reg == to_lo) {
         __ ldr(to_hi, as_Address_hi(addr));
         if (patch != NULL) {
+          __ nop(); // see comment before patching_epilog for 2nd ldr
           patching_epilog(patch, lir_patch_high, base_reg, info);
           patch = new PatchingStub(_masm, PatchingStub::access_field_id);
           patch_code = lir_patch_low;
@@ -807,6 +775,7 @@ void LIR_Assembler::mem2reg(LIR_Opr src, LIR_Opr dest, BasicType type,
       } else {
         __ ldr(to_lo, as_Address_lo(addr));
         if (patch != NULL) {
+          __ nop(); // see comment before patching_epilog for 2nd ldr
           patching_epilog(patch, lir_patch_low, base_reg, info);
           patch = new PatchingStub(_masm, PatchingStub::access_field_id);
           patch_code = lir_patch_high;
@@ -846,7 +815,7 @@ void LIR_Assembler::mem2reg(LIR_Opr src, LIR_Opr dest, BasicType type,
   }
 
   if (patch != NULL) {
-    // Offset embeedded into LDR/STR instruction may appear not enough
+    // Offset embedded into LDR/STR instruction may appear not enough
     // to address a field. So, provide a space for one more instruction
     // that will deal with larger offsets.
     __ nop();
@@ -871,7 +840,7 @@ void LIR_Assembler::emit_op3(LIR_Op3* op) {
       __ add_32(dest, left, AsmOperand(left, lsr, 31));
       __ asr_32(dest, dest, 1);
     } else if (c != (int) 0x80000000) {
-      int power = log2_intptr(c);
+      int power = log2i_exact(c);
       __ asr_32(Rtemp, left, 31);
       __ add_32(dest, left, AsmOperand(Rtemp, lsr, 32-power)); // dest = left + (left < 0 ? 2^power - 1 : 0);
       __ asr_32(dest, dest, power);                            // dest = dest >>> power;
@@ -1405,7 +1374,7 @@ void LIR_Assembler::emit_compare_and_swap(LIR_OpCompareAndSwap* op) {
     op->addr()->as_pointer_register() :
     op->addr()->as_address_ptr()->base()->as_pointer_register();
   assert(op->addr()->is_register() || op->addr()->as_address_ptr()->disp() == 0, "unexpected disp");
-  assert(op->addr()->is_register() || op->addr()->as_address_ptr()->index() == LIR_OprDesc::illegalOpr(), "unexpected index");
+  assert(op->addr()->is_register() || op->addr()->as_address_ptr()->index() == LIR_Opr::illegalOpr(), "unexpected index");
   if (op->code() == lir_cas_int || op->code() == lir_cas_obj) {
     Register cmpval = op->cmp_value()->as_register();
     Register newval = op->new_value()->as_register();
@@ -1440,7 +1409,10 @@ void LIR_Assembler::emit_compare_and_swap(LIR_OpCompareAndSwap* op) {
 }
 
 
-void LIR_Assembler::cmove(LIR_Condition condition, LIR_Opr opr1, LIR_Opr opr2, LIR_Opr result, BasicType type) {
+void LIR_Assembler::cmove(LIR_Condition condition, LIR_Opr opr1, LIR_Opr opr2, LIR_Opr result, BasicType type,
+                          LIR_Opr cmp_opr1, LIR_Opr cmp_opr2) {
+  assert(cmp_opr1 == LIR_OprFact::illegalOpr && cmp_opr2 == LIR_OprFact::illegalOpr, "unnecessary cmp oprs on arm");
+
   AsmCondition acond = al;
   AsmCondition ncond = nv;
   if (opr1 != opr2) {
@@ -1505,6 +1477,9 @@ void LIR_Assembler::cmove(LIR_Condition condition, LIR_Opr opr1, LIR_Opr opr2, L
 #else
           __ mov_double(result->as_double_reg(), c->as_jdouble(), acond);
 #endif // __SOFTFP__
+          break;
+        case T_METADATA:
+          __ mov_metadata(result->as_register(), c->as_metadata(), acond);
           break;
         default:
           ShouldNotReachHere();
@@ -1651,9 +1626,7 @@ void LIR_Assembler::arith_op(LIR_Code code, LIR_Opr left, LIR_Opr right, LIR_Opr
     switch (code) {
       case lir_add: __ add_float(res, lreg, rreg); break;
       case lir_sub: __ sub_float(res, lreg, rreg); break;
-      case lir_mul_strictfp: // fall through
       case lir_mul: __ mul_float(res, lreg, rreg); break;
-      case lir_div_strictfp: // fall through
       case lir_div: __ div_float(res, lreg, rreg); break;
       default: ShouldNotReachHere();
     }
@@ -1666,9 +1639,7 @@ void LIR_Assembler::arith_op(LIR_Code code, LIR_Opr left, LIR_Opr right, LIR_Opr
     switch (code) {
       case lir_add: __ add_double(res, lreg, rreg); break;
       case lir_sub: __ sub_double(res, lreg, rreg); break;
-      case lir_mul_strictfp: // fall through
       case lir_mul: __ mul_double(res, lreg, rreg); break;
-      case lir_div_strictfp: // fall through
       case lir_div: __ div_double(res, lreg, rreg); break;
       default: ShouldNotReachHere();
     }
@@ -1712,6 +1683,9 @@ void LIR_Assembler::logic_op(LIR_Code code, LIR_Opr left, LIR_Opr right, LIR_Opr
     } else {
       assert(right->is_constant(), "must be");
       const uint c = (uint)right->as_constant_ptr()->as_jint();
+      if (!Assembler::is_arith_imm_in_range(c)) {
+        BAILOUT("illegal arithmetic operand");
+      }
       switch (code) {
         case lir_logic_and: __ and_32(res, lreg, c); break;
         case lir_logic_or:  __ orr_32(res, lreg, c); break;
@@ -1817,6 +1791,11 @@ void LIR_Assembler::comp_op(LIR_Condition condition, LIR_Opr opr1, LIR_Opr opr2,
           assert(opr2->as_constant_ptr()->as_jobject() == NULL, "cannot handle otherwise");
           __ cmp(opr1->as_register(), 0);
           break;
+        case T_METADATA:
+          assert(condition == lir_cond_equal || condition == lir_cond_notEqual, "Only equality tests");
+          assert(opr2->as_constant_ptr()->as_metadata() == NULL, "cannot handle otherwise");
+          __ cmp(opr1->as_register(), 0);
+          break;
         default:
           ShouldNotReachHere();
       }
@@ -1847,8 +1826,8 @@ void LIR_Assembler::comp_op(LIR_Condition condition, LIR_Opr opr1, LIR_Opr opr2,
         __ teq(xhi, yhi);
         __ teq(xlo, ylo, eq);
       } else {
-        __ subs(xlo, xlo, ylo);
-        __ sbcs(xhi, xhi, yhi);
+        __ subs(Rtemp, xlo, ylo);
+        __ sbcs(Rtemp, xhi, yhi);
       }
     } else {
       ShouldNotReachHere();
@@ -1957,12 +1936,6 @@ void LIR_Assembler::ic_call(LIR_OpJavaCall *op) {
     __ bind(call_return);
   }
   add_call_info(code_offset(), op->info());
-}
-
-
-/* Currently, vtable-dispatch is only enabled for sparc platforms */
-void LIR_Assembler::vtable_call(LIR_OpJavaCall* op) {
-  ShouldNotReachHere();
 }
 
 void LIR_Assembler::emit_static_call_stub() {
@@ -2124,9 +2097,6 @@ void LIR_Assembler::emit_arraycopy(LIR_OpArrayCopy* op) {
   Register tmp2 = Rtemp;
 
   assert(src == R0 && src_pos == R1 && dst == R2 && dst_pos == R3, "code assumption");
-
-  __ resolve(ACCESS_READ, src);
-  __ resolve(ACCESS_WRITE, dst);
 
   CodeStub* stub = op->stub();
 
@@ -2460,26 +2430,42 @@ void LIR_Assembler::emit_lock(LIR_OpLock* op) {
   Register obj = op->obj_opr()->as_pointer_register();
   Register hdr = op->hdr_opr()->as_pointer_register();
   Register lock = op->lock_opr()->as_pointer_register();
-  Register tmp = op->scratch_opr()->is_illegal() ? noreg :
-                 op->scratch_opr()->as_pointer_register();
 
-  if (!UseFastLocking) {
+  if (UseHeavyMonitors) {
+    if (op->info() != NULL) {
+      add_debug_info_for_null_check_here(op->info());
+      __ null_check(obj);
+    }
     __ b(*op->stub()->entry());
   } else if (op->code() == lir_lock) {
     assert(BasicLock::displaced_header_offset_in_bytes() == 0, "lock_reg must point to the displaced header");
-    __ resolve(ACCESS_READ | ACCESS_WRITE, obj);
-    int null_check_offset = __ lock_object(hdr, obj, lock, tmp, *op->stub()->entry());
+    int null_check_offset = __ lock_object(hdr, obj, lock, *op->stub()->entry());
     if (op->info() != NULL) {
       add_debug_info_for_null_check(null_check_offset, op->info());
     }
   } else if (op->code() == lir_unlock) {
-    __ unlock_object(hdr, obj, lock, tmp, *op->stub()->entry());
+    __ unlock_object(hdr, obj, lock, *op->stub()->entry());
   } else {
     ShouldNotReachHere();
   }
   __ bind(*op->stub()->continuation());
 }
 
+void LIR_Assembler::emit_load_klass(LIR_OpLoadKlass* op) {
+  Register obj = op->obj()->as_pointer_register();
+  Register result = op->result_opr()->as_pointer_register();
+
+  CodeEmitInfo* info = op->info();
+  if (info != NULL) {
+    add_debug_info_for_null_check_here(info);
+  }
+
+  if (UseCompressedClassPointers) { // On 32 bit arm??
+    __ ldr_u32(result, Address(obj, oopDesc::klass_offset_in_bytes()));
+  } else {
+    __ ldr(result, Address(obj, oopDesc::klass_offset_in_bytes()));
+  }
+}
 
 void LIR_Assembler::emit_profile_call(LIR_OpProfileCall* op) {
   ciMethod* method = op->profiled_method();

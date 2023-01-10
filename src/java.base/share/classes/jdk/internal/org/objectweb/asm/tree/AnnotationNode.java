@@ -56,6 +56,7 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 package jdk.internal.org.objectweb.asm.tree;
 
 import java.util.ArrayList;
@@ -91,7 +92,7 @@ public class AnnotationNode extends AnnotationVisitor {
       * @throws IllegalStateException If a subclass calls this constructor.
       */
     public AnnotationNode(final String descriptor) {
-        this(Opcodes.ASM7, descriptor);
+        this(/* latest api = */ Opcodes.ASM9, descriptor);
         if (getClass() != AnnotationNode.class) {
             throw new IllegalStateException();
         }
@@ -100,8 +101,8 @@ public class AnnotationNode extends AnnotationVisitor {
     /**
       * Constructs a new {@link AnnotationNode}.
       *
-      * @param api the ASM API version implemented by this visitor. Must be one of {@link
-      *     Opcodes#ASM4}, {@link Opcodes#ASM5}, {@link Opcodes#ASM6} or {@link Opcodes#ASM7}.
+      * @param api the ASM API version implemented by this visitor. Must be one of the {@code
+      *     ASM}<i>x</i> values in {@link Opcodes}.
       * @param descriptor the class descriptor of the annotation class.
       */
     public AnnotationNode(final int api, final String descriptor) {
@@ -115,7 +116,7 @@ public class AnnotationNode extends AnnotationVisitor {
       * @param values where the visited values must be stored.
       */
     AnnotationNode(final List<Object> values) {
-        super(Opcodes.ASM7);
+        super(/* latest api = */ Opcodes.ASM9);
         this.values = values;
     }
 
@@ -126,7 +127,7 @@ public class AnnotationNode extends AnnotationVisitor {
     @Override
     public void visit(final String name, final Object value) {
         if (values == null) {
-            values = new ArrayList<Object>(this.desc != null ? 2 : 1);
+            values = new ArrayList<>(this.desc != null ? 2 : 1);
         }
         if (this.desc != null) {
             values.add(name);
@@ -155,7 +156,7 @@ public class AnnotationNode extends AnnotationVisitor {
     @Override
     public void visitEnum(final String name, final String descriptor, final String value) {
         if (values == null) {
-            values = new ArrayList<Object>(this.desc != null ? 2 : 1);
+            values = new ArrayList<>(this.desc != null ? 2 : 1);
         }
         if (this.desc != null) {
             values.add(name);
@@ -166,7 +167,7 @@ public class AnnotationNode extends AnnotationVisitor {
     @Override
     public AnnotationVisitor visitAnnotation(final String name, final String descriptor) {
         if (values == null) {
-            values = new ArrayList<Object>(this.desc != null ? 2 : 1);
+            values = new ArrayList<>(this.desc != null ? 2 : 1);
         }
         if (this.desc != null) {
             values.add(name);
@@ -179,12 +180,12 @@ public class AnnotationNode extends AnnotationVisitor {
     @Override
     public AnnotationVisitor visitArray(final String name) {
         if (values == null) {
-            values = new ArrayList<Object>(this.desc != null ? 2 : 1);
+            values = new ArrayList<>(this.desc != null ? 2 : 1);
         }
         if (this.desc != null) {
             values.add(name);
         }
-        List<Object> array = new ArrayList<Object>();
+        List<Object> array = new ArrayList<>();
         values.add(array);
         return new AnnotationNode(array);
     }
@@ -203,8 +204,8 @@ public class AnnotationNode extends AnnotationVisitor {
       * checks that this node, and all its children recursively, do not contain elements that were
       * introduced in more recent versions of the ASM API than the given version.
       *
-      * @param api an ASM API version. Must be one of {@link Opcodes#ASM4}, {@link Opcodes#ASM5},
-      *     {@link Opcodes#ASM6} or {@link Opcodes#ASM7}.
+      * @param api an ASM API version. Must be one of the {@code ASM}<i>x</i> values in {@link
+      *     Opcodes}.
       */
     public void check(final int api) {
         // nothing to do
@@ -259,3 +260,4 @@ public class AnnotationNode extends AnnotationVisitor {
         }
     }
 }
+

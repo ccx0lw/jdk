@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -31,6 +31,7 @@
 #include "jfr/utilities/jfrTypes.hpp"
 #include "memory/allocation.hpp"
 #include "oops/oop.hpp"
+#include "oops/weakHandle.hpp"
 #include "utilities/ticks.hpp"
 
 /*
@@ -48,7 +49,7 @@ class ObjectSample : public JfrCHeapObj {
   JfrBlobHandle _stacktrace;
   JfrBlobHandle _thread;
   JfrBlobHandle _type_set;
-  oop _object;
+  WeakHandle    _object;
   Ticks _allocation_time;
   traceid _stack_trace_id;
   traceid _thread_id;
@@ -57,11 +58,7 @@ class ObjectSample : public JfrCHeapObj {
   size_t _allocated;
   size_t _heap_used_at_last_gc;
   unsigned int _stack_trace_hash;
-  bool _dead;
-
-  void set_dead() {
-    _dead = true;
-  }
+  bool _virtual_thread;
 
   void release_references() {
     _stacktrace.~JfrBlobHandle();
@@ -69,12 +66,7 @@ class ObjectSample : public JfrCHeapObj {
     _type_set.~JfrBlobHandle();
   }
 
-  void reset() {
-    set_stack_trace_id(0);
-    set_stack_trace_hash(0);
-    release_references();
-    _dead = false;
-  }
+  void reset();
 
  public:
   ObjectSample() : _next(NULL),
@@ -82,7 +74,6 @@ class ObjectSample : public JfrCHeapObj {
                    _stacktrace(),
                    _thread(),
                    _type_set(),
-                   _object(NULL),
                    _allocation_time(),
                    _stack_trace_id(0),
                    _thread_id(0),
@@ -91,7 +82,7 @@ class ObjectSample : public JfrCHeapObj {
                    _allocated(0),
                    _heap_used_at_last_gc(0),
                    _stack_trace_hash(0),
-                   _dead(false) {}
+                   _virtual_thread(false) {}
 
   ObjectSample* next() const {
     return _next;
@@ -109,26 +100,14 @@ class ObjectSample : public JfrCHeapObj {
     _previous = prev;
   }
 
-  bool is_dead() const {
-    return _dead;
-  }
+  bool is_dead() const;
 
-  const oop object() const {
-    return _object;
-  }
+  const oop object() const;
+  void set_object(oop object);
 
-  const oop* object_addr() const {
-    return &_object;
-  }
+  const oop* object_addr() const;
 
-  void set_object(oop object) {
-    _object = object;
-  }
-
-  const Klass* klass() const {
-    assert(_object != NULL, "invariant");
-    return _object->klass();
-  }
+  void release();
 
   int index() const {
     return _index;
@@ -166,6 +145,11 @@ class ObjectSample : public JfrCHeapObj {
     _allocation_time = Ticks(time.value());
   }
 
+  bool is_alive_and_older_than(jlong time_stamp) const {
+    return !is_dead() && (JfrTime::is_ft_enabled() ?
+      _allocation_time.ft_value() : _allocation_time.value()) < time_stamp;
+  }
+
   void set_heap_used_at_last_gc(size_t heap_used) {
     _heap_used_at_last_gc = heap_used;
   }
@@ -194,19 +178,6 @@ class ObjectSample : public JfrCHeapObj {
     _stack_trace_hash = hash;
   }
 
-  traceid thread_id() const {
-    return _thread_id;
-  }
-
-  void set_thread_id(traceid id) {
-    _thread_id = id;
-  }
-
-  bool is_alive_and_older_than(jlong time_stamp) const {
-    return !is_dead() && (JfrTime::is_ft_enabled() ?
-      _allocation_time.ft_value() : _allocation_time.value()) < time_stamp;
-  }
-
   const JfrBlobHandle& stacktrace() const {
     return _stacktrace;
   }
@@ -223,18 +194,35 @@ class ObjectSample : public JfrCHeapObj {
     }
   }
 
-  const JfrBlobHandle& thread() const {
-    return _thread;
-  }
-
   bool has_thread() const {
     return _thread.valid();
+  }
+
+  const JfrBlobHandle& thread() const {
+    return _thread;
   }
 
   void set_thread(const JfrBlobHandle& ref) {
     if (_thread != ref) {
       _thread = ref;
     }
+  }
+
+  traceid thread_id() const {
+    return _thread_id;
+  }
+
+  void set_thread_id(traceid id) {
+    _thread_id = id;
+  }
+
+  bool is_virtual_thread() const {
+    return _virtual_thread;
+  }
+
+  void set_thread_is_virtual() {
+    assert(!_virtual_thread, "invariant");
+    _virtual_thread = true;
   }
 
   const JfrBlobHandle& type_set() const {

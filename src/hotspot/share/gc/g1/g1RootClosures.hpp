@@ -33,10 +33,7 @@ class G1ParScanThreadState;
 
 class G1RootClosures : public CHeapObj<mtGC> {
 public:
-  virtual ~G1RootClosures() {}
-
-// Closures to process raw oops in the root set.
-  virtual OopClosure* weak_oops() = 0;
+  // Closures to process raw oops in the root set.
   virtual OopClosure* strong_oops() = 0;
 
   // Closures to process CLDs in the root set.
@@ -51,9 +48,6 @@ class G1EvacuationRootClosures : public G1RootClosures {
 public:
   // Applied to code blobs treated as weak roots.
   virtual CodeBlobClosure* weak_codeblobs() = 0;
-
-  // Is this closure used for tracing metadata?
-  virtual bool trace_metadata() = 0;
 
   static G1EvacuationRootClosures* create_root_closures(G1ParScanThreadState* pss, G1CollectedHeap* g1h);
 };

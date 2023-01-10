@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, 2020, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -37,11 +37,13 @@
   static_field(HeapRegion, GrainBytes,        size_t)                         \
   static_field(HeapRegion, LogOfHRGrainBytes, int)                            \
                                                                               \
-  nonstatic_field(HeapRegion, _type,          HeapRegionType)                 \
+  nonstatic_field(HeapRegion, _type,           HeapRegionType)                \
+  nonstatic_field(HeapRegion, _bottom,         HeapWord* const)               \
+  nonstatic_field(HeapRegion, _top,            HeapWord* volatile)            \
+  nonstatic_field(HeapRegion, _end,            HeapWord* const)               \
                                                                               \
   nonstatic_field(HeapRegionType, _tag,       HeapRegionType::Tag volatile)   \
                                                                               \
-  nonstatic_field(G1ContiguousSpace, _top,              HeapWord* volatile)   \
                                                                               \
   nonstatic_field(G1HeapRegionTable, _base,             address)              \
   nonstatic_field(G1HeapRegionTable, _length,           size_t)               \
@@ -50,11 +52,10 @@
   nonstatic_field(G1HeapRegionTable, _shift_by,         uint)                 \
                                                                               \
   nonstatic_field(HeapRegionManager, _regions,          G1HeapRegionTable)    \
-  nonstatic_field(HeapRegionManager, _num_committed,    uint)                 \
                                                                               \
   volatile_nonstatic_field(G1CollectedHeap, _summary_bytes_used, size_t)      \
-  nonstatic_field(G1CollectedHeap, _hrm,                HeapRegionManager*)   \
-  nonstatic_field(G1CollectedHeap, _g1mm,               G1MonitoringSupport*) \
+  nonstatic_field(G1CollectedHeap, _hrm,                HeapRegionManager)    \
+  nonstatic_field(G1CollectedHeap, _monitoring_support, G1MonitoringSupport*) \
   nonstatic_field(G1CollectedHeap, _old_set,            HeapRegionSetBase)    \
   nonstatic_field(G1CollectedHeap, _archive_set,        HeapRegionSetBase)    \
   nonstatic_field(G1CollectedHeap, _humongous_set,      HeapRegionSetBase)    \
@@ -68,7 +69,7 @@
                                                                               \
   nonstatic_field(HeapRegionSetBase,   _length,         uint)                 \
                                                                               \
-  nonstatic_field(PtrQueue,            _active,         bool)                 \
+  nonstatic_field(SATBMarkQueue,       _active,         bool)                 \
   nonstatic_field(PtrQueue,            _buf,            void**)               \
   nonstatic_field(PtrQueue,            _index,          size_t)
 
@@ -94,8 +95,7 @@
                                                                               \
   declare_type(G1CollectedHeap, CollectedHeap)                                \
                                                                               \
-  declare_type(G1ContiguousSpace, CompactibleSpace)                           \
-  declare_type(HeapRegion, G1ContiguousSpace)                                 \
+  declare_toplevel_type(HeapRegion)                                           \
   declare_toplevel_type(HeapRegionManager)                                    \
   declare_toplevel_type(HeapRegionSetBase)                                    \
   declare_toplevel_type(G1MonitoringSupport)                                  \

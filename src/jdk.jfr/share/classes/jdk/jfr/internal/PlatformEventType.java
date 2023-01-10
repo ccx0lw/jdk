@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -39,13 +39,14 @@ import jdk.jfr.SettingDescriptor;
  */
 public final class PlatformEventType extends Type {
     private final boolean isJVM;
-    private final boolean  isJDK;
+    private final boolean isJDK;
     private final boolean isMethodSampling;
     private final List<SettingDescriptor> settings = new ArrayList<>(5);
     private final boolean dynamicSettings;
     private final int stackTraceOffset;
 
     // default values
+    private boolean largeSize = false;
     private boolean enabled = false;
     private boolean stackTraceEnabled = true;
     private long thresholdTicks = 0;
@@ -58,10 +59,11 @@ public final class PlatformEventType extends Type {
     private boolean hasDuration = true;
     private boolean hasPeriod = true;
     private boolean hasCutoff = false;
+    private boolean hasThrottle = false;
     private boolean isInstrumented;
     private boolean markForInstrumentation;
     private boolean registered = true;
-    private boolean commitable = enabled && registered;
+    private boolean committable = enabled && registered;
 
 
     // package private
@@ -69,21 +71,42 @@ public final class PlatformEventType extends Type {
         super(name, Type.SUPER_TYPE_EVENT, id);
         this.dynamicSettings = dynamicSettings;
         this.isJVM = Type.isDefinedByJVM(id);
-        this.isMethodSampling = name.equals(Type.EVENT_NAME_PREFIX + "ExecutionSample") || name.equals(Type.EVENT_NAME_PREFIX + "NativeMethodSample");
+        this.isMethodSampling = isJVM && (name.equals(Type.EVENT_NAME_PREFIX + "ExecutionSample") || name.equals(Type.EVENT_NAME_PREFIX + "NativeMethodSample"));
         this.isJDK = isJDK;
         this.stackTraceOffset = stackTraceOffset(name, isJDK);
     }
 
+    private static boolean isExceptionEvent(String name) {
+        switch (name) {
+            case Type.EVENT_NAME_PREFIX + "JavaErrorThrow" :
+            case Type.EVENT_NAME_PREFIX + "JavaExceptionThrow" :
+                return true;
+        }
+        return false;
+    }
+
+    private static boolean isUsingConfiguration(String name) {
+        switch (name) {
+            case Type.EVENT_NAME_PREFIX + "SocketRead"  :
+            case Type.EVENT_NAME_PREFIX + "SocketWrite" :
+            case Type.EVENT_NAME_PREFIX + "FileRead"    :
+            case Type.EVENT_NAME_PREFIX + "FileWrite"   :
+            case Type.EVENT_NAME_PREFIX + "FileForce"   :
+                return true;
+        }
+        return false;
+    }
+
     private static int stackTraceOffset(String name, boolean isJDK) {
         if (isJDK) {
-            if (name.equals(Type.EVENT_NAME_PREFIX + "JavaExceptionThrow")) {
-                return 5;
+            if (isExceptionEvent(name)) {
+                return 4;
             }
-            if (name.equals(Type.EVENT_NAME_PREFIX + "JavaErrorThrow")) {
-                return 5;
+            if (isUsingConfiguration(name)) {
+                return 3;
             }
         }
-        return 4;
+        return 3;
     }
 
     public void add(SettingDescriptor settingDescriptor) {
@@ -120,10 +143,20 @@ public final class PlatformEventType extends Type {
        this.hasCutoff = hasCutoff;
     }
 
+    public void setHasThrottle(boolean hasThrottle) {
+        this.hasThrottle = hasThrottle;
+    }
+
     public void setCutoff(long cutoffNanos) {
         if (isJVM) {
             long cutoffTicks = Utils.nanosToTicks(cutoffNanos);
             JVM.getJVM().setCutoff(getId(), cutoffTicks);
+        }
+    }
+
+    public void setThrottle(long eventSampleSize, long period_ms) {
+        if (isJVM) {
+            JVM.getJVM().setThrottle(getId(), eventSampleSize, period_ms);
         }
     }
 
@@ -147,8 +180,16 @@ public final class PlatformEventType extends Type {
         return this.hasCutoff;
     }
 
+    public boolean hasThrottle() {
+        return this.hasThrottle;
+    }
+
     public boolean isEnabled() {
         return enabled;
+    }
+
+    public boolean isSystem() {
+        return isJVM || isJDK;
     }
 
     public boolean isJVM() {
@@ -161,11 +202,11 @@ public final class PlatformEventType extends Type {
 
     public void setEnabled(boolean enabled) {
         this.enabled = enabled;
-        updateCommitable();
+        updateCommittable();
         if (isJVM) {
             if (isMethodSampling) {
                 long p = enabled ? period : 0;
-                JVM.getJVM().setMethodSamplingInterval(getId(), p);
+                JVM.getJVM().setMethodSamplingPeriod(getId(), p);
             } else {
                 JVM.getJVM().setEnabled(getId(), enabled);
             }
@@ -175,7 +216,7 @@ public final class PlatformEventType extends Type {
     public void setPeriod(long periodMillis, boolean beginChunk, boolean endChunk) {
         if (isMethodSampling) {
             long p = enabled ? periodMillis : 0;
-            JVM.getJVM().setMethodSamplingInterval(getId(), p);
+            JVM.getJVM().setMethodSamplingPeriod(getId(), p);
         }
         this.beginChunk = beginChunk;
         this.endChunk = endChunk;
@@ -196,7 +237,11 @@ public final class PlatformEventType extends Type {
         }
     }
 
-    public boolean isEveryChunk() {
+    /**
+     * Returns true if "beginChunk", "endChunk" or "everyChunk" have
+     * been set.
+     */
+    public boolean isChunkTime() {
         return period == 0;
     }
 
@@ -247,8 +292,8 @@ public final class PlatformEventType extends Type {
     public boolean setRegistered(boolean registered) {
         if (this.registered != registered) {
             this.registered = registered;
-            updateCommitable();
-            LogTag logTag = isJVM() || isJDK() ? LogTag.JFR_SYSTEM_EVENT : LogTag.JFR_EVENT;
+            updateCommittable();
+            LogTag logTag = isSystem() ? LogTag.JFR_SYSTEM_METADATA : LogTag.JFR_METADATA;
             if (registered) {
                 Logger.log(logTag, LogLevel.INFO, "Registered " + getLogName());
             } else {
@@ -262,8 +307,8 @@ public final class PlatformEventType extends Type {
         return false;
     }
 
-    private void updateCommitable() {
-        this.commitable = enabled && registered;
+    private void updateCommittable() {
+        this.committable = enabled && registered;
     }
 
     public final boolean isRegistered() {
@@ -271,11 +316,23 @@ public final class PlatformEventType extends Type {
     }
 
     // Efficient check of enabled && registered
-    public boolean isCommitable() {
-        return commitable;
+    public boolean isCommittable() {
+        return committable;
     }
 
     public int getStackTraceOffset() {
         return stackTraceOffset;
+    }
+
+    public boolean isLargeSize() {
+        return largeSize;
+    }
+
+    public void setLargeSize() {
+        largeSize = true;
+    }
+
+    public boolean isMethodSampling() {
+        return isMethodSampling;
     }
 }

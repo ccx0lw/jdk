@@ -1,12 +1,10 @@
 /*
- * Copyright (c) 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2019, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.  Oracle designates this
- * particular file as subject to the "Classpath" exception as provided
- * by Oracle in the LICENSE file that accompanied this code.
+ * published by the Free Software Foundation.
  *
  * This code is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
@@ -31,7 +29,7 @@
  * @author Alan Snyder
  * @run main FullWindowContentTest
  * @requires (os.family == "mac")
-*/
+ */
 
 import java.awt.AWTException;
 import java.awt.Color;
@@ -120,7 +118,7 @@ public class FullWindowContentTest
     private void checkTranslucent() {
         Color c = getTestPixel();
         int delta = c.getRed() - c.getBlue();
-        if (delta < 50 || delta > 150) {
+        if (delta < 40 || delta > 150) {
             throw new RuntimeException("Test failed: did not find translucent title bar color");
         }
         checkContent();
@@ -129,7 +127,7 @@ public class FullWindowContentTest
     private void checkNormal() {
         Color c = getTestPixel();
         int delta = c.getRed() - c.getBlue();
-        if (delta < -50 || delta > 50) {
+        if (delta < -40 || delta > 40) {
             throw new RuntimeException("Test failed: did not find normal title bar color");
         }
         checkContent();
@@ -202,7 +200,6 @@ public class FullWindowContentTest
         try {
             runSwing(() -> theTest = new FullWindowContentTest());
             theTest.performTest();
-            ;
         } finally {
             if (theTest != null) {
                 runSwing(() -> theTest.dispose());

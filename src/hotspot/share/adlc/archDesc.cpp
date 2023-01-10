@@ -1,5 +1,5 @@
 //
-// Copyright (c) 1997, 2018, Oracle and/or its affiliates. All rights reserved.
+// Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
 // DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
 //
 // This code is free software; you can redistribute it and/or modify it
@@ -147,7 +147,7 @@ ArchDesc::ArchDesc()
     _internalMatch(cmpstr,hashstr, Form::arena),
     _chainRules(cmpstr,hashstr, Form::arena),
     _cisc_spill_operand(NULL),
-    _needs_clone_jvms(false) {
+    _needs_deep_clone_jvms(false) {
 
       // Initialize the opcode to MatchList table with NULLs
       for( int i=0; i<_last_opcode; ++i ) {
@@ -245,12 +245,12 @@ void ArchDesc::inspectOperands() {
     // Construct chain rules
     build_chain_rule(op);
 
-    MatchRule &mrule = *op->_matrule;
-    Predicate *pred  =  op->_predicate;
+    MatchRule *mrule = op->_matrule;
+    Predicate *pred  = op->_predicate;
 
     // Grab the machine type of the operand
     const char  *rootOp    = op->_ident;
-    mrule._machType  = rootOp;
+    mrule->_machType  = rootOp;
 
     // Check for special cases
     if (strcmp(rootOp,"Universe")==0) continue;
@@ -271,10 +271,13 @@ void ArchDesc::inspectOperands() {
 
     // Find result type for match.
     const char *result      = op->reduce_result();
-    bool        has_root    = false;
 
-    // Construct a MatchList for this entry
-    buildMatchList(op->_matrule, result, rootOp, pred, cost);
+    // Construct a MatchList for this entry.
+    // Iterate over the list to enumerate all match cases for operands with multiple match rules.
+    for (; mrule != NULL; mrule = mrule->_next) {
+      mrule->_machType = rootOp;
+      buildMatchList(mrule, result, rootOp, pred, cost);
+    }
   }
 }
 
@@ -442,7 +445,7 @@ void ArchDesc::build_chain_rule(OperandForm *oper) {
     }
   }
   else if ((oper->_matrule) && (oper->_matrule->_next)) {
-    // Regardles of whether the first matchrule is a chain rule, check the list
+    // Regardless of whether the first matchrule is a chain rule, check the list
     rule = oper->_matrule;
     do {
       rule = rule->_next;
@@ -708,7 +711,7 @@ void ArchDesc::dump() {
 
 
 //------------------------------init_keywords----------------------------------
-// Load the kewords into the global name table
+// Load the keywords into the global name table
 void ArchDesc::initKeywords(FormDict& names) {
   // Insert keyword strings into Global Name Table.  Keywords have a NULL value
   // field for quick easy identification when checking identifiers.
@@ -805,12 +808,14 @@ static const char *getRegMask(const char *reg_class_name) {
     return "RegMask::Empty";
   } else if (strcmp(reg_class_name,"stack_slots")==0) {
     return "(Compile::current()->FIRST_STACK_mask())";
+  } else if (strcmp(reg_class_name, "dynamic")==0) {
+    return "*_opnds[0]->in_RegMask(0)";
   } else {
     char       *rc_name = toUpper(reg_class_name);
     const char *mask    = "_mask";
     int         length  = (int)strlen(rc_name) + (int)strlen(mask) + 5;
     char       *regMask = new char[length];
-    sprintf(regMask,"%s%s()", rc_name, mask);
+    snprintf_checked(regMask, length, "%s%s()", rc_name, mask);
     delete[] rc_name;
     return regMask;
   }
@@ -867,7 +872,7 @@ const char *ArchDesc::reg_mask(InstructForm &inForm) {
   }
 
   // Instructions producing 'Universe' use RegMask::Empty
-  if( strcmp(result,"Universe")==0 ) {
+  if (strcmp(result,"Universe") == 0) {
     return "RegMask::Empty";
   }
 
@@ -903,7 +908,7 @@ char *ArchDesc::stack_or_reg_mask(OperandForm  &opForm) {
   const char *stack_or = "STACK_OR_";
   int   length         = (int)strlen(stack_or) + (int)strlen(reg_mask_name) + 1;
   char *result         = new char[length];
-  sprintf(result,"%s%s", stack_or, reg_mask_name);
+  snprintf_checked(result, length, "%s%s", stack_or, reg_mask_name);
 
   return result;
 }
@@ -929,6 +934,7 @@ const char *ArchDesc::getIdealType(const char *idealOp) {
   // Match Vector types.
   if (strncmp(idealOp, "Vec",3)==0) {
     switch(last_char) {
+    case 'A':  return "TypeVect::VECTA";
     case 'S':  return "TypeVect::VECTS";
     case 'D':  return "TypeVect::VECTD";
     case 'X':  return "TypeVect::VECTX";
@@ -937,6 +943,10 @@ const char *ArchDesc::getIdealType(const char *idealOp) {
     default:
       internal_err("Vector type %s with unrecognized type\n",idealOp);
     }
+  }
+
+  if (strncmp(idealOp, "RegVectMask", 8) == 0) {
+    return "TypeVect::VECTMASK";
   }
 
   // !!!!!

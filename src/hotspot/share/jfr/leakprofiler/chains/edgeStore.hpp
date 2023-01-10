@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2014, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,10 +26,12 @@
 #define SHARE_JFR_LEAKPROFILER_CHAINS_EDGESTORE_HPP
 
 #include "jfr/leakprofiler/chains/edge.hpp"
+#include "jfr/leakprofiler/utilities/unifiedOopRef.hpp"
 #include "jfr/utilities/jfrHashtable.hpp"
 #include "memory/allocation.hpp"
 
 typedef u8 traceid;
+class ObjectSample;
 
 class StoredEdge : public Edge {
  private:
@@ -38,10 +40,9 @@ class StoredEdge : public Edge {
 
  public:
   StoredEdge();
-  StoredEdge(const Edge* parent, const oop* reference);
+  StoredEdge(const Edge* parent, UnifiedOopRef reference);
   StoredEdge(const Edge& edge);
   StoredEdge(const StoredEdge& edge);
-  void operator=(const StoredEdge& edge);
 
   traceid gc_root_id() const { return _gc_root_id; }
   void set_gc_root_id(traceid root_id) const { _gc_root_id = root_id; }
@@ -78,8 +79,9 @@ class EdgeStore : public CHeapObj<mtTracing> {
   bool on_equals(uintptr_t hash, const EdgeEntry* entry);
   void on_unlink(EdgeEntry* entry);
 
-  StoredEdge* get(const oop* reference) const;
-  StoredEdge* put(const oop* reference);
+  StoredEdge* get(UnifiedOopRef reference) const;
+  const StoredEdge* get(const ObjectSample* sample) const;
+  StoredEdge* put(UnifiedOopRef reference);
   traceid gc_root_id(const Edge* edge) const;
 
   bool put_edges(StoredEdge** previous, const Edge** current, size_t length);
@@ -90,11 +92,12 @@ class EdgeStore : public CHeapObj<mtTracing> {
   void store_gc_root_id_in_leak_context_edge(StoredEdge* leak_context_edge, const Edge* root) const;
   StoredEdge* link_new_edge(StoredEdge** previous, const Edge** current);
   void link_with_existing_chain(const StoredEdge* current_stored, StoredEdge** previous, size_t previous_length);
+  bool has_leak_context(const ObjectSample* sample) const;
 
   template <typename T>
   void iterate(T& functor) const { _edges->iterate_value<T>(functor); }
 
-  DEBUG_ONLY(bool contains(const oop* reference) const;)
+  DEBUG_ONLY(bool contains(UnifiedOopRef reference) const;)
 
  public:
   EdgeStore();

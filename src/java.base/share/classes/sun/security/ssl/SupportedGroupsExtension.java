@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -27,15 +27,10 @@ package sun.security.ssl;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.security.AlgorithmConstraints;
 import java.text.MessageFormat;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Locale;
+import java.util.*;
 import javax.net.ssl.SSLProtocolException;
-import sun.security.action.GetPropertyAction;
+
 import sun.security.ssl.NamedGroup.NamedGroupSpec;
 import static sun.security.ssl.SSLExtension.CH_SUPPORTED_GROUPS;
 import static sun.security.ssl.SSLExtension.EE_SUPPORTED_GROUPS;
@@ -52,6 +47,8 @@ final class SupportedGroupsExtension {
             new CHSupportedGroupsProducer();
     static final ExtensionConsumer chOnLoadConsumer =
             new CHSupportedGroupsConsumer();
+    static final HandshakeAbsence chOnTradAbsence =
+            new CHSupportedGroupsOnTradeAbsence();
     static final SSLStringizer sgsStringizer =
             new SupportedGroupsStringizer();
 
@@ -66,10 +63,6 @@ final class SupportedGroupsExtension {
     static final class SupportedGroupsSpec implements SSLExtensionSpec {
         final int[] namedGroupsIds;
 
-        private SupportedGroupsSpec(int[] namedGroupsIds) {
-            this.namedGroupsIds = namedGroupsIds;
-        }
-
         private SupportedGroupsSpec(List<NamedGroup> namedGroups) {
             this.namedGroupsIds = new int[namedGroups.size()];
             int i = 0;
@@ -78,21 +71,25 @@ final class SupportedGroupsExtension {
             }
         }
 
-        private SupportedGroupsSpec(ByteBuffer m) throws IOException  {
+        private SupportedGroupsSpec(HandshakeContext hc,
+                ByteBuffer m) throws IOException  {
             if (m.remaining() < 2) {      // 2: the length of the list
-                throw new SSLProtocolException(
-                    "Invalid supported_groups extension: insufficient data");
+                throw hc.conContext.fatal(Alert.DECODE_ERROR,
+                        new SSLProtocolException(
+                    "Invalid supported_groups extension: insufficient data"));
             }
 
             byte[] ngs = Record.getBytes16(m);
             if (m.hasRemaining()) {
-                throw new SSLProtocolException(
-                    "Invalid supported_groups extension: unknown extra data");
+                throw hc.conContext.fatal(Alert.DECODE_ERROR,
+                        new SSLProtocolException(
+                    "Invalid supported_groups extension: unknown extra data"));
             }
 
-            if ((ngs == null) || (ngs.length == 0) || (ngs.length % 2 != 0)) {
-                throw new SSLProtocolException(
-                    "Invalid supported_groups extension: incomplete data");
+            if (ngs.length == 0 || ngs.length % 2 != 0) {
+                throw hc.conContext.fatal(Alert.DECODE_ERROR,
+                        new SSLProtocolException(
+                    "Invalid supported_groups extension: incomplete data"));
             }
 
             int[] ids = new int[ngs.length / 2];
@@ -106,7 +103,7 @@ final class SupportedGroupsExtension {
         @Override
         public String toString() {
             MessageFormat messageFormat = new MessageFormat(
-                "\"versions\": '['{0}']'", Locale.ENGLISH);
+                "\"named groups\": '['{0}']'", Locale.ENGLISH);
 
             if (namedGroupsIds == null || namedGroupsIds.length == 0) {
                 Object[] messageFields = {
@@ -138,181 +135,13 @@ final class SupportedGroupsExtension {
     private static final
             class SupportedGroupsStringizer implements SSLStringizer {
         @Override
-        public String toString(ByteBuffer buffer) {
+        public String toString(HandshakeContext hc, ByteBuffer buffer) {
             try {
-                return (new SupportedGroupsSpec(buffer)).toString();
+                return (new SupportedGroupsSpec(hc, buffer)).toString();
             } catch (IOException ioe) {
                 // For debug logging only, so please swallow exceptions.
                 return ioe.getMessage();
             }
-        }
-    }
-
-    static class SupportedGroups {
-        // To switch off the supported_groups extension for DHE cipher suite.
-        static final boolean enableFFDHE =
-                Utilities.getBooleanProperty("jsse.enableFFDHE", true);
-
-        // the supported named groups
-        static final NamedGroup[] supportedNamedGroups;
-
-        static {
-            // The value of the System Property defines a list of enabled named
-            // groups in preference order, separated with comma.  For example:
-            //
-            //      jdk.tls.namedGroups="secp521r1, secp256r1, ffdhe2048"
-            //
-            // If the System Property is not defined or the value is empty, the
-            // default groups and preferences will be used.
-            String property = GetPropertyAction
-                    .privilegedGetProperty("jdk.tls.namedGroups");
-            if (property != null && !property.isEmpty()) {
-                // remove double quote marks from beginning/end of the property
-                if (property.length() > 1 && property.charAt(0) == '"' &&
-                        property.charAt(property.length() - 1) == '"') {
-                    property = property.substring(1, property.length() - 1);
-                }
-            }
-
-            ArrayList<NamedGroup> groupList;
-            if (property != null && !property.isEmpty()) {
-                String[] groups = property.split(",");
-                groupList = new ArrayList<>(groups.length);
-                for (String group : groups) {
-                    group = group.trim();
-                    if (!group.isEmpty()) {
-                        NamedGroup namedGroup = NamedGroup.nameOf(group);
-                        if (namedGroup != null) {
-                            if (namedGroup.isAvailable) {
-                                groupList.add(namedGroup);
-                            }
-                        }   // ignore unknown groups
-                    }
-                }
-
-                if (groupList.isEmpty()) {
-                    throw new IllegalArgumentException(
-                            "System property jdk.tls.namedGroups(" +
-                            property + ") contains no supported named groups");
-                }
-            } else {        // default groups
-                NamedGroup[] groups = new NamedGroup[] {
-
-                        // Primary XDH (RFC 7748) curves
-                        NamedGroup.X25519,
-
-                        // Primary NIST Suite B curves
-                        NamedGroup.SECP256_R1,
-                        NamedGroup.SECP384_R1,
-                        NamedGroup.SECP521_R1,
-
-                        // Secondary XDH curves
-                        NamedGroup.X448,
-
-                        // FFDHE (RFC 7919)
-                        NamedGroup.FFDHE_2048,
-                        NamedGroup.FFDHE_3072,
-                        NamedGroup.FFDHE_4096,
-                        NamedGroup.FFDHE_6144,
-                        NamedGroup.FFDHE_8192,
-                    };
-
-                groupList = new ArrayList<>(groups.length);
-                for (NamedGroup group : groups) {
-                    if (group.isAvailable) {
-                        groupList.add(group);
-                    }
-                }
-
-                if (groupList.isEmpty() &&
-                        SSLLogger.isOn && SSLLogger.isOn("ssl")) {
-                    SSLLogger.warning("No default named groups");
-                }
-            }
-
-            supportedNamedGroups = new NamedGroup[groupList.size()];
-            int i = 0;
-            for (NamedGroup namedGroup : groupList) {
-                supportedNamedGroups[i++] = namedGroup;
-            }
-        }
-
-        // Is there any supported group permitted by the constraints?
-        static boolean isActivatable(
-                AlgorithmConstraints constraints, NamedGroupSpec type) {
-
-            boolean hasFFDHEGroups = false;
-            for (NamedGroup namedGroup : supportedNamedGroups) {
-                if (namedGroup.isAvailable && namedGroup.spec == type) {
-                    if (namedGroup.isPermitted(constraints)) {
-                        return true;
-                    }
-
-                    if (!hasFFDHEGroups &&
-                            (type == NamedGroupSpec.NAMED_GROUP_FFDHE)) {
-                        hasFFDHEGroups = true;
-                    }
-                }
-            }
-
-            // For compatibility, if no FFDHE groups are defined, the non-FFDHE
-            // compatible mode (using DHE cipher suite without FFDHE extension)
-            // is allowed.
-            //
-            // Note that the constraints checking on DHE parameters will be
-            // performed during key exchanging in a handshake.
-            return !hasFFDHEGroups && type == NamedGroupSpec.NAMED_GROUP_FFDHE;
-        }
-
-        // Is the named group permitted by the constraints?
-        static boolean isActivatable(
-                AlgorithmConstraints constraints, NamedGroup namedGroup) {
-            if (!namedGroup.isAvailable || !isSupported(namedGroup)) {
-                return false;
-            }
-
-            return namedGroup.isPermitted(constraints);
-        }
-
-        // Is the named group supported?
-        static boolean isSupported(NamedGroup namedGroup) {
-            for (NamedGroup group : supportedNamedGroups) {
-                if (namedGroup.id == group.id) {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        static NamedGroup getPreferredGroup(
-                ProtocolVersion negotiatedProtocol,
-                AlgorithmConstraints constraints, NamedGroupSpec[] types,
-                List<NamedGroup> requestedNamedGroups) {
-            for (NamedGroup namedGroup : requestedNamedGroups) {
-                if ((NamedGroupSpec.arrayContains(types, namedGroup.spec)) &&
-                        namedGroup.isAvailable(negotiatedProtocol) &&
-                        isSupported(namedGroup) &&
-                        namedGroup.isPermitted(constraints)) {
-                    return namedGroup;
-                }
-            }
-
-            return null;
-        }
-
-        static NamedGroup getPreferredGroup(
-                ProtocolVersion negotiatedProtocol,
-                AlgorithmConstraints constraints, NamedGroupSpec[] types) {
-            for (NamedGroup namedGroup : supportedNamedGroups) {
-                if ((NamedGroupSpec.arrayContains(types, namedGroup.spec)) &&
-                        namedGroup.isAvailable(negotiatedProtocol) &&
-                        namedGroup.isPermitted(constraints)) {
-                    return namedGroup;
-                }
-            }
-
-            return null;
         }
     }
 
@@ -321,7 +150,7 @@ final class SupportedGroupsExtension {
      * the ClientHello handshake message.
      */
     private static final class CHSupportedGroupsProducer
-            extends SupportedGroups implements HandshakeProducer {
+            implements HandshakeProducer {
         // Prevent instantiation of this class.
         private CHSupportedGroupsProducer() {
             // blank
@@ -344,9 +173,18 @@ final class SupportedGroupsExtension {
 
             // Produce the extension.
             ArrayList<NamedGroup> namedGroups =
-                new ArrayList<>(SupportedGroups.supportedNamedGroups.length);
-            for (NamedGroup ng : SupportedGroups.supportedNamedGroups) {
-                if ((!SupportedGroups.enableFFDHE) &&
+                    new ArrayList<>(chc.sslConfig.namedGroups.length);
+            for (String name : chc.sslConfig.namedGroups) {
+                NamedGroup ng = NamedGroup.nameOf(name);
+                if (ng == null) {
+                    if (SSLLogger.isOn && SSLLogger.isOn("ssl,handshake")) {
+                        SSLLogger.fine(
+                                "Ignore unspecified named group: " + name);
+                    }
+                    continue;
+                }
+
+                if ((!SSLConfiguration.enableFFDHE) &&
                     (ng.spec == NamedGroupSpec.NAMED_GROUP_FFDHE)) {
                     continue;
                 }
@@ -379,7 +217,7 @@ final class SupportedGroupsExtension {
 
             // Update the context.
             chc.clientRequestedNamedGroups =
-                    Collections.<NamedGroup>unmodifiableList(namedGroups);
+                    Collections.unmodifiableList(namedGroups);
             chc.handshakeExtensions.put(CH_SUPPORTED_GROUPS,
                     new SupportedGroupsSpec(namedGroups));
 
@@ -414,12 +252,7 @@ final class SupportedGroupsExtension {
             }
 
             // Parse the extension.
-            SupportedGroupsSpec spec;
-            try {
-                spec = new SupportedGroupsSpec(buffer);
-            } catch (IOException ioe) {
-                throw shc.conContext.fatal(Alert.UNEXPECTED_MESSAGE, ioe);
-            }
+            SupportedGroupsSpec spec = new SupportedGroupsSpec(shc, buffer);
 
             // Update the context.
             List<NamedGroup> knownNamedGroups = new LinkedList<>();
@@ -438,11 +271,40 @@ final class SupportedGroupsExtension {
     }
 
     /**
+     * The absence processing if the extension is not present in
+     * a ClientHello handshake message.
+     */
+    private static final class CHSupportedGroupsOnTradeAbsence
+            implements HandshakeAbsence {
+        @Override
+        public void absent(ConnectionContext context,
+                HandshakeMessage message) throws IOException {
+            // The producing happens in server side only.
+            ServerHandshakeContext shc = (ServerHandshakeContext)context;
+
+            // A client is considered to be attempting to negotiate using this
+            // specification if the ClientHello contains a "supported_versions"
+            // extension with 0x0304 contained in its body.  Such a ClientHello
+            // message MUST meet the following requirements:
+            //    -  If containing a "supported_groups" extension, it MUST also
+            //       contain a "key_share" extension, and vice versa.  An empty
+            //       KeyShare.client_shares vector is permitted.
+            if (shc.negotiatedProtocol.useTLS13PlusSpec() &&
+                    shc.handshakeExtensions.containsKey(
+                            SSLExtension.CH_KEY_SHARE)) {
+                throw shc.conContext.fatal(Alert.MISSING_EXTENSION,
+                        "No supported_groups extension to work with " +
+                        "the key_share extension");
+            }
+        }
+    }
+
+    /**
      * Network data producer of a "supported_groups" extension in
      * the EncryptedExtensions handshake message.
      */
     private static final class EESupportedGroupsProducer
-            extends SupportedGroups implements HandshakeProducer {
+            implements HandshakeProducer {
 
         // Prevent instantiation of this class.
         private EESupportedGroupsProducer() {
@@ -469,9 +331,19 @@ final class SupportedGroupsExtension {
             // Contains all groups the server supports, regardless of whether
             // they are currently supported by the client.
             ArrayList<NamedGroup> namedGroups = new ArrayList<>(
-                    SupportedGroups.supportedNamedGroups.length);
-            for (NamedGroup ng : SupportedGroups.supportedNamedGroups) {
-                if ((!SupportedGroups.enableFFDHE) &&
+                    shc.sslConfig.namedGroups.length);
+            for (String name : shc.sslConfig.namedGroups) {
+                NamedGroup ng = NamedGroup.nameOf(name);
+                if (ng == null) {
+                    if (SSLLogger.isOn &&
+                            SSLLogger.isOn("ssl,handshake")) {
+                        SSLLogger.fine(
+                                "Ignore unspecified named group: " + name);
+                    }
+                    continue;
+                }
+
+                if ((!SSLConfiguration.enableFFDHE) &&
                     (ng.spec == NamedGroupSpec.NAMED_GROUP_FFDHE)) {
                     continue;
                 }
@@ -504,7 +376,7 @@ final class SupportedGroupsExtension {
 
             // Update the context.
             shc.conContext.serverRequestedNamedGroups =
-                    Collections.<NamedGroup>unmodifiableList(namedGroups);
+                    Collections.unmodifiableList(namedGroups);
             SupportedGroupsSpec spec = new SupportedGroupsSpec(namedGroups);
             shc.handshakeExtensions.put(EE_SUPPORTED_GROUPS, spec);
 
@@ -535,12 +407,7 @@ final class SupportedGroupsExtension {
             }
 
             // Parse the extension.
-            SupportedGroupsSpec spec;
-            try {
-                spec = new SupportedGroupsSpec(buffer);
-            } catch (IOException ioe) {
-                throw chc.conContext.fatal(Alert.UNEXPECTED_MESSAGE, ioe);
-            }
+            SupportedGroupsSpec spec = new SupportedGroupsSpec(chc, buffer);
 
             // Update the context.
             List<NamedGroup> knownNamedGroups =

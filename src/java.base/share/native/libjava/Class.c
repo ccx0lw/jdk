@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1994, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1994, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -38,6 +38,10 @@
 #include "check_classname.h"
 #include "java_lang_Class.h"
 
+/* defined in libverify.so/verify.dll (src file common/check_format.c) */
+extern jboolean VerifyClassname(char *utf_name, jboolean arrayAllowed);
+extern jboolean VerifyFixClassname(char *utf_name);
+
 #define OBJ "Ljava/lang/Object;"
 #define CLS "Ljava/lang/Class;"
 #define CPL "Ljdk/internal/reflect/ConstantPool;"
@@ -47,6 +51,7 @@
 #define CTR "Ljava/lang/reflect/Constructor;"
 #define PD  "Ljava/security/ProtectionDomain;"
 #define BA  "[B"
+#define RC  "Ljava/lang/reflect/RecordComponent;"
 
 static JNINativeMethod methods[] = {
     {"initClassName",    "()" STR,          (void *)&JVM_InitClassName},
@@ -56,6 +61,7 @@ static JNINativeMethod methods[] = {
     {"getSigners",       "()[" OBJ,         (void *)&JVM_GetClassSigners},
     {"setSigners",       "([" OBJ ")V",     (void *)&JVM_SetClassSigners},
     {"isArray",          "()Z",             (void *)&JVM_IsArrayClass},
+    {"isHidden",         "()Z",             (void *)&JVM_IsHiddenClass},
     {"isPrimitive",      "()Z",             (void *)&JVM_IsPrimitiveClass},
     {"getModifiers",     "()I",             (void *)&JVM_GetClassModifiers},
     {"getDeclaredFields0","(Z)[" FLD,       (void *)&JVM_GetClassDeclaredFields},
@@ -73,7 +79,11 @@ static JNINativeMethod methods[] = {
     {"getRawTypeAnnotations", "()" BA,      (void *)&JVM_GetClassTypeAnnotations},
     {"getNestHost0",         "()" CLS,      (void *)&JVM_GetNestHost},
     {"getNestMembers0",      "()[" CLS,     (void *)&JVM_GetNestMembers},
-    {"linkClass",            "(" CLS ")V",  (void *)&JVM_LinkClass},
+    {"getRecordComponents0", "()[" RC,      (void *)&JVM_GetRecordComponents},
+    {"isRecord0",            "()Z",         (void *)&JVM_IsRecord},
+    {"getPermittedSubclasses0", "()[" CLS,  (void *)&JVM_GetPermittedSubclasses},
+    {"getClassFileVersion0", "()I",         (void *)&JVM_GetClassFileVersion},
+    {"getClassAccessFlagsRaw0", "()I",      (void *)&JVM_GetClassAccessFlags},
 };
 
 #undef OBJ

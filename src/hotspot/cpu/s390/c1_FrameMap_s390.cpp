@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
- * Copyright (c) 2016, 2019, SAP SE. All rights reserved.
+ * Copyright (c) 2016, 2019 SAP SE. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -50,6 +50,8 @@ LIR_Opr FrameMap::map_to_opr(BasicType type, VMRegPair* reg, bool outgoing) {
       opr = as_oop_opr(reg);
     } else if (type == T_METADATA) {
       opr = as_metadata_opr(reg);
+    } else if (type == T_ADDRESS) {
+      opr = as_address_opr(reg);
     } else {
       opr = as_opr(reg);
     }
@@ -136,8 +138,8 @@ LIR_Opr FrameMap::Z_F0_opr;
 LIR_Opr FrameMap::Z_F0_double_opr;
 
 
-LIR_Opr FrameMap::_caller_save_cpu_regs[] = { 0, };
-LIR_Opr FrameMap::_caller_save_fpu_regs[] = { 0, };
+LIR_Opr FrameMap::_caller_save_cpu_regs[] = {};
+LIR_Opr FrameMap::_caller_save_fpu_regs[] = {};
 
 
 // c1 rnr -> FloatRegister

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, 2021, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -82,11 +82,11 @@ public final class HotSpotResolvedPrimitiveType extends HotSpotResolvedJavaType 
     }
 
     @Override
-    public HotSpotResolvedObjectType getArrayClass() {
+    HotSpotResolvedObjectTypeImpl getArrayType() {
         if (kind == JavaKind.Void) {
             return null;
         }
-        return super.getArrayClass();
+        return runtime().compilerToVm.getArrayType(getJavaKind().getTypeChar(), null);
     }
 
     @Override
@@ -150,6 +150,11 @@ public final class HotSpotResolvedPrimitiveType extends HotSpotResolvedJavaType 
     }
 
     @Override
+    public boolean isBeingInitialized() {
+        return false;
+    }
+
+    @Override
     public boolean isLinked() {
         return true;
     }
@@ -173,11 +178,6 @@ public final class HotSpotResolvedPrimitiveType extends HotSpotResolvedJavaType 
     public boolean isAssignableFrom(ResolvedJavaType other) {
         assert other != null;
         return other.equals(this);
-    }
-
-    @Override
-    public ResolvedJavaType getHostClass() {
-        return null;
     }
 
     @Override
@@ -246,6 +246,20 @@ public final class HotSpotResolvedPrimitiveType extends HotSpotResolvedJavaType 
     }
 
     @Override
+    public void link() {
+    }
+
+    @Override
+    public boolean hasDefaultMethods() {
+        return false;
+    }
+
+    @Override
+    public boolean declaresDefaultMethods() {
+        return false;
+    }
+
+    @Override
     public ResolvedJavaField findInstanceFieldWithOffset(long offset, JavaKind expectedType) {
         return null;
     }
@@ -301,6 +315,6 @@ public final class HotSpotResolvedPrimitiveType extends HotSpotResolvedJavaType 
 
     @Override
     JavaConstant getJavaMirror() {
-        return runtime().reflection.getJavaMirror(this);
+        return mirror;
     }
 }

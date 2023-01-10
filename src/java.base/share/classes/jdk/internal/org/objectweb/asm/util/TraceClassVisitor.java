@@ -56,6 +56,7 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
+
 package jdk.internal.org.objectweb.asm.util;
 
 import java.io.PrintWriter;
@@ -66,6 +67,7 @@ import jdk.internal.org.objectweb.asm.FieldVisitor;
 import jdk.internal.org.objectweb.asm.MethodVisitor;
 import jdk.internal.org.objectweb.asm.ModuleVisitor;
 import jdk.internal.org.objectweb.asm.Opcodes;
+import jdk.internal.org.objectweb.asm.RecordComponentVisitor;
 import jdk.internal.org.objectweb.asm.TypePath;
 
 /**
@@ -149,7 +151,7 @@ public final class TraceClassVisitor extends ClassVisitor {
       */
     public TraceClassVisitor(
             final ClassVisitor classVisitor, final Printer printer, final PrintWriter printWriter) {
-        super(Opcodes.ASM7, classVisitor);
+        super(/* latest api = */ Opcodes.ASM9, classVisitor);
         this.printWriter = printWriter;
         this.p = printer;
     }
@@ -218,10 +220,24 @@ public final class TraceClassVisitor extends ClassVisitor {
     }
 
     @Override
+    public void visitPermittedSubclass(final String permittedSubclass) {
+        p.visitPermittedSubclass(permittedSubclass);
+        super.visitPermittedSubclass(permittedSubclass);
+    }
+
+    @Override
     public void visitInnerClass(
             final String name, final String outerName, final String innerName, final int access) {
         p.visitInnerClass(name, outerName, innerName, access);
         super.visitInnerClass(name, outerName, innerName, access);
+    }
+
+    @Override
+    public RecordComponentVisitor visitRecordComponent(
+            final String name, final String descriptor, final String signature) {
+        Printer recordComponentPrinter = p.visitRecordComponent(name, descriptor, signature);
+        return new TraceRecordComponentVisitor(
+                super.visitRecordComponent(name, descriptor, signature), recordComponentPrinter);
     }
 
     @Override
@@ -258,3 +274,4 @@ public final class TraceClassVisitor extends ClassVisitor {
         super.visitEnd();
     }
 }
+

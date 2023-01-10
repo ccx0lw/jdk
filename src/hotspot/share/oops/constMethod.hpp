@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2003, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,7 +26,6 @@
 #define SHARE_OOPS_CONSTMETHOD_HPP
 
 #include "oops/oop.hpp"
-#include "runtime/arguments.hpp"
 #include "utilities/align.hpp"
 
 // An ConstMethod represents portions of a Java method which are not written to after
@@ -122,9 +121,6 @@ class MethodParametersElement {
   u2 flags;
 };
 
-class KlassSizeStats;
-class AdapterHandlerEntry;
-
 // Class to collect the sizes of ConstMethod inline tables
 #define INLINE_TABLES_DO(do_element)            \
   do_element(localvariable_table_length)        \
@@ -207,12 +203,6 @@ private:
   // Raw stackmap data for the method
   Array<u1>*        _stackmap_data;
 
-  // Adapter blob (i2c/c2i) for this Method*. Set once when method is linked.
-  union {
-    AdapterHandlerEntry* _adapter;
-    AdapterHandlerEntry** _adapter_trampoline; // see comments around Method::link_method()
-  };
-
   int               _constMethod_size;
   u2                _flags;
   u1                _result_type;                 // BasicType of result
@@ -227,6 +217,7 @@ private:
   u2                _max_stack;                  // Maximum number of entries on the expression stack
   u2                _max_locals;                 // Number of local variables used by this method
   u2                _size_of_parameters;         // size of the parameter block (receiver + arguments) in words
+  u2                _num_stack_arg_slots;        // Number of arguments passed on the stack even when compiled
   u2                _orig_method_idnum;          // Original unique identification number for the method
 
   // Constructor
@@ -286,33 +277,6 @@ public:
   void set_stackmap_data(Array<u1>* sd) { _stackmap_data = sd; }
   void copy_stackmap_data(ClassLoaderData* loader_data, u1* sd, int length, TRAPS);
   bool has_stackmap_table() const { return _stackmap_data != NULL; }
-
-  // adapter
-  void set_adapter_entry(AdapterHandlerEntry* adapter) {
-    assert(!is_shared(),
-           "shared methods in archive have fixed adapter_trampoline");
-    _adapter = adapter;
-  }
-  void set_adapter_trampoline(AdapterHandlerEntry** trampoline) {
-    Arguments::assert_is_dumping_archive();
-    if (DumpSharedSpaces) {
-      assert(*trampoline == NULL,
-             "must be NULL during dump time, to be initialized at run time");
-    }
-    _adapter_trampoline = trampoline;
-  }
-  void update_adapter_trampoline(AdapterHandlerEntry* adapter) {
-    assert(is_shared(), "must be");
-    *_adapter_trampoline = adapter;
-    assert(this->adapter() == adapter, "must be");
-  }
-  AdapterHandlerEntry* adapter() {
-    if (is_shared()) {
-      return *_adapter_trampoline;
-    } else {
-      return _adapter;
-    }
-  }
 
   void init_fingerprint() {
     const uint64_t initval = UCONST64(0x8000000000000000);
@@ -378,10 +342,6 @@ public:
 
   // ConstMethods should be stored in the read-only region of CDS archive.
   static bool is_read_only_by_default() { return true; }
-
-#if INCLUDE_SERVICES
-  void collect_statistics(KlassSizeStats *sz) const;
-#endif
 
   // code size
   int code_size() const                          { return _code_size; }
@@ -531,6 +491,14 @@ public:
   // size of parameters
   int  size_of_parameters() const                { return _size_of_parameters; }
   void set_size_of_parameters(int size)          { _size_of_parameters = size; }
+
+  // Number of arguments passed on the stack even when compiled
+  int  num_stack_arg_slots() const               { return _num_stack_arg_slots; }
+  void set_num_stack_arg_slots(int n)            { _num_stack_arg_slots = n; }
+
+  // result type (basic type of return value)
+  BasicType result_type() const                  { assert(_result_type >= T_BOOLEAN, "Must be set");
+                                                   return (BasicType)_result_type; }
 
   void set_result_type(BasicType rt)             { assert(rt < 16, "result type too large");
                                                    _result_type = (u1)rt; }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1997, 2019, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 1997, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -26,12 +26,15 @@
 #include "asm/codeBuffer.hpp"
 #include "code/oopRecorder.inline.hpp"
 #include "compiler/disassembler.hpp"
+#include "logging/log.hpp"
+#include "oops/klass.inline.hpp"
 #include "oops/methodData.hpp"
 #include "oops/oop.inline.hpp"
 #include "runtime/icache.hpp"
 #include "runtime/safepointVerifiers.hpp"
 #include "utilities/align.hpp"
 #include "utilities/copy.hpp"
+#include "utilities/powerOfTwo.hpp"
 #include "utilities/xmlstream.hpp"
 
 // The structure of a CodeSection:
@@ -85,21 +88,22 @@ typedef CodeBuffer::csize_t csize_t;  // file-local definition
 
 // External buffer, in a predefined CodeBlob.
 // Important: The code_start must be taken exactly, and not realigned.
-CodeBuffer::CodeBuffer(CodeBlob* blob) {
+CodeBuffer::CodeBuffer(CodeBlob* blob) DEBUG_ONLY(: Scrubber(this, sizeof(*this))) {
   // Provide code buffer with meaningful name
   initialize_misc(blob->name());
   initialize(blob->content_begin(), blob->content_size());
-  verify_section_allocation();
+  debug_only(verify_section_allocation();)
 }
 
 void CodeBuffer::initialize(csize_t code_size, csize_t locs_size) {
-  // Compute maximal alignment.
-  int align = _insts.alignment();
   // Always allow for empty slop around each section.
   int slop = (int) CodeSection::end_slop();
 
+  assert(SECT_LIMIT == 3, "total_size explicitly lists all section alignments");
+  int total_size = code_size + _consts.alignment() + _insts.alignment() + _stubs.alignment() + SECT_LIMIT * slop;
+
   assert(blob() == NULL, "only once");
-  set_blob(BufferBlob::create(_name, code_size + (align+slop) * (SECT_LIMIT+1)));
+  set_blob(BufferBlob::create(_name, total_size));
   if (blob() == NULL) {
     // The assembler constructor will throw a fatal on an empty CodeBuffer.
     return;  // caller must test this
@@ -116,39 +120,25 @@ void CodeBuffer::initialize(csize_t code_size, csize_t locs_size) {
     _insts.initialize_locs(locs_size / sizeof(relocInfo));
   }
 
-  verify_section_allocation();
+  debug_only(verify_section_allocation();)
 }
 
 
 CodeBuffer::~CodeBuffer() {
   verify_section_allocation();
 
-  // If we allocate our code buffer from the CodeCache
-  // via a BufferBlob, and it's not permanent, then
-  // free the BufferBlob.
-  // The rest of the memory will be freed when the ResourceObj
-  // is released.
+  // If we allocated our code buffer from the CodeCache via a BufferBlob, and
+  // it's not permanent, then free the BufferBlob.  The rest of the memory
+  // will be freed when the ResourceObj is released.
   for (CodeBuffer* cb = this; cb != NULL; cb = cb->before_expand()) {
     // Previous incarnations of this buffer are held live, so that internal
     // addresses constructed before expansions will not be confused.
     cb->free_blob();
+    // free any overflow storage
+    delete cb->_overflow_arena;
   }
 
-  // free any overflow storage
-  delete _overflow_arena;
-
-  // Claim is that stack allocation ensures resources are cleaned up.
-  // This is resource clean up, let's hope that all were properly copied out.
-  free_strings();
-
-#ifdef ASSERT
-  // Save allocation type to execute assert in ~ResourceObj()
-  // which is called after this destructor.
-  assert(_default_oop_recorder.allocated_on_stack(), "should be embedded object");
-  ResourceObj::allocation_type at = _default_oop_recorder.get_allocation_type();
-  Copy::fill_to_bytes(this, sizeof(*this), badResourceValue);
-  ResourceObj::set_allocation_type((address)(&_default_oop_recorder), at);
-#endif
+  NOT_PRODUCT(clear_strings());
 }
 
 void CodeBuffer::initialize_oop_recorder(OopRecorder* r) {
@@ -173,28 +163,6 @@ void CodeBuffer::initialize_section_size(CodeSection* cs, csize_t size) {
   assert(cs->limit() == limit,  "sanity");
   // give it some relocations to start with, if the main section has them
   if (_insts.has_locs())  cs->initialize_locs(1);
-}
-
-void CodeBuffer::freeze_section(CodeSection* cs) {
-  CodeSection* next_cs = (cs == consts())? NULL: code_section(cs->index()+1);
-  csize_t frozen_size = cs->size();
-  if (next_cs != NULL) {
-    frozen_size = next_cs->align_at_start(frozen_size);
-  }
-  address old_limit = cs->limit();
-  address new_limit = cs->start() + frozen_size;
-  relocInfo* old_locs_limit = cs->locs_limit();
-  relocInfo* new_locs_limit = cs->locs_end();
-  // Patch the limits.
-  cs->_limit = new_limit;
-  cs->_locs_limit = new_locs_limit;
-  cs->_frozen = true;
-  if (next_cs != NULL && !next_cs->is_allocated() && !next_cs->is_frozen()) {
-    // Give remaining buffer space to the following section.
-    next_cs->initialize(new_limit, old_limit - new_limit);
-    next_cs->initialize_shared_locs(new_locs_limit,
-                                    old_locs_limit - new_locs_limit);
-  }
 }
 
 void CodeBuffer::set_blob(BufferBlob* blob) {
@@ -256,23 +224,19 @@ int CodeBuffer::locator(address addr) const {
   return -1;
 }
 
-address CodeBuffer::locator_address(int locator) const {
-  if (locator < 0)  return NULL;
-  address start = code_section(locator_sect(locator))->start();
-  return start + locator_pos(locator);
-}
 
 bool CodeBuffer::is_backward_branch(Label& L) {
   return L.is_bound() && insts_end() <= locator_address(L.loc());
 }
 
+#ifndef PRODUCT
 address CodeBuffer::decode_begin() {
   address begin = _insts.start();
   if (_decode_begin != NULL && _decode_begin > begin)
     begin = _decode_begin;
   return begin;
 }
-
+#endif // !PRODUCT
 
 GrowableArray<int>* CodeBuffer::create_patch_overflow() {
   if (_overflow_arena == NULL) {
@@ -384,8 +348,8 @@ void CodeSection::relocate(address at, RelocationHolder const& spec, int format)
   // each carrying the largest possible offset, to advance the locs_point.
   while (offset >= relocInfo::offset_limit()) {
     assert(end < locs_limit(), "adjust previous paragraph of code");
-    *end++ = filler_relocInfo();
-    offset -= filler_relocInfo().addr_offset();
+    *end++ = relocInfo::filler_info();
+    offset -= relocInfo::filler_info().addr_offset();
   }
 
   // If it's a simple reloc with no data, we'll just write (rtype | offset).
@@ -456,6 +420,21 @@ void CodeSection::expand_locs(int new_capacity) {
   }
 }
 
+int CodeSection::alignment() const {
+  if (_index == CodeBuffer::SECT_CONSTS) {
+    // CodeBuffer controls the alignment of the constants section
+    return _outer->_const_section_alignment;
+  }
+  if (_index == CodeBuffer::SECT_INSTS) {
+    return (int) CodeEntryAlignment;
+  }
+  if (_index == CodeBuffer::SECT_STUBS) {
+    // CodeBuffer installer expects sections to be HeapWordSize aligned
+    return HeapWordSize;
+  }
+  ShouldNotReachHere();
+  return 0;
+}
 
 /// Support for emitting the code to its final location.
 /// The pattern is the same for all functions.
@@ -476,6 +455,7 @@ void CodeBuffer::compute_final_layout(CodeBuffer* dest) const {
   address buf = dest->_total_start;
   csize_t buf_offset = 0;
   assert(dest->_total_size >= total_content_size(), "must be big enough");
+  assert(!_finalize_stubs, "non-finalized stubs");
 
   {
     // not sure why this is here, but why not...
@@ -504,18 +484,6 @@ void CodeBuffer::compute_final_layout(CodeBuffer* dest) const {
       } else {
         guarantee(padding == 0, "In first iteration no padding should be needed.");
       }
-      #ifdef ASSERT
-      if (prev_cs != NULL && prev_cs->is_frozen() && n < (SECT_LIMIT - 1)) {
-        // Make sure the ends still match up.
-        // This is important because a branch in a frozen section
-        // might target code in a following section, via a Label,
-        // and without a relocation record.  See Label::patch_instructions.
-        address dest_start = buf+buf_offset;
-        csize_t start2start = cs->start() - prev_cs->start();
-        csize_t dest_start2start = dest_start - prev_dest_cs->start();
-        assert(start2start == dest_start2start, "cannot stretch frozen sect");
-      }
-      #endif //ASSERT
       prev_dest_cs = dest_cs;
       prev_cs      = cs;
     }
@@ -531,7 +499,7 @@ void CodeBuffer::compute_final_layout(CodeBuffer* dest) const {
 
   // Done calculating sections; did it come out to the right end?
   assert(buf_offset == total_content_size(), "sanity");
-  dest->verify_section_allocation();
+  debug_only(dest->verify_section_allocation();)
 }
 
 // Append an oop reference that keeps the class alive.
@@ -666,7 +634,7 @@ csize_t CodeBuffer::copy_relocations_to(address buf, csize_t buf_limit, bool onl
            code_point_so_far < new_code_point;
            code_point_so_far += jump) {
         jump = new_code_point - code_point_so_far;
-        relocInfo filler = filler_relocInfo();
+        relocInfo filler = relocInfo::filler_info();
         if (jump >= filler.addr_offset()) {
           jump = filler.addr_offset();
         } else {  // else shrink the filler to fit
@@ -750,8 +718,9 @@ void CodeBuffer::copy_code_to(CodeBlob* dest_blob) {
 
   relocate_code_to(&dest);
 
-  // transfer strings and comments from buffer to blob
-  dest_blob->set_strings(_code_strings);
+  // Share assembly remarks and debug strings with the blob.
+  NOT_PRODUCT(dest_blob->use_remarks(_asm_remarks));
+  NOT_PRODUCT(dest_blob->use_strings(_dbg_strings));
 
   // Done moving code bytes; were they the right size?
   assert((int)align_up(dest.total_content_size(), oopSize) == dest_blob->content_size(), "sanity");
@@ -894,9 +863,6 @@ void CodeBuffer::expand(CodeSection* which_cs, csize_t amount) {
   // Resizing must be allowed
   {
     if (blob() == NULL)  return;  // caller must check for blob == NULL
-    for (int n = 0; n < (int)SECT_LIMIT; n++) {
-      guarantee(!code_section(n)->is_frozen(), "resizing not allowed when frozen");
-    }
   }
 
   // Figure new capacity for each section.
@@ -954,14 +920,13 @@ void CodeBuffer::expand(CodeSection* which_cs, csize_t amount) {
 
   // Zap the old code buffer contents, to avoid mistakenly using them.
   debug_only(Copy::fill_to_bytes(bxp->_total_start, bxp->_total_size,
-                                 badCodeHeapFreeVal));
-
-  _decode_begin = NULL;  // sanity
+                                 badCodeHeapFreeVal);)
 
   // Make certain that the new sections are all snugly inside the new blob.
-  verify_section_allocation();
+  debug_only(verify_section_allocation();)
 
 #ifndef PRODUCT
+  _decode_begin = NULL;  // sanity
   if (PrintNMethods && (WizardMode || Verbose)) {
     tty->print("expanded CodeBuffer:");
     this->print();
@@ -981,6 +946,7 @@ void CodeBuffer::take_over_code_from(CodeBuffer* cb) {
     this_sect->take_over_code_from(cb_sect);
   }
   _overflow_arena = cb->_overflow_arena;
+  cb->_overflow_arena = NULL;
   // Make sure the old cb won't try to use it or free it.
   DEBUG_ONLY(cb->_blob = (BufferBlob*)badAddress);
 }
@@ -990,24 +956,23 @@ void CodeBuffer::verify_section_allocation() {
   if (tstart == badAddress)  return;  // smashed by set_blob(NULL)
   address tend   = tstart + _total_size;
   if (_blob != NULL) {
-
     guarantee(tstart >= _blob->content_begin(), "sanity");
     guarantee(tend   <= _blob->content_end(),   "sanity");
   }
   // Verify disjointness.
   for (int n = (int) SECT_FIRST; n < (int) SECT_LIMIT; n++) {
     CodeSection* sect = code_section(n);
-    if (!sect->is_allocated() || sect->is_empty())  continue;
-    guarantee((intptr_t)sect->start() % sect->alignment() == 0
-           || sect->is_empty() || _blob == NULL,
+    if (!sect->is_allocated() || sect->is_empty()) {
+      continue;
+    }
+    guarantee(_blob == nullptr || is_aligned(sect->start(), sect->alignment()),
            "start is aligned");
-    for (int m = (int) SECT_FIRST; m < (int) SECT_LIMIT; m++) {
+    for (int m = n + 1; m < (int) SECT_LIMIT; m++) {
       CodeSection* other = code_section(m);
-      if (!other->is_allocated() || other == sect)  continue;
-      guarantee(!other->contains(sect->start()    ), "sanity");
-      // limit is an exclusive address and can be the start of another
-      // section.
-      guarantee(!other->contains(sect->limit() - 1), "sanity");
+      if (!other->is_allocated() || other == sect) {
+        continue;
+      }
+      guarantee(other->disjoint(sect), "sanity");
     }
     guarantee(sect->end() <= tend, "sanity");
     guarantee(sect->end() <= sect->limit(), "sanity");
@@ -1029,200 +994,46 @@ void CodeBuffer::log_section_sizes(const char* name) {
   }
 }
 
-#ifndef PRODUCT
-
-void CodeSection::decode() {
-  Disassembler::decode(start(), end());
+void CodeBuffer::finalize_stubs() {
+  if (!pd_finalize_stubs()) {
+    return;
+  }
+  _finalize_stubs = false;
 }
 
-void CodeBuffer::block_comment(intptr_t offset, const char * comment) {
+void CodeBuffer::shared_stub_to_interp_for(ciMethod* callee, csize_t call_offset) {
+  if (_shared_stub_to_interp_requests == NULL) {
+    _shared_stub_to_interp_requests = new SharedStubToInterpRequests(8);
+  }
+  SharedStubToInterpRequest request(callee, call_offset);
+  _shared_stub_to_interp_requests->push(request);
+  _finalize_stubs = true;
+}
+
+#ifndef PRODUCT
+void CodeBuffer::block_comment(ptrdiff_t offset, const char* comment) {
   if (_collect_comments) {
-    _code_strings.add_comment(offset, comment);
+    const char* str = _asm_remarks.insert(offset, comment);
+    postcond(str != comment);
   }
 }
 
 const char* CodeBuffer::code_string(const char* str) {
-  return _code_strings.add_string(str);
-}
-
-class CodeString: public CHeapObj<mtCode> {
- private:
-  friend class CodeStrings;
-  const char * _string;
-  CodeString*  _next;
-  CodeString*  _prev;
-  intptr_t     _offset;
-
-  ~CodeString() {
-    assert(_next == NULL && _prev == NULL, "wrong interface for freeing list");
-    os::free((void*)_string);
-  }
-
-  bool is_comment() const { return _offset >= 0; }
-
- public:
-  CodeString(const char * string, intptr_t offset = -1)
-    : _next(NULL), _prev(NULL), _offset(offset) {
-    _string = os::strdup(string, mtCode);
-  }
-
-  const char * string() const { return _string; }
-  intptr_t     offset() const { assert(_offset >= 0, "offset for non comment?"); return _offset;  }
-  CodeString* next()    const { return _next; }
-
-  void set_next(CodeString* next) {
-    _next = next;
-    if (next != NULL) {
-      next->_prev = this;
-    }
-  }
-
-  CodeString* first_comment() {
-    if (is_comment()) {
-      return this;
-    } else {
-      return next_comment();
-    }
-  }
-  CodeString* next_comment() const {
-    CodeString* s = _next;
-    while (s != NULL && !s->is_comment()) {
-      s = s->_next;
-    }
-    return s;
-  }
-};
-
-CodeString* CodeStrings::find(intptr_t offset) const {
-  CodeString* a = _strings->first_comment();
-  while (a != NULL && a->offset() != offset) {
-    a = a->next_comment();
-  }
-  return a;
-}
-
-// Convenience for add_comment.
-CodeString* CodeStrings::find_last(intptr_t offset) const {
-  CodeString* a = _strings_last;
-  while (a != NULL && !(a->is_comment() && a->offset() == offset)) {
-    a = a->_prev;
-  }
-  return a;
-}
-
-void CodeStrings::add_comment(intptr_t offset, const char * comment) {
-  check_valid();
-  CodeString* c      = new CodeString(comment, offset);
-  CodeString* inspos = (_strings == NULL) ? NULL : find_last(offset);
-
-  if (inspos) {
-    // insert after already existing comments with same offset
-    c->set_next(inspos->next());
-    inspos->set_next(c);
-  } else {
-    // no comments with such offset, yet. Insert before anything else.
-    c->set_next(_strings);
-    _strings = c;
-  }
-  if (c->next() == NULL) {
-    _strings_last = c;
-  }
-}
-
-void CodeStrings::assign(CodeStrings& other) {
-  other.check_valid();
-  assert(is_null(), "Cannot assign onto non-empty CodeStrings");
-  _strings = other._strings;
-  _strings_last = other._strings_last;
-#ifdef ASSERT
-  _defunct = false;
-#endif
-  other.set_null_and_invalidate();
-}
-
-// Deep copy of CodeStrings for consistent memory management.
-// Only used for actual disassembly so this is cheaper than reference counting
-// for the "normal" fastdebug case.
-void CodeStrings::copy(CodeStrings& other) {
-  other.check_valid();
-  check_valid();
-  assert(is_null(), "Cannot copy onto non-empty CodeStrings");
-  CodeString* n = other._strings;
-  CodeString** ps = &_strings;
-  CodeString* prev = NULL;
-  while (n != NULL) {
-    *ps = new CodeString(n->string(),n->offset());
-    (*ps)->_prev = prev;
-    prev = *ps;
-    ps = &((*ps)->_next);
-    n = n->next();
-  }
-}
-
-const char* CodeStrings::_prefix = " ;; ";  // default: can be changed via set_prefix
-
-// Check if any block comments are pending for the given offset.
-bool CodeStrings::has_block_comment(intptr_t offset) const {
-  if (_strings == NULL) return false;
-  CodeString* c = find(offset);
-  return c != NULL;
-}
-
-void CodeStrings::print_block_comment(outputStream* stream, intptr_t offset) const {
-  check_valid();
-  if (_strings != NULL) {
-    CodeString* c = find(offset);
-    while (c && c->offset() == offset) {
-      stream->bol();
-      stream->print("%s", _prefix);
-      // Don't interpret as format strings since it could contain %
-      stream->print_raw(c->string());
-      stream->bol(); // advance to next line only if string didn't contain a cr() at the end.
-      c = c->next_comment();
-    }
-  }
-}
-
-// Also sets isNull()
-void CodeStrings::free() {
-  CodeString* n = _strings;
-  while (n) {
-    // unlink the node from the list saving a pointer to the next
-    CodeString* p = n->next();
-    n->set_next(NULL);
-    if (p != NULL) {
-      assert(p->_prev == n, "missing prev link");
-      p->_prev = NULL;
-    }
-    delete n;
-    n = p;
-  }
-  set_null_and_invalidate();
-}
-
-const char* CodeStrings::add_string(const char * string) {
-  check_valid();
-  CodeString* s = new CodeString(string);
-  s->set_next(_strings);
-  if (_strings == NULL) {
-    _strings_last = s;
-  }
-  _strings = s;
-  assert(s->string() != NULL, "should have a string");
-  return s->string();
+  const char* tmp = _dbg_strings.insert(str);
+  postcond(tmp != str);
+  return tmp;
 }
 
 void CodeBuffer::decode() {
   ttyLocker ttyl;
-  Disassembler::decode(decode_begin(), insts_end(), tty);
+  Disassembler::decode(decode_begin(), insts_end(), tty NOT_PRODUCT(COMMA &asm_remarks()));
   _decode_begin = insts_end();
 }
 
 void CodeSection::print(const char* name) {
   csize_t locs_size = locs_end() - locs_start();
-  tty->print_cr(" %7s.code = " PTR_FORMAT " : " PTR_FORMAT " : " PTR_FORMAT " (%d of %d)%s",
-                name, p2i(start()), p2i(end()), p2i(limit()), size(), capacity(),
-                is_frozen()? " [frozen]": "");
+  tty->print_cr(" %7s.code = " PTR_FORMAT " : " PTR_FORMAT " : " PTR_FORMAT " (%d of %d)",
+                name, p2i(start()), p2i(end()), p2i(limit()), size(), capacity());
   tty->print_cr(" %7s.locs = " PTR_FORMAT " : " PTR_FORMAT " : " PTR_FORMAT " (%d of %d) point=%d",
                 name, p2i(locs_start()), p2i(locs_end()), p2i(locs_limit()), locs_size, locs_capacity(), locs_point_off());
   if (PrintRelocations) {
@@ -1245,10 +1056,297 @@ void CodeBuffer::print() {
   }
 }
 
-// Directly disassemble code buffer.
-void CodeBuffer::decode(address start, address end) {
-  ttyLocker ttyl;
-  Disassembler::decode(this, start, end, tty);
+// ----- CHeapString -----------------------------------------------------------
+
+class CHeapString : public CHeapObj<mtCode> {
+ public:
+  CHeapString(const char* str) : _string(os::strdup(str)) {}
+ ~CHeapString() {
+    os::free((void*)_string);
+    _string = nullptr;
+  }
+  const char* string() const { return _string; }
+
+ private:
+  const char* _string;
+};
+
+// ----- AsmRemarkCollection ---------------------------------------------------
+
+class AsmRemarkCollection : public CHeapObj<mtCode> {
+ public:
+  AsmRemarkCollection() : _ref_cnt(1), _remarks(nullptr), _next(nullptr) {}
+ ~AsmRemarkCollection() {
+    assert(is_empty(), "Must 'clear()' before deleting!");
+    assert(_ref_cnt == 0, "No uses must remain when deleting!");
+  }
+  AsmRemarkCollection* reuse() {
+    precond(_ref_cnt > 0);
+    return _ref_cnt++, this;
+  }
+
+  const char* insert(uint offset, const char* remark);
+  const char* lookup(uint offset) const;
+  const char* next(uint offset) const;
+
+  bool is_empty() const { return _remarks == nullptr; }
+  uint clear();
+
+ private:
+  struct Cell : CHeapString {
+    Cell(const char* remark, uint offset) :
+        CHeapString(remark), offset(offset), prev(nullptr), next(nullptr) {}
+    void push_back(Cell* cell) {
+      Cell* head = this;
+      Cell* tail = prev;
+      tail->next = cell;
+      cell->next = head;
+      cell->prev = tail;
+      prev = cell;
+    }
+    uint offset;
+    Cell* prev;
+    Cell* next;
+  };
+  uint  _ref_cnt;
+  Cell* _remarks;
+  // Using a 'mutable' iteration pointer to allow 'const' on lookup/next (that
+  // does not change the state of the list per se), supportig a simplistic
+  // iteration scheme.
+  mutable Cell* _next;
+};
+
+// ----- DbgStringCollection ---------------------------------------------------
+
+class DbgStringCollection : public CHeapObj<mtCode> {
+ public:
+  DbgStringCollection() : _ref_cnt(1), _strings(nullptr) {}
+ ~DbgStringCollection() {
+    assert(is_empty(), "Must 'clear()' before deleting!");
+    assert(_ref_cnt == 0, "No uses must remain when deleting!");
+  }
+  DbgStringCollection* reuse() {
+    precond(_ref_cnt > 0);
+    return _ref_cnt++, this;
+  }
+
+  const char* insert(const char* str);
+  const char* lookup(const char* str) const;
+
+  bool is_empty() const { return _strings == nullptr; }
+  uint clear();
+
+ private:
+  struct Cell : CHeapString {
+    Cell(const char* dbgstr) :
+        CHeapString(dbgstr), prev(nullptr), next(nullptr) {}
+    void push_back(Cell* cell) {
+      Cell* head = this;
+      Cell* tail = prev;
+      tail->next = cell;
+      cell->next = head;
+      cell->prev = tail;
+      prev = cell;
+    }
+    Cell* prev;
+    Cell* next;
+  };
+  uint  _ref_cnt;
+  Cell* _strings;
+};
+
+// ----- AsmRemarks ------------------------------------------------------------
+//
+// Acting as interface to reference counted mapping [offset -> remark], where
+// offset is a byte offset into an instruction stream (CodeBuffer, CodeBlob or
+// other memory buffer) and remark is a string (comment).
+//
+AsmRemarks::AsmRemarks() : _remarks(new AsmRemarkCollection()) {
+  assert(_remarks != nullptr, "Allocation failure!");
 }
 
-#endif // PRODUCT
+AsmRemarks::~AsmRemarks() {
+  assert(_remarks == nullptr, "Must 'clear()' before deleting!");
+}
+
+const char* AsmRemarks::insert(uint offset, const char* remstr) {
+  precond(remstr != nullptr);
+  return _remarks->insert(offset, remstr);
+}
+
+bool AsmRemarks::is_empty() const {
+  return _remarks->is_empty();
+}
+
+void AsmRemarks::share(const AsmRemarks &src) {
+  precond(is_empty());
+  clear();
+  _remarks = src._remarks->reuse();
+}
+
+void AsmRemarks::clear() {
+  if (_remarks->clear() == 0) {
+    delete _remarks;
+  }
+  _remarks = nullptr;
+}
+
+uint AsmRemarks::print(uint offset, outputStream* strm) const {
+  uint count = 0;
+  const char* prefix = " ;; ";
+  const char* remstr = _remarks->lookup(offset);
+  while (remstr != nullptr) {
+    strm->bol();
+    strm->print("%s", prefix);
+    // Don't interpret as format strings since it could contain '%'.
+    strm->print_raw(remstr);
+    // Advance to next line iff string didn't contain a cr() at the end.
+    strm->bol();
+    remstr = _remarks->next(offset);
+    count++;
+  }
+  return count;
+}
+
+// ----- DbgStrings ------------------------------------------------------------
+//
+// Acting as interface to reference counted collection of (debug) strings used
+// in the code generated, and thus requiring a fixed address.
+//
+DbgStrings::DbgStrings() : _strings(new DbgStringCollection()) {
+  assert(_strings != nullptr, "Allocation failure!");
+}
+
+DbgStrings::~DbgStrings() {
+  assert(_strings == nullptr, "Must 'clear()' before deleting!");
+}
+
+const char* DbgStrings::insert(const char* dbgstr) {
+  const char* str = _strings->lookup(dbgstr);
+  return str != nullptr ? str : _strings->insert(dbgstr);
+}
+
+bool DbgStrings::is_empty() const {
+  return _strings->is_empty();
+}
+
+void DbgStrings::share(const DbgStrings &src) {
+  precond(is_empty());
+  _strings = src._strings->reuse();
+}
+
+void DbgStrings::clear() {
+  if (_strings->clear() == 0) {
+    delete _strings;
+  }
+  _strings = nullptr;
+}
+
+// ----- AsmRemarkCollection ---------------------------------------------------
+
+const char* AsmRemarkCollection::insert(uint offset, const char* remstr) {
+  precond(remstr != nullptr);
+  Cell* cell = new Cell { remstr, offset };
+  if (is_empty()) {
+    cell->prev = cell;
+    cell->next = cell;
+    _remarks = cell;
+  } else {
+    _remarks->push_back(cell);
+  }
+  return cell->string();
+}
+
+const char* AsmRemarkCollection::lookup(uint offset) const {
+  _next = _remarks;
+  return next(offset);
+}
+
+const char* AsmRemarkCollection::next(uint offset) const {
+  if (_next != nullptr) {
+    Cell* i = _next;
+    do {
+      if (i->offset == offset) {
+        _next = i->next == _remarks ? nullptr : i->next;
+        return i->string();
+      }
+      i = i->next;
+    } while (i != _remarks);
+    _next = nullptr;
+  }
+  return nullptr;
+}
+
+uint AsmRemarkCollection::clear() {
+  precond(_ref_cnt > 0);
+  if (--_ref_cnt > 0) {
+    return _ref_cnt;
+  }
+  if (!is_empty()) {
+    uint count = 0;
+    Cell* i = _remarks;
+    do {
+      Cell* next = i->next;
+      delete i;
+      i = next;
+      count++;
+    } while (i != _remarks);
+
+    log_debug(codestrings)("Clear %u asm-remark%s.", count, count == 1 ? "" : "s");
+    _remarks = nullptr;
+  }
+  return 0; // i.e. _ref_cnt == 0
+}
+
+// ----- DbgStringCollection ---------------------------------------------------
+
+const char* DbgStringCollection::insert(const char* dbgstr) {
+  precond(dbgstr != nullptr);
+  Cell* cell = new Cell { dbgstr };
+
+  if (is_empty()) {
+     cell->prev = cell;
+     cell->next = cell;
+     _strings = cell;
+  } else {
+    _strings->push_back(cell);
+  }
+  return cell->string();
+}
+
+const char* DbgStringCollection::lookup(const char* dbgstr) const {
+  precond(dbgstr != nullptr);
+  if (_strings != nullptr) {
+    Cell* i = _strings;
+    do {
+      if (strcmp(i->string(), dbgstr) == 0) {
+        return i->string();
+      }
+      i = i->next;
+    } while (i != _strings);
+  }
+  return nullptr;
+}
+
+uint DbgStringCollection::clear() {
+  precond(_ref_cnt > 0);
+  if (--_ref_cnt > 0) {
+    return _ref_cnt;
+  }
+  if (!is_empty()) {
+    uint count = 0;
+    Cell* i = _strings;
+    do {
+      Cell* next = i->next;
+      delete i;
+      i = next;
+      count++;
+    } while (i != _strings);
+
+    log_debug(codestrings)("Clear %u dbg-string%s.", count, count == 1 ? "" : "s");
+    _strings = nullptr;
+  }
+  return 0; // i.e. _ref_cnt == 0
+}
+
+#endif // not PRODUCT

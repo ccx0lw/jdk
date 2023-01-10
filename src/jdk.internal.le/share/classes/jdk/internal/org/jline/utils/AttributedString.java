@@ -4,12 +4,13 @@
  * This software is distributable under the BSD license. See the terms of the
  * BSD license in the documentation provided with this software.
  *
- * http://www.opensource.org/licenses/bsd-license.php
+ * https://opensource.org/licenses/BSD-3-Clause
  */
 package jdk.internal.org.jline.utils;
 
 import java.security.InvalidParameterException;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -24,7 +25,7 @@ import java.util.regex.Pattern;
 public class AttributedString extends AttributedCharSequence {
 
     final char[] buffer;
-    final int[] style;
+    final long[] style;
     final int start;
     final int end;
     public static final AttributedString EMPTY = new AttributedString("");
@@ -77,7 +78,7 @@ public class AttributedString extends AttributedCharSequence {
             for (int i = 0; i < l; i++) {
                 buffer[i] = str.charAt(start + i);
             }
-            style = new int[l];
+            style = new long[l];
             if (s != null) {
                 Arrays.fill(style, s.getStyle());
             }
@@ -86,7 +87,7 @@ public class AttributedString extends AttributedCharSequence {
         }
     }
 
-    AttributedString(char[] buffer, int[] style, int start, int end) {
+    AttributedString(char[] buffer, long[] style, int start, int end) {
         this.buffer = buffer;
         this.style = style;
         this.start = start;
@@ -98,6 +99,10 @@ public class AttributedString extends AttributedCharSequence {
     }
 
     public static AttributedString fromAnsi(String ansi, int tabs) {
+        return fromAnsi(ansi, Arrays.asList(tabs));
+    }
+
+    public static AttributedString fromAnsi(String ansi, List<Integer> tabs) {
         if (ansi == null) {
             return null;
         }
@@ -137,7 +142,7 @@ public class AttributedString extends AttributedCharSequence {
     }
 
     @Override
-    int styleCodeAt(int index) {
+    long styleCodeAt(int index) {
         return style[start + index];
     }
 
@@ -150,7 +155,7 @@ public class AttributedString extends AttributedCharSequence {
         Matcher matcher = pattern.matcher(this);
         boolean result = matcher.find();
         if (result) {
-            int[] newstyle = this.style.clone();
+            long[] newstyle = this.style.clone();
             do {
                 for (int i = matcher.start(); i < matcher.end(); i++) {
                     newstyle[this.start + i] = (newstyle[this.start + i] & ~style.getMask()) | style.getStyle();
@@ -180,7 +185,7 @@ public class AttributedString extends AttributedCharSequence {
         }
         return true;
     }
-    private boolean arrEq(int[] a1, int[] a2, int s1, int s2, int l) {
+    private boolean arrEq(long[] a1, long[] a2, int s1, int s2, int l) {
         for (int i = 0; i < l; i++) {
             if (a1[s1+i] != a2[s2+i]) {
                 return false;

@@ -42,6 +42,7 @@
  * @build *
  * @modules java.management
  * @run junit/othervm/timeout=1000 JSR166TestCase
+ * @run junit/othervm/timeout=1000 -Djava.security.manager=allow JSR166TestCase
  * @run junit/othervm/timeout=1000
  *      --add-opens java.base/java.util.concurrent=ALL-UNNAMED
  *      --add-opens java.base/java.lang=ALL-UNNAMED
@@ -101,6 +102,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.PropertyPermission;
+import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Callable;
@@ -177,6 +179,11 @@ import junit.framework.TestSuite;
  * but even so, if there is ever any doubt, they can all be increased
  * in one spot to rerun tests on slower platforms.
  *
+ * Class Item is used for elements of collections and related
+ * purposes. Many tests rely on their keys being equal to ints. To
+ * check these, methods mustEqual, mustContain, etc adapt the JUnit
+ * assert methods to intercept ints.
+ *
  * <li>All threads generated must be joined inside each test case
  * method (or {@code fail} to do so) before returning from the
  * method. The {@code joinPool} method can be used to do this when
@@ -216,8 +223,9 @@ import junit.framework.TestSuite;
  * </ul>
  */
 public class JSR166TestCase extends TestCase {
+    // No longer run with custom securityManagers
     private static final boolean useSecurityManager =
-        Boolean.getBoolean("jsr166.useSecurityManager");
+    Boolean.getBoolean("jsr166.useSecurityManager");
 
     protected static final boolean expensiveTests =
         Boolean.getBoolean("jsr166.expensiveTests");
@@ -279,7 +287,7 @@ public class JSR166TestCase extends TestCase {
      * May be initialized from any of:
      * - the "jsr166.delay.factor" system property
      * - the "test.timeout.factor" system property (as used by jtreg)
-     *   See: http://openjdk.java.net/jtreg/tag-spec.html
+     *   See: https://openjdk.org/jtreg/tag-spec.html
      * - hard-coded fuzz factor when using a known slowpoke VM
      */
     private static final float delayFactor = delayFactor();
@@ -428,11 +436,15 @@ public class JSR166TestCase extends TestCase {
      * Runs all unit tests in the given test suite.
      * Actual behavior influenced by jsr166.* system properties.
      */
+    @SuppressWarnings("removal")
     static void main(Test suite, String[] args) {
         if (useSecurityManager) {
             System.err.println("Setting a permissive security manager");
             Policy.setPolicy(permissivePolicy());
-            System.setSecurityManager(new SecurityManager());
+            try {
+                System.setSecurityManager(new SecurityManager());
+            } catch(Throwable ok) {  // failure OK during deprecation
+            }
         }
         for (int i = 0; i < suiteRuns; i++) {
             TestResult result = newPithyTestRunner().doRun(suite);
@@ -473,14 +485,18 @@ public class JSR166TestCase extends TestCase {
     public static final String JAVA_SPECIFICATION_VERSION;
     static {
         try {
-            JAVA_CLASS_VERSION = java.security.AccessController.doPrivileged(
+            @SuppressWarnings("removal") double jcv =
+            java.security.AccessController.doPrivileged(
                 new java.security.PrivilegedAction<Double>() {
                 public Double run() {
                     return Double.valueOf(System.getProperty("java.class.version"));}});
-            JAVA_SPECIFICATION_VERSION = java.security.AccessController.doPrivileged(
+            JAVA_CLASS_VERSION = jcv;
+            @SuppressWarnings("removal") String jsv =
+            java.security.AccessController.doPrivileged(
                 new java.security.PrivilegedAction<String>() {
                 public String run() {
                     return System.getProperty("java.specification.version");}});
+            JAVA_SPECIFICATION_VERSION = jsv;
         } catch (Throwable t) {
             throw new Error(t);
         }
@@ -497,7 +513,8 @@ public class JSR166TestCase extends TestCase {
     public static boolean atLeastJava14() { return JAVA_CLASS_VERSION >= 58.0; }
     public static boolean atLeastJava15() { return JAVA_CLASS_VERSION >= 59.0; }
     public static boolean atLeastJava16() { return JAVA_CLASS_VERSION >= 60.0; }
-    public static boolean atLeastJava17() { return JAVA_CLASS_VERSION >= 61.0; }
+    public static boolean atLeastJava19() { return JAVA_CLASS_VERSION >= 63.0; }
+    public static boolean atLeastJava20() { return JAVA_CLASS_VERSION >= 64.0; }
 
     /**
      * Collects all JSR166 unit tests as one suite.
@@ -617,6 +634,20 @@ public class JSR166TestCase extends TestCase {
             addNamedTestClasses(suite, java9TestClassNames);
         }
 
+        if (atLeastJava19()) {
+            String[] java19TestClassNames = {
+                "ForkJoinPool19Test",
+            };
+            addNamedTestClasses(suite, java19TestClassNames);
+        }
+
+        if (atLeastJava20()) {
+            String[] java20TestClassNames = {
+                "ForkJoinPool20Test",
+            };
+            addNamedTestClasses(suite, java20TestClassNames);
+        }
+
         return suite;
     }
 
@@ -731,6 +762,14 @@ public class JSR166TestCase extends TestCase {
     /**
      * Returns a random element from given choices.
      */
+    <T> T chooseRandomly(List<T> choices) {
+        return choices.get(ThreadLocalRandom.current().nextInt(choices.size()));
+    }
+
+    /**
+     * Returns a random element from given choices.
+     */
+    @SuppressWarnings("unchecked")
     <T> T chooseRandomly(T... choices) {
         return choices[ThreadLocalRandom.current().nextInt(choices.length)];
     }
@@ -739,7 +778,7 @@ public class JSR166TestCase extends TestCase {
      * Returns the shortest timed delay. This can be scaled up for
      * slow machines using the jsr166.delay.factor system property,
      * or via jtreg's -timeoutFactor: flag.
-     * http://openjdk.java.net/jtreg/command-help.html
+     * https://openjdk.org/jtreg/command-help.html
      */
     protected long getShortDelay() {
         return (long) (50 * delayFactor);
@@ -1067,7 +1106,7 @@ public class JSR166TestCase extends TestCase {
     void joinPool(ExecutorService pool) {
         try {
             pool.shutdown();
-            if (!pool.awaitTermination(2 * LONG_DELAY_MS, MILLISECONDS)) {
+            if (!pool.awaitTermination(20 * LONG_DELAY_MS, MILLISECONDS)) {
                 try {
                     threadFail("ExecutorService " + pool +
                                " did not terminate in a timely manner");
@@ -1151,6 +1190,7 @@ public class JSR166TestCase extends TestCase {
      * A debugging tool to print stack traces of most threads, as jstack does.
      * Uninteresting threads are filtered out.
      */
+    @SuppressWarnings("removal")
     static void dumpTestThreads() {
         SecurityManager sm = System.getSecurityManager();
         if (sm != null) {
@@ -1205,14 +1245,14 @@ public class JSR166TestCase extends TestCase {
      * Checks that future.get times out, with the default timeout of
      * {@code timeoutMillis()}.
      */
-    void assertFutureTimesOut(Future future) {
+    void assertFutureTimesOut(Future<?> future) {
         assertFutureTimesOut(future, timeoutMillis());
     }
 
     /**
      * Checks that future.get times out, with the given millisecond timeout.
      */
-    void assertFutureTimesOut(Future future, long timeoutMillis) {
+    void assertFutureTimesOut(Future<?> future, long timeoutMillis) {
         long startTime = System.nanoTime();
         try {
             future.get(timeoutMillis, MILLISECONDS);
@@ -1220,8 +1260,9 @@ public class JSR166TestCase extends TestCase {
         } catch (TimeoutException success) {
         } catch (Exception fail) {
             threadUnexpectedException(fail);
-        } finally { future.cancel(true); }
+        }
         assertTrue(millisElapsedSince(startTime) >= timeoutMillis);
+        assertFalse(future.isDone());
     }
 
     /**
@@ -1246,28 +1287,135 @@ public class JSR166TestCase extends TestCase {
 
     /**
      * The number of elements to place in collections, arrays, etc.
+     * Must be at least ten;
      */
-    public static final int SIZE = 20;
+    public static final int SIZE = 32;
 
-    // Some convenient Integer constants
+    static Item[] seqItems(int size) {
+        Item[] s = new Item[size];
+        for (int i = 0; i < size; ++i)
+            s[i] = new Item(i);
+        return s;
+    }
+    static Item[] negativeSeqItems(int size) {
+        Item[] s = new Item[size];
+        for (int i = 0; i < size; ++i)
+            s[i] = new Item(-i);
+        return s;
+    }
 
-    public static final Integer zero  = new Integer(0);
-    public static final Integer one   = new Integer(1);
-    public static final Integer two   = new Integer(2);
-    public static final Integer three = new Integer(3);
-    public static final Integer four  = new Integer(4);
-    public static final Integer five  = new Integer(5);
-    public static final Integer six   = new Integer(6);
-    public static final Integer seven = new Integer(7);
-    public static final Integer eight = new Integer(8);
-    public static final Integer nine  = new Integer(9);
-    public static final Integer m1  = new Integer(-1);
-    public static final Integer m2  = new Integer(-2);
-    public static final Integer m3  = new Integer(-3);
-    public static final Integer m4  = new Integer(-4);
-    public static final Integer m5  = new Integer(-5);
-    public static final Integer m6  = new Integer(-6);
-    public static final Integer m10 = new Integer(-10);
+    // Many tests rely on defaultItems all being sequential nonnegative
+    public static final Item[] defaultItems = seqItems(SIZE);
+
+    static Item itemFor(int i) { // check cache for defaultItems
+        Item[] items = defaultItems;
+        return (i >= 0 && i < items.length) ? items[i] : new Item(i);
+    }
+
+    public static final Item zero  = defaultItems[0];
+    public static final Item one   = defaultItems[1];
+    public static final Item two   = defaultItems[2];
+    public static final Item three = defaultItems[3];
+    public static final Item four  = defaultItems[4];
+    public static final Item five  = defaultItems[5];
+    public static final Item six   = defaultItems[6];
+    public static final Item seven = defaultItems[7];
+    public static final Item eight = defaultItems[8];
+    public static final Item nine  = defaultItems[9];
+    public static final Item ten   = defaultItems[10];
+
+    public static final Item[] negativeItems = negativeSeqItems(SIZE);
+
+    public static final Item minusOne   = negativeItems[1];
+    public static final Item minusTwo   = negativeItems[2];
+    public static final Item minusThree = negativeItems[3];
+    public static final Item minusFour  = negativeItems[4];
+    public static final Item minusFive  = negativeItems[5];
+    public static final Item minusSix   = negativeItems[6];
+    public static final Item minusSeven = negativeItems[7];
+    public static final Item minusEight = negativeItems[8];
+    public static final Item minusNone  = negativeItems[9];
+    public static final Item minusTen   = negativeItems[10];
+
+    // elements expected to be missing
+    public static final Item fortytwo = new Item(42);
+    public static final Item eightysix = new Item(86);
+    public static final Item ninetynine = new Item(99);
+
+    // Interop across Item, int
+
+    static void mustEqual(Item x, Item y) {
+        if (x != y)
+            assertEquals(x.value, y.value);
+    }
+    static void mustEqual(Item x, int y) {
+        assertEquals(x.value, y);
+    }
+    static void mustEqual(int x, Item y) {
+        assertEquals(x, y.value);
+    }
+    static void mustEqual(int x, int y) {
+        assertEquals(x, y);
+    }
+    static void mustEqual(Object x, Object y) {
+        if (x != y)
+            assertEquals(x, y);
+    }
+    static void mustEqual(int x, Object y) {
+        if (y instanceof Item)
+            assertEquals(x, ((Item)y).value);
+        else fail();
+    }
+    static void mustEqual(Object x, int y) {
+        if (x instanceof Item)
+            assertEquals(((Item)x).value, y);
+        else fail();
+    }
+    static void mustEqual(boolean x, boolean y) {
+        assertEquals(x, y);
+    }
+    static void mustEqual(long x, long y) {
+        assertEquals(x, y);
+    }
+    static void mustEqual(double x, double y) {
+        assertEquals(x, y);
+    }
+    static void mustContain(Collection<Item> c, int i) {
+        assertTrue(c.contains(itemFor(i)));
+    }
+    static void mustContain(Collection<Item> c, Item i) {
+        assertTrue(c.contains(i));
+    }
+    static void mustNotContain(Collection<Item> c, int i) {
+        assertFalse(c.contains(itemFor(i)));
+    }
+    static void mustNotContain(Collection<Item> c, Item i) {
+        assertFalse(c.contains(i));
+    }
+    static void mustRemove(Collection<Item> c, int i) {
+        assertTrue(c.remove(itemFor(i)));
+    }
+    static void mustRemove(Collection<Item> c, Item i) {
+        assertTrue(c.remove(i));
+    }
+    static void mustNotRemove(Collection<Item> c, int i) {
+        assertFalse(c.remove(itemFor(i)));
+    }
+    static void mustNotRemove(Collection<Item> c, Item i) {
+        assertFalse(c.remove(i));
+    }
+    static void mustAdd(Collection<Item> c, int i) {
+        assertTrue(c.add(itemFor(i)));
+    }
+    static void mustAdd(Collection<Item> c, Item i) {
+        assertTrue(c.add(i));
+    }
+    static void mustOffer(Queue<Item> c, int i) {
+        assertTrue(c.offer(itemFor(i)));
+    }
+    static void mustOffer(Queue<Item> c, Item i) {
+        assertTrue(c.offer(i));
+    }
 
     /**
      * Runs Runnable r with a security policy that permits precisely
@@ -1276,6 +1424,7 @@ public class JSR166TestCase extends TestCase {
      * security manager.  We require that any security manager permit
      * getPolicy/setPolicy.
      */
+    @SuppressWarnings("removal")
     public void runWithPermissions(Runnable r, Permission... permissions) {
         SecurityManager sm = System.getSecurityManager();
         if (sm == null) {
@@ -1291,8 +1440,10 @@ public class JSR166TestCase extends TestCase {
      * Runnable.  We require that any security manager permit
      * getPolicy/setPolicy.
      */
+    @SuppressWarnings("removal")
     public void runWithSecurityManagerWithPermissions(Runnable r,
                                                       Permission... permissions) {
+        if (!useSecurityManager) return;
         SecurityManager sm = System.getSecurityManager();
         if (sm == null) {
             Policy savedPolicy = Policy.getPolicy();
@@ -1300,9 +1451,13 @@ public class JSR166TestCase extends TestCase {
                 Policy.setPolicy(permissivePolicy());
                 System.setSecurityManager(new SecurityManager());
                 runWithSecurityManagerWithPermissions(r, permissions);
+            } catch (UnsupportedOperationException ok) {
             } finally {
-                System.setSecurityManager(null);
-                Policy.setPolicy(savedPolicy);
+                try {
+                    System.setSecurityManager(null);
+                    Policy.setPolicy(savedPolicy);
+                } catch (Exception ok) {
+                }
             }
         } else {
             Policy savedPolicy = Policy.getPolicy();
@@ -1329,6 +1484,7 @@ public class JSR166TestCase extends TestCase {
      * A security policy where new permissions can be dynamically added
      * or all cleared.
      */
+    @SuppressWarnings("removal")
     public static class AdjustablePolicy extends java.security.Policy {
         Permissions perms = new Permissions();
         AdjustablePolicy(Permission... permissions) {
@@ -1358,6 +1514,7 @@ public class JSR166TestCase extends TestCase {
     /**
      * Returns a policy containing all the permissions we ever need.
      */
+    @SuppressWarnings("removal")
     public static Policy permissivePolicy() {
         return new AdjustablePolicy
             // Permissions j.u.c. needs directly
@@ -1615,7 +1772,7 @@ public class JSR166TestCase extends TestCase {
         public void run() {}
     }
 
-    public static class NoOpCallable implements Callable {
+    public static class NoOpCallable implements Callable<Object> {
         public Object call() { return Boolean.TRUE; }
     }
 
@@ -1799,7 +1956,7 @@ public class JSR166TestCase extends TestCase {
 
         public int await() {
             try {
-                return super.await(2 * LONG_DELAY_MS, MILLISECONDS);
+                return super.await(LONGER_DELAY_MS, MILLISECONDS);
             } catch (TimeoutException timedOut) {
                 throw new AssertionError("timed out");
             } catch (Exception fail) {
@@ -1808,7 +1965,7 @@ public class JSR166TestCase extends TestCase {
         }
     }
 
-    void checkEmpty(BlockingQueue q) {
+    void checkEmpty(BlockingQueue<?> q) {
         try {
             assertTrue(q.isEmpty());
             assertEquals(0, q.size());
@@ -1855,6 +2012,7 @@ public class JSR166TestCase extends TestCase {
         }
     }
 
+    @SuppressWarnings("unchecked")
     void assertImmutable(Object o) {
         if (o instanceof Collection) {
             assertThrows(
@@ -2004,7 +2162,7 @@ public class JSR166TestCase extends TestCase {
             shouldThrow();
         } catch (NullPointerException success) {}
         try {
-            es.submit((Callable) null);
+            es.submit((Callable<?>) null);
             shouldThrow();
         } catch (NullPointerException success) {}
 
@@ -2016,7 +2174,7 @@ public class JSR166TestCase extends TestCase {
             shouldThrow();
         } catch (NullPointerException success) {}
         try {
-            ses.schedule((Callable) null,
+            ses.schedule((Callable<?>) null,
                          randomTimeout(), randomTimeUnit());
             shouldThrow();
         } catch (NullPointerException success) {}
@@ -2175,7 +2333,7 @@ public class JSR166TestCase extends TestCase {
         else {
             assertEquals(x.isEmpty(), y.isEmpty());
             assertEquals(x.size(), y.size());
-            assertEquals(new HashSet(x), new HashSet(y));
+            assertEquals(new HashSet<Object>(x), new HashSet<Object>(y));
             if (x instanceof Deque) {
                 assertTrue(Arrays.equals(x.toArray(), y.toArray()));
                 assertTrue(Arrays.equals(x.toArray(new Object[0]),

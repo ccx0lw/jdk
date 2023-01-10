@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <!DOCTYPE ldml SYSTEM "../../common/dtd/ldml.dtd">
-<!-- Copyright © 1991-2019 Unicode, Inc.
+<!-- Copyright © 1991-2022 Unicode, Inc.
 For terms of use, see http://www.unicode.org/copyright.html
-Unicode and the Unicode Logo are registered trademarks of Unicode, Inc. in the U.S. and other countries.
+SPDX-License-Identifier: Unicode-DFS-2016
 CLDR data files are interpreted according to the LDML specification (http://unicode.org/reports/tr35/)
 -->
 <ldml>
 	<identity>
-		<version number="$Revision: 14782 $"/>
+		<version number="$Revision$"/>
 		<language type="ksh"/>
 	</identity>
 	<localeDisplayNames>
@@ -527,7 +527,6 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 			<territory type="FR" draft="contributed">Frankrisch</territory>
 			<territory type="GA" draft="contributed">Jabuhn</territory>
 			<territory type="GB" draft="contributed">Jruußbrettannije</territory>
-			<territory type="GB" alt="short" draft="contributed">Jruußbrettannije</territory>
 			<territory type="GD">Jrenahda</territory>
 			<territory type="GE" draft="contributed">Jeorrjije</territory>
 			<territory type="GF" draft="contributed">Franzüüsesch Jujaana</territory>
@@ -546,7 +545,6 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 			<territory type="GW" draft="contributed">Jinneha_Bißau</territory>
 			<territory type="GY" draft="contributed">Jujaana</territory>
 			<territory type="HK" draft="contributed">Hongkong</territory>
-			<territory type="HK" alt="short" draft="contributed">Hongkong</territory>
 			<territory type="HM" draft="contributed">de Heart Ensel un de McDonald-Enselle</territory>
 			<territory type="HN" draft="contributed">Honduras</territory>
 			<territory type="HR" draft="contributed">Krowazije</territory>
@@ -596,13 +594,10 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 			<territory type="MF" draft="contributed">de Zint-Määtes-Ensel</territory>
 			<territory type="MG" draft="contributed">Maddajaska</territory>
 			<territory type="MH" draft="contributed">de Machschall-Enselle</territory>
-			<territory type="MK" draft="contributed">Mazedoonije</territory>
-			<territory type="MK" alt="variant" draft="contributed">de vörmaals ens jugoßlaawesch jewääse Republik Mazedoonije</territory>
 			<territory type="ML" draft="contributed">Maali</territory>
 			<territory type="MM" draft="contributed">Birma</territory>
 			<territory type="MN" draft="contributed">Mongjolei</territory>
 			<territory type="MO" draft="contributed">Makau</territory>
-			<territory type="MO" alt="short" draft="contributed">Makau</territory>
 			<territory type="MP" draft="contributed">de nöödlijje Marijanne-Enselle</territory>
 			<territory type="MQ" draft="contributed">Machtinik</territory>
 			<territory type="MR" draft="contributed">Mautitaanije</territory>
@@ -848,6 +843,7 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 					<dateFormatLength type="full">
 						<dateFormat>
 							<pattern draft="contributed">EEEE, d. MMMM y G</pattern>
+							<datetimeSkeleton draft="contributed">GyMMMMEEEEd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 				</dateFormats>
@@ -857,21 +853,25 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 					<dateFormatLength type="full">
 						<dateFormat>
 							<pattern draft="contributed">EEEE, 'dä' d. MMMM y G</pattern>
+							<datetimeSkeleton draft="contributed">GyMMMMEEEEd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="long">
 						<dateFormat>
 							<pattern draft="contributed">d. MMMM y G</pattern>
+							<datetimeSkeleton draft="contributed">GyMMMMd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="medium">
 						<dateFormat>
 							<pattern draft="contributed">d. MMM. y G</pattern>
+							<datetimeSkeleton draft="contributed">GyMMMd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="short">
 						<dateFormat>
 							<pattern draft="contributed">d. M. y GGGGG</pattern>
+							<datetimeSkeleton draft="contributed">GGGGGyMd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 				</dateFormats>
@@ -879,9 +879,9 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 					<availableFormats>
 						<dateFormatItem id="d" draft="contributed">d</dateFormatItem>
 						<dateFormatItem id="Ed" draft="contributed">E 'dä' d.</dateFormatItem>
-						<dateFormatItem id="hm" draft="contributed">h:mm a</dateFormatItem>
+						<dateFormatItem id="hm" draft="contributed">h:mm a</dateFormatItem>
 						<dateFormatItem id="Hm" draft="contributed">H:mm</dateFormatItem>
-						<dateFormatItem id="hms" draft="contributed">h:mm:ss a</dateFormatItem>
+						<dateFormatItem id="hms" draft="contributed">h:mm:ss a</dateFormatItem>
 						<dateFormatItem id="Hms" draft="contributed">H:mm:ss</dateFormatItem>
 						<dateFormatItem id="M" draft="contributed">L</dateFormatItem>
 						<dateFormatItem id="MEd" draft="contributed">E d. M.</dateFormatItem>
@@ -906,9 +906,9 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 							<greatestDifference id="d" draft="contributed">d–d</greatestDifference>
 						</intervalFormatItem>
 						<intervalFormatItem id="hm">
-							<greatestDifference id="a" draft="contributed">h:mm a – h:mm a</greatestDifference>
-							<greatestDifference id="h" draft="contributed">h:mm–h:mm a</greatestDifference>
-							<greatestDifference id="m" draft="contributed">h:mm–h:mm a</greatestDifference>
+							<greatestDifference id="a" draft="contributed">h:mm a – h:mm a</greatestDifference>
+							<greatestDifference id="h" draft="contributed">h:mm–h:mm a</greatestDifference>
+							<greatestDifference id="m" draft="contributed">h:mm–h:mm a</greatestDifference>
 						</intervalFormatItem>
 						<intervalFormatItem id="M">
 							<greatestDifference id="M" draft="contributed">M–M</greatestDifference>
@@ -923,22 +923,22 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 							<greatestDifference id="y" draft="contributed">y–y</greatestDifference>
 						</intervalFormatItem>
 						<intervalFormatItem id="yMEd">
-							<greatestDifference id="d" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
-							<greatestDifference id="M" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
-							<greatestDifference id="y" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
+							<greatestDifference id="d" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
+							<greatestDifference id="M" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
+							<greatestDifference id="y" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
 						</intervalFormatItem>
 						<intervalFormatItem id="yMMM">
 							<greatestDifference id="M" draft="contributed">MMM–MMM y</greatestDifference>
-							<greatestDifference id="y" draft="contributed">MMM. y – MMM. y</greatestDifference>
+							<greatestDifference id="y" draft="contributed">MMM. y – MMM. y</greatestDifference>
 						</intervalFormatItem>
 						<intervalFormatItem id="yMMMEd">
-							<greatestDifference id="d" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
-							<greatestDifference id="M" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
-							<greatestDifference id="y" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
+							<greatestDifference id="d" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
+							<greatestDifference id="M" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
+							<greatestDifference id="y" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
 						</intervalFormatItem>
 						<intervalFormatItem id="yMMMM">
 							<greatestDifference id="M" draft="contributed">MMMM–MMMM y</greatestDifference>
-							<greatestDifference id="y" draft="contributed">MMMM y – MMMM y</greatestDifference>
+							<greatestDifference id="y" draft="contributed">MMMM y – MMMM y</greatestDifference>
 						</intervalFormatItem>
 					</intervalFormats>
 				</dateTimeFormats>
@@ -1135,21 +1135,25 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 					<dateFormatLength type="full">
 						<dateFormat>
 							<pattern draft="contributed">EEEE, 'dä' d. MMMM y</pattern>
+							<datetimeSkeleton draft="contributed">yMMMMEEEEd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="long">
 						<dateFormat>
 							<pattern draft="contributed">d. MMMM y</pattern>
+							<datetimeSkeleton draft="contributed">yMMMMd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="medium">
 						<dateFormat>
 							<pattern draft="contributed">d. MMM. y</pattern>
+							<datetimeSkeleton draft="contributed">yMMMd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 					<dateFormatLength type="short">
 						<dateFormat>
 							<pattern draft="contributed">d. M. y</pattern>
+							<datetimeSkeleton draft="contributed">yMd</datetimeSkeleton>
 						</dateFormat>
 					</dateFormatLength>
 				</dateFormats>
@@ -1157,21 +1161,25 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 					<timeFormatLength type="full">
 						<timeFormat>
 							<pattern draft="contributed">HH:mm:ss zzzz</pattern>
+							<datetimeSkeleton draft="contributed">HHmmsszzzz</datetimeSkeleton>
 						</timeFormat>
 					</timeFormatLength>
 					<timeFormatLength type="long">
 						<timeFormat>
 							<pattern draft="contributed">HH:mm:ss z</pattern>
+							<datetimeSkeleton draft="contributed">HHmmssz</datetimeSkeleton>
 						</timeFormat>
 					</timeFormatLength>
 					<timeFormatLength type="medium">
 						<timeFormat>
 							<pattern draft="contributed">HH:mm:ss</pattern>
+							<datetimeSkeleton draft="contributed">HHmmss</datetimeSkeleton>
 						</timeFormat>
 					</timeFormatLength>
 					<timeFormatLength type="short">
 						<timeFormat>
 							<pattern draft="contributed">HH:mm</pattern>
+							<datetimeSkeleton draft="contributed">HHmm</datetimeSkeleton>
 						</timeFormat>
 					</timeFormatLength>
 				</timeFormats>
@@ -1179,9 +1187,9 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 					<availableFormats>
 						<dateFormatItem id="d" draft="contributed">d</dateFormatItem>
 						<dateFormatItem id="Ed" draft="contributed">E 'dä' d.</dateFormatItem>
-						<dateFormatItem id="hm" draft="contributed">h:mm a</dateFormatItem>
+						<dateFormatItem id="hm" draft="contributed">h:mm a</dateFormatItem>
 						<dateFormatItem id="Hm" draft="contributed">H:mm</dateFormatItem>
-						<dateFormatItem id="hms" draft="contributed">h:mm:ss a</dateFormatItem>
+						<dateFormatItem id="hms" draft="contributed">h:mm:ss a</dateFormatItem>
 						<dateFormatItem id="Hms" draft="contributed">H:mm:ss</dateFormatItem>
 						<dateFormatItem id="M" draft="contributed">L</dateFormatItem>
 						<dateFormatItem id="MEd" draft="contributed">E d. M.</dateFormatItem>
@@ -1206,9 +1214,9 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 							<greatestDifference id="d" draft="contributed">d–d</greatestDifference>
 						</intervalFormatItem>
 						<intervalFormatItem id="hm">
-							<greatestDifference id="a" draft="contributed">h:mm a – h:mm a</greatestDifference>
-							<greatestDifference id="h" draft="contributed">h:mm–h:mm a</greatestDifference>
-							<greatestDifference id="m" draft="contributed">h:mm–h:mm a</greatestDifference>
+							<greatestDifference id="a" draft="contributed">h:mm a – h:mm a</greatestDifference>
+							<greatestDifference id="h" draft="contributed">h:mm–h:mm a</greatestDifference>
+							<greatestDifference id="m" draft="contributed">h:mm–h:mm a</greatestDifference>
 						</intervalFormatItem>
 						<intervalFormatItem id="M">
 							<greatestDifference id="M" draft="contributed">M–M</greatestDifference>
@@ -1223,26 +1231,26 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 							<greatestDifference id="y" draft="contributed">y–y</greatestDifference>
 						</intervalFormatItem>
 						<intervalFormatItem id="yMEd">
-							<greatestDifference id="d" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
-							<greatestDifference id="M" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
-							<greatestDifference id="y" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
+							<greatestDifference id="d" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
+							<greatestDifference id="M" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
+							<greatestDifference id="y" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
 						</intervalFormatItem>
 						<intervalFormatItem id="yMMM">
 							<greatestDifference id="M" draft="contributed">MMM–MMM y</greatestDifference>
-							<greatestDifference id="y" draft="contributed">MMM. y – MMM. y</greatestDifference>
+							<greatestDifference id="y" draft="contributed">MMM. y – MMM. y</greatestDifference>
 						</intervalFormatItem>
 						<intervalFormatItem id="yMMMd">
 							<greatestDifference id="d">d.–d. MMMM y</greatestDifference>
-							<greatestDifference id="M">y MMM d – MMM d</greatestDifference>
+							<greatestDifference id="M">y MMM d – MMM d</greatestDifference>
 						</intervalFormatItem>
 						<intervalFormatItem id="yMMMEd">
-							<greatestDifference id="d" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
-							<greatestDifference id="M" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
-							<greatestDifference id="y" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
+							<greatestDifference id="d" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
+							<greatestDifference id="M" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
+							<greatestDifference id="y" draft="contributed">E y-MM-dd – E y-MM-dd</greatestDifference>
 						</intervalFormatItem>
 						<intervalFormatItem id="yMMMM">
 							<greatestDifference id="M" draft="contributed">MMMM–MMMM y</greatestDifference>
-							<greatestDifference id="y" draft="contributed">MMMM y – MMMM y</greatestDifference>
+							<greatestDifference id="y" draft="contributed">MMMM y – MMMM y</greatestDifference>
 						</intervalFormatItem>
 					</intervalFormats>
 				</dateTimeFormats>
@@ -1400,9 +1408,6 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 			<regionFormat type="daylight" draft="contributed">Summerzick vun {0}</regionFormat>
 			<regionFormat type="standard" draft="contributed">Schtandattzick vun {0}</regionFormat>
 			<fallbackFormat draft="contributed">{1} ({0})</fallbackFormat>
-			<zone type="Pacific/Honolulu">
-				<exemplarCity draft="contributed">Honululu</exemplarCity>
-			</zone>
 			<zone type="Etc/Unknown">
 				<exemplarCity draft="contributed">- weße mer nit -</exemplarCity>
 			</zone>
@@ -1628,6 +1633,9 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 			</zone>
 			<zone type="Europe/Zaporozhye">
 				<exemplarCity draft="contributed">Saporischschja</exemplarCity>
+			</zone>
+			<zone type="Pacific/Honolulu">
+				<exemplarCity draft="contributed">Honululu</exemplarCity>
 			</zone>
 			<zone type="America/Yakutat">
 				<exemplarCity draft="contributed">Jakutat</exemplarCity>
@@ -2811,13 +2819,7 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 				<unitPattern count="one" draft="contributed">{0} Pferdestärke</unitPattern>
 				<unitPattern count="other" draft="contributed">{0} Pferdestärken</unitPattern>
 			</unit>
-			<unit type="pressure-hectopascal">
-				<displayName draft="contributed">Hektopascal</displayName>
-				<unitPattern count="zero" draft="contributed">{0} Hektopascal</unitPattern>
-				<unitPattern count="one" draft="contributed">{0} Hektopascal</unitPattern>
-				<unitPattern count="other" draft="contributed">{0} Hektopascal</unitPattern>
-			</unit>
-			<unit type="pressure-inch-hg">
+			<unit type="pressure-inch-ofhg">
 				<displayName draft="contributed">Dumm Quecksilbersäule</displayName>
 				<unitPattern count="zero" draft="contributed">{0} Dumm Quecksilbersäule</unitPattern>
 				<unitPattern count="one" draft="contributed">{0} Dumm Quecksilbersäule</unitPattern>
@@ -2828,6 +2830,12 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 				<unitPattern count="zero" draft="contributed">{0} Millibar</unitPattern>
 				<unitPattern count="one" draft="contributed">{0} Millibar</unitPattern>
 				<unitPattern count="other" draft="contributed">{0} Millibar</unitPattern>
+			</unit>
+			<unit type="pressure-hectopascal">
+				<displayName draft="contributed">Hektopascal</displayName>
+				<unitPattern count="zero" draft="contributed">{0} Hektopascal</unitPattern>
+				<unitPattern count="one" draft="contributed">{0} Hektopascal</unitPattern>
+				<unitPattern count="other" draft="contributed">{0} Hektopascal</unitPattern>
 			</unit>
 			<unit type="speed-kilometer-per-hour">
 				<displayName draft="contributed">Kilometer pro Schtunde</displayName>
@@ -3089,13 +3097,7 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 				<unitPattern count="one" draft="contributed">{0} PS</unitPattern>
 				<unitPattern count="other" draft="contributed">{0} PS</unitPattern>
 			</unit>
-			<unit type="pressure-hectopascal">
-				<displayName draft="contributed">Hektopascal</displayName>
-				<unitPattern count="zero" draft="contributed">{0} hPa</unitPattern>
-				<unitPattern count="one" draft="contributed">{0} hPa</unitPattern>
-				<unitPattern count="other" draft="contributed">{0} hPa</unitPattern>
-			</unit>
-			<unit type="pressure-inch-hg">
+			<unit type="pressure-inch-ofhg">
 				<displayName draft="contributed">Dumm Quecksilbersäule</displayName>
 				<unitPattern count="zero">{0} inHg</unitPattern>
 				<unitPattern count="one">{0} inHg</unitPattern>
@@ -3106,6 +3108,12 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 				<unitPattern count="zero" draft="contributed">{0} mbar</unitPattern>
 				<unitPattern count="one" draft="contributed">{0} mbar</unitPattern>
 				<unitPattern count="other" draft="contributed">{0} mbar</unitPattern>
+			</unit>
+			<unit type="pressure-hectopascal">
+				<displayName draft="contributed">Hektopascal</displayName>
+				<unitPattern count="zero" draft="contributed">{0} hPa</unitPattern>
+				<unitPattern count="one" draft="contributed">{0} hPa</unitPattern>
+				<unitPattern count="other" draft="contributed">{0} hPa</unitPattern>
 			</unit>
 			<unit type="speed-kilometer-per-hour">
 				<displayName draft="contributed">Kilometer pro Schtunde</displayName>
@@ -3320,12 +3328,7 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 				<unitPattern count="one" draft="contributed">{0}PS</unitPattern>
 				<unitPattern count="other" draft="contributed">{0}PS</unitPattern>
 			</unit>
-			<unit type="pressure-hectopascal">
-				<unitPattern count="zero" draft="contributed">{0}hPa</unitPattern>
-				<unitPattern count="one" draft="contributed">{0}hPa</unitPattern>
-				<unitPattern count="other" draft="contributed">{0}hPa</unitPattern>
-			</unit>
-			<unit type="pressure-inch-hg">
+			<unit type="pressure-inch-ofhg">
 				<unitPattern count="zero">{0} inHg</unitPattern>
 				<unitPattern count="one">{0} inHg</unitPattern>
 				<unitPattern count="other">{0} inHg</unitPattern>
@@ -3334,6 +3337,11 @@ CLDR data files are interpreted according to the LDML specification (http://unic
 				<unitPattern count="zero" draft="contributed">{0}mbar</unitPattern>
 				<unitPattern count="one" draft="contributed">{0}mbar</unitPattern>
 				<unitPattern count="other" draft="contributed">{0}mbar</unitPattern>
+			</unit>
+			<unit type="pressure-hectopascal">
+				<unitPattern count="zero" draft="contributed">{0}hPa</unitPattern>
+				<unitPattern count="one" draft="contributed">{0}hPa</unitPattern>
+				<unitPattern count="other" draft="contributed">{0}hPa</unitPattern>
 			</unit>
 			<unit type="speed-kilometer-per-hour">
 				<unitPattern count="zero" draft="contributed">{0}km/h</unitPattern>

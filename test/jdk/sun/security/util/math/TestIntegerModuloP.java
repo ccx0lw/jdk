@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -36,6 +36,8 @@
  * @run main TestIntegerModuloP sun.security.util.math.intpoly.P256OrderField 32 8
  * @run main TestIntegerModuloP sun.security.util.math.intpoly.P384OrderField 48 9
  * @run main TestIntegerModuloP sun.security.util.math.intpoly.P521OrderField 66 10
+ * @run main TestIntegerModuloP sun.security.util.math.intpoly.Curve25519OrderField 32 11
+ * @run main TestIntegerModuloP sun.security.util.math.intpoly.Curve448OrderField 56 12
  */
 
 import sun.security.util.math.*;
@@ -104,8 +106,10 @@ public class TestIntegerModuloP {
         SET_FUNCTIONS.add((a, b, c) ->
             a.setValue(c, 0, c.length, (byte) 0));
         SET_FUNCTIONS.add((a, b, c) ->
-            a.setValue(ByteBuffer.wrap(c, 0, c.length).order(ByteOrder.LITTLE_ENDIAN),
-            c.length, highByte));
+            a.setValue(c, 0, c.length / 2, (byte) 0));
+        SET_FUNCTIONS.add((a, b, c) ->
+            a.setValue(ByteBuffer.wrap(c, 0, c.length / 2).order(ByteOrder.LITTLE_ENDIAN),
+            c.length / 2, highByte));
 
         // array functions return the (possibly modified) value as byte array
         ARRAY_FUNCTIONS.add((a, b ) -> a.asByteArray(length));
@@ -118,12 +122,10 @@ public class TestIntegerModuloP {
         final int length = Integer.parseInt(args[1]);
         int seed = Integer.parseInt(args[2]);
 
-        Class<IntegerFieldModuloP> fieldBaseClass = IntegerFieldModuloP.class;
         try {
-            Class<? extends IntegerFieldModuloP> clazz =
-                Class.forName(className).asSubclass(fieldBaseClass);
-            IntegerFieldModuloP field =
-                clazz.getDeclaredConstructor().newInstance();
+            Class<?> clazz = Class.forName(className);
+            IntegerFieldModuloP field = (IntegerFieldModuloP)
+                    clazz.getDeclaredField("ONE").get(null);
 
             setUpFunctions(field, length);
 
@@ -191,21 +193,11 @@ public class TestIntegerModuloP {
             byte[] baselineResult = func.apply(baseline, right.baseline);
             if (!Arrays.equals(testResult, baselineResult)) {
                 throw new RuntimeException("Array values do not match: "
-                    + byteArrayToHexString(testResult) + " != "
-                    + byteArrayToHexString(baselineResult));
+                    + HexFormat.of().withUpperCase().formatHex(testResult) + " != "
+                    + HexFormat.of().withUpperCase().formatHex(baselineResult));
             }
         }
 
-    }
-
-    static String byteArrayToHexString(byte[] arr) {
-        StringBuilder result = new StringBuilder();
-        for (int i = 0; i < arr.length; ++i) {
-            byte curVal = arr[i];
-            result.append(Character.forDigit(curVal >> 4 & 0xF, 16));
-            result.append(Character.forDigit(curVal & 0xF, 16));
-        }
-        return result.toString();
     }
 
     static TestPair<IntegerModuloP>
@@ -310,7 +302,7 @@ public class TestIntegerModuloP {
             if (elem.test.getField() instanceof IntegerPolynomial) {
                 IntegerPolynomial field =
                     (IntegerPolynomial) elem.test.getField();
-                int numAdds = field.getMaxAdds();
+                int numAdds = 10;   // check for addition overflow
                 for (int j = 1; j < numAdds; j++) {
                     ElemFunction addFunc3 = ADD_FUNCTIONS.
                         get(random.nextInt(ADD_FUNCTIONS.size()));
@@ -328,7 +320,7 @@ public class TestIntegerModuloP {
 
             ElemSetFunction setFunc =
                 SET_FUNCTIONS.get(random.nextInt(SET_FUNCTIONS.size()));
-            byte[] valueArr = new byte[length];
+            byte[] valueArr = new byte[2 * length];
             random.nextBytes(valueArr);
             setAndCheck(setFunc, result1, result2, valueArr);
 

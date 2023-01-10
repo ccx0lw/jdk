@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013, 2018, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2022, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -23,6 +23,7 @@
 
 import java.awt.Rectangle;
 import java.awt.Toolkit;
+import java.awt.Color;
 import java.awt.image.BufferedImage;
 
 import javax.swing.JFrame;
@@ -35,7 +36,7 @@ import jdk.test.lib.Platform;
  * @key headful
  * @bug 7124513
  * @requires (os.family == "mac")
- * @summary We should support NSTexturedBackgroundWindowMask style on OSX.
+ * @summary We should support NSWindowStyleMaskTexturedBackground style on OSX.
  * @library /test/lib
  *          /lib/client
  * @build ExtendedRobot jdk.test.lib.Platform
@@ -78,9 +79,16 @@ public final class NSTexturedJFrame {
     private static void testImages(BufferedImage img1, BufferedImage img2,
                                    boolean shouldbeDifferent) {
         boolean different = false;
+        int tol = 5;
         for (int x = 0; x < img1.getWidth(); ++x) {
             for (int y = 0; y < img1.getHeight(); ++y) {
-                if (img1.getRGB(x, y) != img2.getRGB(x, y)) {
+                Color c1 = new Color(img1.getRGB(x, y));
+                Color c2 = new Color(img2.getRGB(x, y));
+
+                if ((Math.abs(c1.getRed() - c2.getRed()) > tol) &&
+                    (Math.abs(c1.getBlue() - c2.getBlue()) > tol) &&
+                    (Math.abs(c1.getGreen() - c2.getGreen()) > tol )) {
+
                     different = true;
                 }
             }
